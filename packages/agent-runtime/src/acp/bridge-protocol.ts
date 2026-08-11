@@ -29,7 +29,7 @@ import {
 // Runtime → bridge commands
 // ---------------------------------------------------------------------------
 
-export const acpBridgeAgentCommandSchema = z.object({
+const acpBridgeAgentCommandSchema = z.object({
   command: z.string().min(1),
   args: z.array(z.string()),
   cwd: z.string().min(1).optional(),
@@ -136,25 +136,24 @@ const acpBridgeSessionParamsSchema = z.object({
   dynamicTools: z.array(dynamicToolSchema).optional(),
 });
 
-export const acpBridgeThreadStartParamsSchema = acpBridgeSessionParamsSchema;
+const acpBridgeThreadStartParamsSchema = acpBridgeSessionParamsSchema;
 export type AcpBridgeThreadStartParams = z.infer<
   typeof acpBridgeThreadStartParamsSchema
 >;
 
-export const acpBridgeThreadResumeParamsSchema =
-  acpBridgeSessionParamsSchema.extend({
-    providerThreadId: z.string().min(1),
-  });
+const acpBridgeThreadResumeParamsSchema = acpBridgeSessionParamsSchema.extend({
+  providerThreadId: z.string().min(1),
+});
 export type AcpBridgeThreadResumeParams = z.infer<
   typeof acpBridgeThreadResumeParamsSchema
 >;
 
-export const acpBridgeTurnStartParamsSchema = z.object({
+const acpBridgeTurnStartParamsSchema = z.object({
   threadId: z.string().min(1),
   input: z.array(promptInputSchema),
 });
 
-export const acpBridgeTurnSteerParamsSchema = z.object({
+const acpBridgeTurnSteerParamsSchema = z.object({
   threadId: z.string().min(1),
   expectedTurnId: z.string().min(1),
   input: z.array(promptInputSchema),

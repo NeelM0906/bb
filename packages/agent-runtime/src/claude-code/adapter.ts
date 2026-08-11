@@ -34,7 +34,6 @@ import {
   isUserQuestionPendingInteractionPayload,
   isUserQuestionPendingInteractionResolution,
 } from "@bb/domain";
-import { resolveAdapterPermissionPolicy } from "../shared/permission-policy.js";
 import { resolveBridgeProcessArgs } from "../shared/bridge-path.js";
 import { createStandardAdapterMembers } from "../shared/standard-adapter-members.js";
 import { bashArgsSchema } from "../shared/tool-arg-schemas.js";
@@ -619,10 +618,7 @@ function buildClaudeCodeConfig(
 function resolveClaudeSessionPermissionMode(
   options: ProviderExecutionContext,
 ): ClaudePermissionMode {
-  return (
-    options.claudeCodePermissionMode ??
-    toClaudePermissionMode(resolveAdapterPermissionPolicy(options))
-  );
+  return options.claudeCodePermissionMode ?? toClaudePermissionMode(options);
 }
 
 function stripClaudePlanCommandInput(
@@ -889,9 +885,7 @@ export function createClaudeCodeProviderAdapter(
               description: t.description,
               inputSchema: jsonValueSchema.parse(t.inputSchema),
             }));
-            const permissionPolicy = resolveAdapterPermissionPolicy(
-              command.options,
-            );
+            const permissionPolicy = command.options;
             const additionalWorkspaceWriteRootsParams =
               permissionPolicy.permissionScope === "workspace"
                 ? buildAdditionalWorkspaceWriteRootsParams(
@@ -963,9 +957,7 @@ export function createClaudeCodeProviderAdapter(
               description: t.description,
               inputSchema: jsonValueSchema.parse(t.inputSchema),
             }));
-            const permissionPolicy = resolveAdapterPermissionPolicy(
-              command.options,
-            );
+            const permissionPolicy = command.options;
             const additionalWorkspaceWriteRootsParams =
               permissionPolicy.permissionScope === "workspace"
                 ? buildAdditionalWorkspaceWriteRootsParams(
@@ -1111,9 +1103,7 @@ export function createClaudeCodeProviderAdapter(
               description: t.description,
               inputSchema: jsonValueSchema.parse(t.inputSchema),
             }));
-            const permissionPolicy = resolveAdapterPermissionPolicy(
-              command.options,
-            );
+            const permissionPolicy = command.options;
             const additionalWorkspaceWriteRootsParams =
               permissionPolicy.permissionScope === "workspace"
                 ? buildAdditionalWorkspaceWriteRootsParams(

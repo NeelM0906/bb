@@ -8,7 +8,7 @@ import {
 import type { ProviderExecutionContext } from "../provider-adapter.js";
 import { promptTextInput } from "../test/prompt-input.js";
 import { createAcpProviderAdapter } from "./adapter.js";
-import { getAcpAgentProfile } from "./profiles.js";
+import { ACP_AGENT_PROFILES } from "./profiles.js";
 
 const fullProviderExecutionContext = {
   claudeCodeMockCliTraffic: DEFAULT_CLAUDE_CODE_MOCK_CLI_TRAFFIC_CONFIG,
@@ -22,8 +22,12 @@ const fullProviderExecutionContext = {
 type AcpProviderAdapter = ReturnType<typeof createAcpProviderAdapter>;
 
 function createAdapter(turnIdPrefix?: string): AcpProviderAdapter {
+  const profile = ACP_AGENT_PROFILES[0];
+  if (!profile) {
+    throw new Error("Expected the built-in Cursor ACP profile");
+  }
   return createAcpProviderAdapter({
-    profile: getAcpAgentProfile("acp-cursor"),
+    profile,
     additionalWorkspaceWriteRoots: ["/extra-root"],
     ...(turnIdPrefix !== undefined ? { turnIdPrefix } : {}),
   });

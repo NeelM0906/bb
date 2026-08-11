@@ -43,7 +43,6 @@ import {
   buildShellEnvironmentPolicyConfig,
   extractResultText,
 } from "../shared/adapter-utils.js";
-import { resolveAdapterPermissionPolicy } from "../shared/permission-policy.js";
 import { createStandardAdapterMembers } from "../shared/standard-adapter-members.js";
 import type {
   AdapterCommand,
@@ -611,7 +610,7 @@ function toCodexApprovalsReviewer(
 function toCodexThreadPermissionSettings(
   options: ProviderExecutionContext,
 ): CodexThreadPermissionSettings {
-  const permissionPolicy = resolveAdapterPermissionPolicy(options);
+  const permissionPolicy = options;
   switch (permissionPolicy.permissionScope) {
     case "workspace":
       return {
@@ -631,7 +630,7 @@ function toCodexThreadPermissionSettings(
 function toCodexPermissionSettings(
   args: ToCodexPermissionSettingsArgs,
 ): CodexPermissionSettings {
-  const permissionPolicy = resolveAdapterPermissionPolicy(args.options);
+  const permissionPolicy = args.options;
   switch (permissionPolicy.permissionScope) {
     case "workspace":
       return {
