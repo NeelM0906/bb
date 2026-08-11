@@ -58,7 +58,6 @@ import {
   createUnhandledProviderEvent,
 } from "../shared/provider-unhandled-event.js";
 import { UNSTAMPED_THREAD_ID } from "../shared/unstamped-thread-id.js";
-import { buildScopedProviderErrorEvents } from "../shared/provider-error-events.js";
 import {
   errorEnvelopeSchema,
   jsonRpcEnvelopeSchema,
@@ -688,17 +687,6 @@ interface PiTurnState {
   toolItemsByCallId: Map<string, ThreadEventItem>;
 }
 
-interface EnsurePiTurnStartedArgs {
-  events: ThreadEvent[];
-  state: PiTurnState;
-  threadId: string;
-}
-
-interface TranslatePiErrorEnvelopeArgs {
-  context?: ProviderTranslationContext;
-  detail: string;
-}
-
 function buildPiCompactionItemId(turnId: string): string {
   return turnId.length > 0 ? `pi-compaction-${turnId}` : "pi-compaction";
 }
@@ -765,41 +753,18 @@ export function createPiProviderAdapter(
       reasoningItemCounter: 0,
       toolItemsByCallId: new Map(),
     }),
-    turnIdPrefix: opts?.turnIdPrefix,
-  });
-
-  function ensurePiTurnStarted(args: EnsurePiTurnStartedArgs): string {
-    const hadOpenTurn = args.state.currentTurnId !== undefined;
-    if (!hadOpenTurn) {
-      resetPiCommandOutputSnapshots(args.state);
-    }
-    const turnId = turnState.ensureTurnStarted({
-      events: args.events,
-      state: args.state,
-      threadId: args.threadId,
-    });
-    if (!hadOpenTurn) {
+    onTurnStart: ({ events, state, threadId, turnId }) => {
+      resetPiCommandOutputSnapshots(state);
       drainAcceptedUserMessages({
-        events: args.events,
+        events,
         providerThreadId: "",
-        state: args.state,
-        threadId: args.threadId,
+        state,
+        threadId,
         turnId,
       });
-    }
-    return turnId;
-  }
-
-  function translatePiErrorEnvelope(
-    args: TranslatePiErrorEnvelopeArgs,
-  ): ThreadEvent[] {
-    return buildScopedProviderErrorEvents({
-      contextThreadId: args.context?.threadId,
-      detail: args.detail,
-      ensureTurnStarted: ensurePiTurnStarted,
-      registry: turnState,
-    });
-  }
+    },
+    turnIdPrefix: opts?.turnIdPrefix,
+  });
 
   function resolvePiActiveTurnId(
     context?: ProviderTranslationContext,
@@ -879,8 +844,8 @@ export function createPiProviderAdapter(
 
     const errorEnvelope = errorEnvelopeSchema.safeParse(event);
     if (errorEnvelope.success) {
-      return translatePiErrorEnvelope({
-        context,
+      return turnState.buildErrorEvents({
+        contextThreadId: context?.threadId,
         detail: errorEnvelope.data.params?.message ?? "unknown error",
       });
     }
@@ -923,7 +888,7 @@ export function createPiProviderAdapter(
         if (!piEvent.success) {
           return buildUnexpectedEvent(event);
         }
-        ensurePiTurnStarted({
+        turnState.ensureTurnStarted({
           events,
           state,
           threadId,
@@ -938,7 +903,7 @@ export function createPiProviderAdapter(
         }
         const turnId =
           parsed.data.reason === "manual"
-            ? ensurePiTurnStarted({ events, state, threadId })
+            ? turnState.ensureTurnStarted({ events, state, threadId })
             : turnState.getCurrentOrLastTurnId({ state });
         if (turnId.length === 0) {
           return buildUnexpectedEvent(event);
@@ -1033,8 +998,8 @@ export function createPiProviderAdapter(
         }
         if (lastAssistant && isPiAssistantError(lastAssistant)) {
           resetPiCommandOutputSnapshots(state);
-          return translatePiErrorEnvelope({
-            context,
+          return turnState.buildErrorEvents({
+            contextThreadId: context?.threadId,
             detail: lastAssistant.errorMessage,
           });
         }

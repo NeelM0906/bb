@@ -59,7 +59,6 @@ import {
   jsonRpcEnvelopeSchema,
   threadIdentityEnvelopeSchema,
 } from "../shared/json-rpc-envelope.js";
-import { buildScopedProviderErrorEvents } from "../shared/provider-error-events.js";
 import { createStandardAdapterMembers } from "../shared/standard-adapter-members.js";
 import { buildUnhandledProviderEvents } from "../shared/provider-unhandled-event.js";
 import {
@@ -69,7 +68,6 @@ import {
 import {
   createProviderTurnStateRegistry,
   finishOpenProviderTurn,
-  type EnsureProviderTurnStartedArgs,
 } from "../shared/turn-state.js";
 import { UNSTAMPED_THREAD_ID } from "../shared/unstamped-thread-id.js";
 import type {
@@ -147,12 +145,6 @@ interface AcpTurnState extends AcceptedUserMessageState {
   thoughtTextsByItemId: Map<string, string>;
   toolCallEventsByCallId: Map<string, AcpToolCallUpdateEvent>;
   toolItemsByCallId: Map<string, ThreadEventItem>;
-}
-
-interface EnsureAcpTurnStartedArgs {
-  events: ThreadEvent[];
-  state: AcpTurnState;
-  threadId: string;
 }
 
 const ACP_PLAN_STEP_STATUS_BY_ENTRY_STATUS = {
@@ -624,36 +616,20 @@ export function createAcpProviderAdapter(
       toolCallEventsByCallId: new Map(),
       toolItemsByCallId: new Map(),
     }),
-    turnIdPrefix: opts.turnIdPrefix,
-  });
-
-  function ensureAcpTurnStarted(args: EnsureAcpTurnStartedArgs): string {
-    const hadOpenTurn = args.state.currentTurnId !== undefined;
-    const turnId = turnState.ensureTurnStarted({
-      events: args.events,
-      state: args.state,
-      threadId: args.threadId,
-    });
-    if (!hadOpenTurn) {
-      args.state.agentMessageTextsByItemId.clear();
-      args.state.thoughtTextsByItemId.clear();
-      args.state.toolCallEventsByCallId.clear();
+    onTurnStart: ({ events, state, threadId, turnId }) => {
+      state.agentMessageTextsByItemId.clear();
+      state.thoughtTextsByItemId.clear();
+      state.toolCallEventsByCallId.clear();
       drainAcceptedUserMessages({
-        events: args.events,
+        events,
         providerThreadId: "",
-        state: args.state,
-        threadId: args.threadId,
+        state,
+        threadId,
         turnId,
       });
-    }
-    return turnId;
-  }
-
-  function ensureTurnStartedForUpdate(
-    args: EnsureProviderTurnStartedArgs<AcpTurnState>,
-  ): string {
-    return ensureAcpTurnStarted(args);
-  }
+    },
+    turnIdPrefix: opts.turnIdPrefix,
+  });
 
   function resolveState(context?: ProviderTranslationContext): AcpTurnState {
     return turnState.getOrCreate({ threadId: context?.threadId ?? "" });
@@ -816,7 +792,7 @@ export function createAcpProviderAdapter(
         if (text === undefined) {
           return [];
         }
-        const turnId = ensureAcpTurnStarted({
+        const turnId = turnState.ensureTurnStarted({
           events,
           state,
           threadId: UNSTAMPED_THREAD_ID,
@@ -851,7 +827,7 @@ export function createAcpProviderAdapter(
         if (text === undefined) {
           return [];
         }
-        const turnId = ensureAcpTurnStarted({
+        const turnId = turnState.ensureTurnStarted({
           events,
           state,
           threadId: UNSTAMPED_THREAD_ID,
@@ -883,7 +859,7 @@ export function createAcpProviderAdapter(
         if (!parsed.success) {
           return [];
         }
-        const turnId = ensureAcpTurnStarted({
+        const turnId = turnState.ensureTurnStarted({
           events,
           state,
           threadId: UNSTAMPED_THREAD_ID,
@@ -979,7 +955,7 @@ export function createAcpProviderAdapter(
         if (!parsed.success) {
           return [];
         }
-        const turnId = ensureAcpTurnStarted({
+        const turnId = turnState.ensureTurnStarted({
           events,
           state,
           threadId: UNSTAMPED_THREAD_ID,
@@ -1118,11 +1094,9 @@ export function createAcpProviderAdapter(
 
     const errorEnvelope = errorEnvelopeSchema.safeParse(event);
     if (errorEnvelope.success) {
-      return buildScopedProviderErrorEvents({
+      return turnState.buildErrorEvents({
         contextThreadId: context?.threadId,
         detail: errorEnvelope.data.params?.message ?? "unknown error",
-        ensureTurnStarted: ensureTurnStartedForUpdate,
-        registry: turnState,
       });
     }
 
@@ -1140,7 +1114,7 @@ export function createAcpProviderAdapter(
           return [];
         }
         const events: ThreadEvent[] = [];
-        ensureAcpTurnStarted({
+        turnState.ensureTurnStarted({
           events,
           state: resolveState(context),
           threadId: UNSTAMPED_THREAD_ID,
@@ -1170,7 +1144,7 @@ export function createAcpProviderAdapter(
           return [];
         }
         const events: ThreadEvent[] = [];
-        const turnId = ensureAcpTurnStarted({
+        const turnId = turnState.ensureTurnStarted({
           events,
           state: resolveState(context),
           threadId: UNSTAMPED_THREAD_ID,
@@ -1256,7 +1230,7 @@ export function createAcpProviderAdapter(
         }
         const state = resolveState(context);
         const events: ThreadEvent[] = [];
-        const turnId = ensureAcpTurnStarted({
+        const turnId = turnState.ensureTurnStarted({
           events,
           state,
           threadId: UNSTAMPED_THREAD_ID,

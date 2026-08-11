@@ -50,14 +50,12 @@ import { drainAcceptedUserMessages } from "../shared/accepted-user-messages.js";
 import {
   createProviderTurnStateRegistry,
   finishOpenProviderTurn,
-  type EnsureProviderTurnStartedArgs,
 } from "../shared/turn-state.js";
 import {
   buildUnhandledProviderEvents,
   createUnhandledProviderEvent,
 } from "../shared/provider-unhandled-event.js";
 import { UNSTAMPED_THREAD_ID } from "../shared/unstamped-thread-id.js";
-import { buildScopedProviderErrorEvents } from "../shared/provider-error-events.js";
 import {
   errorEnvelopeSchema,
   jsonRpcEnvelopeSchema,
@@ -828,11 +826,6 @@ export interface CreateClaudeCodeProviderAdapterOptions extends ProviderAdapterF
   turnIdPrefix?: string;
 }
 
-interface TranslateClaudeErrorEnvelopeArgs {
-  context?: ProviderTranslationContext;
-  detail: string;
-}
-
 interface ParseClaudeTaskToolOutputArgs {
   content: unknown;
   outputText: string | undefined;
@@ -879,6 +872,17 @@ export function createClaudeCodeProviderAdapter(
     // An idle thread with a running workflow must keep its task state — LRU
     // eviction would orphan the open backgroundTask items.
     isEvictable: (state) => !hasOpenClaudeBackgroundTasks(state.tasksById),
+    onTurnStart: ({ events, state, threadId, turnId }) => {
+      state.latestRequestContextTokens = undefined;
+      state.latestProviderCheckpointId = undefined;
+      drainAcceptedUserMessages({
+        events,
+        providerThreadId: "",
+        state,
+        threadId,
+        turnId,
+      });
+    },
     turnIdPrefix: opts?.turnIdPrefix,
   });
 
@@ -889,38 +893,6 @@ export function createClaudeCodeProviderAdapter(
     const state = turnState.getOrCreate({ threadId });
     state.selectedModelContextWindow =
       resolveClaudeModelContextWindowHint(model);
-  }
-
-  function ensureClaudeTurnStarted(
-    args: EnsureProviderTurnStartedArgs<ClaudeTurnState>,
-  ): string {
-    const hadOpenTurn = args.state.currentTurnId !== undefined;
-    if (!hadOpenTurn) {
-      args.state.latestRequestContextTokens = undefined;
-      args.state.latestProviderCheckpointId = undefined;
-    }
-    const turnId = turnState.ensureTurnStarted(args);
-    if (!hadOpenTurn) {
-      drainAcceptedUserMessages({
-        events: args.events,
-        providerThreadId: "",
-        state: args.state,
-        threadId: args.threadId,
-        turnId,
-      });
-    }
-    return turnId;
-  }
-
-  function translateClaudeErrorEnvelope(
-    args: TranslateClaudeErrorEnvelopeArgs,
-  ): ThreadEvent[] {
-    return buildScopedProviderErrorEvents({
-      contextThreadId: args.context?.threadId,
-      detail: args.detail,
-      ensureTurnStarted: ensureClaudeTurnStarted,
-      registry: turnState,
-    });
   }
 
   function resolveClaudeInteractiveRequestTurnId(
@@ -997,8 +969,8 @@ export function createClaudeCodeProviderAdapter(
 
     const errorEnvelope = errorEnvelopeSchema.safeParse(event);
     if (errorEnvelope.success) {
-      return translateClaudeErrorEnvelope({
-        context,
+      return turnState.buildErrorEvents({
+        contextThreadId: context?.threadId,
         detail: errorEnvelope.data.params?.message ?? "unknown error",
       });
     }
@@ -1024,7 +996,7 @@ export function createClaudeCodeProviderAdapter(
     return translateClaudeSdkMessage({
       buildUnexpectedSdkEvent: buildUnexpectedClaudeSdkEvent,
       context,
-      ensureTurnStarted: ensureClaudeTurnStarted,
+      ensureTurnStarted: turnState.ensureTurnStarted,
       event,
       translateToolResultItem: translateClaudeToolResultItem,
       translateToolUseItem: translateClaudeToolUseItem,
