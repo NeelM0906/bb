@@ -578,16 +578,18 @@ ports).
 
 ## Experiments
 
-Experimental surfaces are off by default and can be changed in Settings →
-Experiments or with `bb settings experiment <key> <true|false>`. The
-`newOnboarding` experiment exposes the first-run agent and project setup guide.
+Experimental surfaces are changed in Settings → Experiments or with
+`bb settings experiment <key> <true|false>`. Most start off; `editMessages`
+starts on and its toggle is the opt-out. The `newOnboarding` experiment exposes
+the first-run agent and project setup guide.
 The `toolsHub` experiment exposes Extensions for managing skills and plugins,
 while Automations stays in the Plugins section beside threads. The `toolsHub`
 gate only controls the UI. Installed skills, automation execution, plugin
 runtimes, CLI commands, and backend APIs keep working while it is off.
-The `editMessages` experiment enables replacing an eligible, successfully
-completed root user message in an idle Codex, Claude Code, or Pi thread.
-Grouped multi-message requests are not yet editable. Opening the editor does
+The `editMessages` experiment is on by default and enables replacing an
+eligible, successfully completed root user message in an idle Codex, Claude
+Code, or Pi thread. Turn it off to hide the editor. Grouped multi-message
+requests are not yet editable. Opening the editor does
 not change history; submission atomically replaces that message and every later
 turn while keeping workspace changes.
 
@@ -668,8 +670,8 @@ the plugin so it can be surfaced as needing attention.
 
 ### Provider retry plugin
 
-The builtin Provider retry plugin is disabled on fresh installations. Enable
-it under Extensions → Plugins or with `bb plugin enable provider-retry`. It
+The builtin Provider retry plugin is enabled on fresh installations. Disable
+it under Extensions → Plugins or with `bb plugin disable provider-retry`. It
 automatically waits for structured Codex and Claude Code subscription-window
 resets when the failed turn was accepted, the provider has stopped its own
 retries, and the original execution settings remain available. Prior output or

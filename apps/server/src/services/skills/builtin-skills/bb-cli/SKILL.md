@@ -105,7 +105,7 @@ message agents, or inspect projects, providers, and environments.
   project setup guide. Change it with
   `bb settings experiment newOnboarding <true|false>`. Use
   `bb settings replay-onboarding` to enable it and show the guide again.
-- The default-off `editMessages` experiment allows completed user messages in
+- The default-on `editMessages` experiment allows completed user messages in
   Codex, Claude Code, and Pi threads to be replaced and rerun. Change it with
   `bb settings experiment editMessages <true|false>`.
 - Thread timeline windows are capped by event count as well as by user-message
