@@ -185,6 +185,47 @@ describe("ConversationMessageContent long user messages", () => {
 });
 
 describe("ConversationMessageContent user thread mentions", () => {
+  it("renders a raw thread id in message text as a linked mention pill", () => {
+    const mentionedThread = threadListEntry({
+      id: "thr_dcwivn5n8w",
+      projectId: "proj_personal",
+      title: "Raw ID mention target",
+    });
+
+    render(
+      <MemoryRouter>
+        <RouteNavigationProvider>
+          <ThreadTitleMentionResourcesProvider
+            sectionNamesById={new Map()}
+            projectNamesById={new Map()}
+            threadById={new Map([[mentionedThread.id, mentionedThread]])}
+          >
+            <ConversationMessageContent
+              role="user"
+              attachments={null}
+              childOrigin={null}
+              initiator="user"
+              mentions={[]}
+              senderThreadId={null}
+              senderThreadTitle={null}
+              senderIsPluginSideChat={false}
+              systemMessageKind="unlabeled"
+              systemMessageSubject={null}
+              text="Continue in thr_dcwivn5n8w when this is ready."
+              turnRequest={{ kind: "message", status: "accepted" }}
+            />
+          </ThreadTitleMentionResourcesProvider>
+        </RouteNavigationProvider>
+      </MemoryRouter>,
+    );
+
+    const mentionLink = screen.getByRole("link", {
+      name: "Raw ID mention target",
+    });
+    expect(mentionLink.getAttribute("href")).toBe("/threads/thr_dcwivn5n8w");
+    expect(screen.queryByText("thr_dcwivn5n8w")).toBeNull();
+  });
+
   it("renders a raw thread token as the canonical pill when structured mentions are empty", () => {
     const mentionedThread = threadListEntry({
       id: "thr_ti4st72wgs",

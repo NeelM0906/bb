@@ -3,6 +3,10 @@ import type { PromptMentionResource, ThreadListEntry } from "@bb/domain";
 import { PromptMentionPill } from "@/components/thread/timeline/ConversationMessageMentions";
 import { useThread } from "@/hooks/queries/thread-queries";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
+import {
+  isRawThreadId,
+  RAW_THREAD_ID_PATTERN_SOURCE,
+} from "@/lib/raw-thread-id";
 
 export interface ThreadTitleMentionResources {
   sectionNamesById: ReadonlyMap<string, string>;
@@ -19,8 +23,10 @@ const EMPTY_TITLE_MENTION_RESOURCES: ThreadTitleMentionResources = {
 const ThreadTitleMentionResourcesContext =
   createContext<ThreadTitleMentionResources>(EMPTY_TITLE_MENTION_RESOURCES);
 
-const SERIALIZED_TITLE_MENTION_PATTERN =
-  /@(?:thread:[A-Za-z0-9_-]+|project:[A-Za-z0-9_-]+|(?:section|folder):[A-Za-z0-9_-]+|(?:thread-storage:)?(?:(?:[\p{L}\p{N}._-]+\/)+(?:[\p{L}\p{N}._-]*\.[\p{L}\p{N}_-]+)?|[\p{L}\p{N}._-]*\.[\p{L}\p{N}_-]+))/gu;
+const TITLE_MENTION_PATTERN = new RegExp(
+  `@(?:thread:[A-Za-z0-9_-]+|project:[A-Za-z0-9_-]+|(?:section|folder):[A-Za-z0-9_-]+|(?:thread-storage:)?(?:(?:[\\p{L}\\p{N}._-]+\\/)+(?:[\\p{L}\\p{N}._-]*\\.[\\p{L}\\p{N}_-]+)?|[\\p{L}\\p{N}._-]*\\.[\\p{L}\\p{N}_-]+))|${RAW_THREAD_ID_PATTERN_SOURCE}`,
+  "gu",
+);
 
 export interface ThreadTitleMentionResourcesProviderProps {
   children: ReactNode;
@@ -157,6 +163,7 @@ function resolveTitleMentionResource(
 }
 
 interface ThreadTitleTextSegment {
+  rawThreadId: string | null;
   resource: PromptMentionResource | null;
   serializedText: string | null;
   text: string;
@@ -170,39 +177,54 @@ function threadTitleTextSegments(
   let cursor = 0;
   let match: RegExpExecArray | null;
 
-  SERIALIZED_TITLE_MENTION_PATTERN.lastIndex = 0;
-  while ((match = SERIALIZED_TITLE_MENTION_PATTERN.exec(title)) !== null) {
+  TITLE_MENTION_PATTERN.lastIndex = 0;
+  while ((match = TITLE_MENTION_PATTERN.exec(title)) !== null) {
     const token = match[0];
     const matchEnd = match.index + token.length;
+    const rawThreadId = isRawThreadId(token) ? token : null;
     if (
       !isMentionBoundary(title, match.index) ||
       !isMentionEndBoundary(title, matchEnd) ||
-      (isPathMentionToken(token) &&
+      (rawThreadId === null &&
+        isPathMentionToken(token) &&
         hasUnsupportedPathContinuation(title, matchEnd))
     ) {
       continue;
     }
     if (match.index > cursor) {
       segments.push({
+        rawThreadId: null,
         resource: null,
         serializedText: null,
         text: title.slice(cursor, match.index),
       });
     }
-    const resource = resolveTitleMentionResource(token, resources);
+    const resource =
+      rawThreadId === null
+        ? resolveTitleMentionResource(token, resources)
+        : threadMentionResource(rawThreadId, resources);
     segments.push({
+      rawThreadId: resource === null ? rawThreadId : null,
       resource,
-      serializedText: token,
-      text: resource.label,
+      serializedText: resource === null ? null : token,
+      text: resource?.label ?? token,
     });
     cursor = matchEnd;
   }
 
   if (segments.length === 0) {
-    return [{ resource: null, serializedText: null, text: title }];
+    return [
+      {
+        rawThreadId: null,
+        resource: null,
+        serializedText: null,
+        text: title,
+      },
+    ];
   }
   if (cursor < title.length) {
     segments.push({
+      rawThreadId: null,
       resource: null,
       serializedText: null,
       text: title.slice(cursor),
@@ -266,11 +288,30 @@ export function useThreadMentionResource(
   }, [sidebarResource, threadId, threadQuery.data]);
 }
 
+function RawThreadTitleMention({ threadId }: { threadId: string }) {
+  const resource = useThreadMentionResource(threadId);
+  if (resource === null) {
+    return threadId;
+  }
+  return (
+    <PromptMentionPill
+      interactive={false}
+      resource={resource}
+      serializedText={threadId}
+    />
+  );
+}
+
 /** Renders serialized prompt mentions persisted in thread title fallbacks. */
 export function ThreadTitleMentions({ title }: { title: string }) {
   const resources = useContext(ThreadTitleMentionResourcesContext);
   return threadTitleTextSegments(title, resources).map((segment, index) =>
-    segment.resource === null || segment.serializedText === null ? (
+    segment.rawThreadId !== null ? (
+      <RawThreadTitleMention
+        key={`${index}:${segment.rawThreadId}`}
+        threadId={segment.rawThreadId}
+      />
+    ) : segment.resource === null || segment.serializedText === null ? (
       segment.text
     ) : (
       <span key={`${index}:${segment.serializedText}`}>

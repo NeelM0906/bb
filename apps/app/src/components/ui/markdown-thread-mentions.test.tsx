@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
 import type { ReactNode } from "react";
-import { act, cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { PromptTextMention } from "@bb/domain";
 import type { ThreadResponse } from "@bb/server-contract";
@@ -14,8 +14,23 @@ import {
 } from "@/components/ui/markdown-message-directives";
 import { MarkdownPreview } from "@/components/ui/markdown-preview";
 import { threadQueryKey } from "@/hooks/queries/query-keys";
+import { sdk } from "@/lib/sdk";
 import { setPreferredTheme } from "@/hooks/useTheme";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+
+vi.mock("@/lib/sdk", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/sdk")>();
+  return {
+    ...actual,
+    sdk: {
+      ...actual.sdk,
+      threads: {
+        ...actual.sdk.threads,
+        get: vi.fn(() => Promise.reject(new Error("Thread not found"))),
+      },
+    },
+  };
+});
 
 function markdownTree(node: ReactNode) {
   return (
@@ -122,10 +137,84 @@ const ACTIVE_MESSAGE_DIRECTIVES: MarkdownMessageDirectives = {
 
 afterEach(() => {
   cleanup();
+  vi.clearAllMocks();
   setPreferredTheme("system");
 });
 
 describe("MarkdownPreview thread mentions", () => {
+  it("leaves an unresolvable raw thread id as text", async () => {
+    const { container, queryClient } = renderMarkdown(
+      <MarkdownPreview
+        content="Continue in thr_2222222222 when this is ready."
+        threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+      />,
+      [],
+    );
+
+    await waitFor(() => {
+      expect(
+        queryClient.getQueryState(threadQueryKey("thr_2222222222"))?.status,
+      ).toBe("error");
+    });
+
+    expect(container.textContent).toContain("thr_2222222222");
+    expect(container.querySelector('[data-prompt-mention="true"]')).toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("leaves raw thread ids inside inline and fenced code untouched", () => {
+    const { container } = renderMarkdown(
+      <MarkdownPreview
+        content={[
+          "Run `bb thread show thr_dcwivn5n8w`.",
+          "",
+          "```text",
+          "thr_dcwivn5n8w",
+          "```",
+        ].join("\n")}
+        threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+      />,
+      [
+        threadResponse({
+          id: "thr_dcwivn5n8w",
+          title: "Known code target",
+          titleFallback: "Known code target",
+        }),
+      ],
+    );
+
+    const codeNodes = container.querySelectorAll("code");
+    expect(codeNodes).toHaveLength(2);
+    expect(
+      Array.from(codeNodes).every((node) =>
+        node.textContent?.includes("thr_dcwivn5n8w"),
+      ),
+    ).toBe(true);
+    expect(container.querySelector('[data-prompt-mention="true"]')).toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("matches only the exact thread id prefix, alphabet, length, and boundaries", () => {
+    const untouched = [
+      "env_dcwivn5n8w",
+      "thr_dcwivn5n8o",
+      "thr_dcwivn5n8",
+      "thr_dcwivn5n8w2",
+      "prefixthr_dcwivn5n8w",
+    ].join(" ");
+    const { container } = renderMarkdown(
+      <MarkdownPreview
+        content={untouched}
+        threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+      />,
+    );
+
+    expect(container.textContent).toBe(untouched);
+    expect(container.querySelector('[data-prompt-mention="true"]')).toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(sdk.threads.get).not.toHaveBeenCalled();
+  });
+
   it("resolves and links a thread absent from sidebar resources through the authoritative thread query", () => {
     const queriedThread = threadResponse({
       id: "thr_archived",

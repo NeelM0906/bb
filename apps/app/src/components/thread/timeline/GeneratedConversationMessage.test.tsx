@@ -9,8 +9,10 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
+import type { ThreadListEntry } from "@bb/domain";
 import type { TimelineTitleLink } from "@bb/thread-view";
 import { ConversationMessageContent } from "./ConversationMessageContent";
+import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
 import { RouteNavigationProvider } from "@/components/ui/app-route-anchor";
 import type { TimelineTitleActionResolver } from "./TimelineTitleView";
 
@@ -77,14 +79,61 @@ afterEach(() => {
 });
 
 // An agent-generated body that carries an offset-based `path` mention and a
-// leading `#` (markdown heading syntax). The agent path must NOT route through
-// markdown — it keeps the offset renderer — so the `#` stays literal text and
-// the path mention still renders.
+// leading markdown heading. Both Markdown and the structured mention must
+// survive the combined renderer.
 const AGENT_BODY = "# notes\nedited path:src/app.ts here";
 const AGENT_PATH_TOKEN = "path:src/app.ts";
 const AGENT_PATH_START = AGENT_BODY.indexOf(AGENT_PATH_TOKEN);
 const OVERFLOWING_ONE_LINE_AGENT_BODY =
   "TEST RESULT refines the diagnosis — RULE OUT eviction. A fire-and-forget direct POST with no wait parameter and no client-held stream should still render the complete report after expansion.";
+const RAW_THREAD_ID = "thr_dcwivn5n8w";
+const RAW_THREAD_BODY = `Continue in ${RAW_THREAD_ID}; keep \`${RAW_THREAD_ID}\` literal.\nMore details.`;
+
+function threadListEntry(
+  overrides: Partial<ThreadListEntry> = {},
+): ThreadListEntry {
+  return {
+    id: "thr_test",
+    projectId: "proj_demo",
+    environmentId: null,
+    providerId: "codex",
+    title: "Thread",
+    titleFallback: "Thread",
+    sectionId: null,
+    status: "idle",
+    parentThreadId: null,
+    sourceThreadId: null,
+    originKind: null,
+    originPluginId: null,
+    visibility: "visible",
+    childOrigin: null,
+    archivedAt: null,
+    pinnedAt: null,
+    pinSortKey: null,
+    deletedAt: null,
+    lastReadAt: 0,
+    latestAttentionAt: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    activity: {
+      activeWorkflowCount: 0,
+      activeBackgroundAgentCount: 0,
+      activeBackgroundCommandCount: 0,
+      activePlanModeCount: 0,
+      activeGoalCount: 0,
+    },
+    hasPendingInteraction: false,
+    environmentHostId: null,
+    environmentName: null,
+    environmentBranchName: null,
+    environmentWorkspaceDisplayKind: "other",
+    runtime: {
+      displayStatus: "idle",
+      hostReconnectGraceExpiresAt: null,
+    },
+    ...overrides,
+  };
+}
 
 function renderAgentMessage(
   text = AGENT_BODY,
@@ -115,26 +164,38 @@ function renderAgentMessage(
         ]
       : [];
 
+  const rawMentionTarget = threadListEntry({
+    id: RAW_THREAD_ID,
+    title: "Raw agent mention target",
+    titleFallback: "Raw agent mention target",
+  });
+
   return render(
     <MemoryRouter>
       <RouteNavigationProvider>
-        <ConversationMessageContent
-          role="user"
-          initiator="agent"
-          childOrigin={null}
-          senderThreadId="thr_agent"
-          senderThreadTitle={senderThreadTitle}
-          senderIsPluginSideChat={senderIsPluginSideChat}
-          onTitleAction={onTitleAction}
-          resolveSegmentLinkHref={resolveThreadLink}
-          systemMessageKind="unlabeled"
-          systemMessageSubject={null}
-          attachments={null}
-          mentions={mentions}
-          text={text}
-          turnRequest={{ kind: "message", status: "accepted" }}
-          projectId="proj_demo"
-        />
+        <ThreadTitleMentionResourcesProvider
+          sectionNamesById={new Map()}
+          projectNamesById={new Map()}
+          threadById={new Map([[rawMentionTarget.id, rawMentionTarget]])}
+        >
+          <ConversationMessageContent
+            role="user"
+            initiator="agent"
+            childOrigin={null}
+            senderThreadId="thr_agent"
+            senderThreadTitle={senderThreadTitle}
+            senderIsPluginSideChat={senderIsPluginSideChat}
+            onTitleAction={onTitleAction}
+            resolveSegmentLinkHref={resolveThreadLink}
+            systemMessageKind="unlabeled"
+            systemMessageSubject={null}
+            attachments={null}
+            mentions={mentions}
+            text={text}
+            turnRequest={{ kind: "message", status: "accepted" }}
+            projectId="proj_demo"
+          />
+        </ThreadTitleMentionResourcesProvider>
       </RouteNavigationProvider>
     </MemoryRouter>,
   );
@@ -146,7 +207,10 @@ function mockInnerPreviewTextOverflow(text: string): void {
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(100);
   vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(
     function scrollWidth(this: HTMLElement) {
-      return this.tagName === "SPAN" && this.textContent === text ? 240 : 100;
+      return this.textContent === text &&
+        (this.tagName === "SPAN" || this.tagName === "DIV")
+        ? 240
+        : 100;
     },
   );
 }
@@ -209,13 +273,38 @@ describe("GeneratedConversationMessage markdown body", () => {
     );
   });
 
-  it("keeps the agent body on the offset renderer (no markdown, no <br>) and renders its path mention", () => {
+  it("renders agent Markdown and its offset-based path mention", () => {
     renderAgentMessage();
 
     fireEvent.click(screen.getByRole("button", { name: /Message from/u }));
 
-    expect(screen.getByText(/# notes/u)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "notes" })).toBeTruthy();
     expect(screen.getByText("src/app.ts")).toBeTruthy();
+  });
+
+  it("renders a known raw thread id as a linked pill while leaving inline code literal when collapsed and expanded", () => {
+    const { container } = renderAgentMessage(RAW_THREAD_BODY);
+    const toggle = screen.getByRole("button", {
+      name: /Message from Worker/u,
+    });
+
+    const collapsedLink = screen.getByRole("link", {
+      name: "Raw agent mention target",
+    });
+    expect(collapsedLink.getAttribute("href")).toBe(
+      `/projects/proj_demo/threads/${RAW_THREAD_ID}`,
+    );
+    expect(container.querySelector("code")?.textContent).toBe(RAW_THREAD_ID);
+
+    fireEvent.click(toggle);
+
+    const expandedLink = screen.getByRole("link", {
+      name: "Raw agent mention target",
+    });
+    expect(expandedLink.getAttribute("href")).toBe(
+      `/projects/proj_demo/threads/${RAW_THREAD_ID}`,
+    );
+    expect(container.querySelector("code")?.textContent).toBe(RAW_THREAD_ID);
   });
 
   it("expands a one-line agent message when its preview text overflows", () => {

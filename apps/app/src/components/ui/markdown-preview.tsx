@@ -99,24 +99,24 @@ export interface MarkdownPreviewProps {
   imageLightboxTitle?: string;
   linkRouting?: MarkdownLinkRouting;
   /**
-   * When supplied, the literal `@thread:<id>` token in the markdown source
-   * renders as the canonical thread-mention pill (display name resolved from
-   * live thread resources, then `mentions`, and finally the id). When present,
-   * `resolveLinkHref` routes links through the same resolver as timeline
-   * titles; otherwise the mention resource's project route is used.
+   * When supplied, serialized `@thread:<id>` tokens and exact raw persisted
+   * thread ids in markdown prose render as canonical thread-mention pills.
+   * Raw ids remain text unless the live thread lookup or `mentions` resolves
+   * them. When present, `resolveLinkHref` routes links through the same resolver
+   * as timeline titles; otherwise the mention resource's project route is used.
    */
   threadMentions?: MarkdownThreadMentions;
   /**
    * Authored-prompt mentions (user messages): unlike {@link threadMentions},
-   * which matches a single `@thread:<id>` token by regex, this carries the
+   * which recognizes thread references in markdown prose, this carries the
    * editor's offset-based `mentions` array (offsets into `content`) and renders
    * every kind — thread, file/path, and slash command — as its canonical pill.
    * Activates the offset-substitution pipeline in `markdown-prompt-mentions`.
    * User messages may also supply {@link threadMentions} so raw serialized
    * thread tokens without offset metadata still render consistently. Structured
    * spans are substituted before Markdown parsing, so the two pipelines do not
-   * double-render the same mention. Absent for assistant and generated bodies;
-   * that path is unaffected.
+   * double-render the same mention. Generated conversation bodies also use
+   * this transport when they carry authoritative offset metadata.
    */
   promptMentions?: MarkdownPromptMentions;
   /**

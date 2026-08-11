@@ -19,7 +19,6 @@ import {
 import { computeMutedPrefixLength } from "./compute-muted-prefix-length.js";
 import {
   clipMentionTextToVisibleRange,
-  renderMentionTextSegments,
   shiftMentionsToTextRange,
 } from "./ConversationMessageMentions.js";
 import { ExpandableTimelineRow } from "./ExpandableTimelineRow.js";
@@ -487,8 +486,6 @@ export const GeneratedConversationMessage = memo(
     // Title-only rows (ownership assigned/removed) restate their body in the
     // title; suppress the body, the collapsed preview, and expansion entirely.
     const titleOnly = systemMessageIsTitleOnly(sourceKind, systemMessageKind);
-    const renderMessageMarkdown =
-      sourceKind === "system" || sourceIsPluginSideChat;
     const hasExpandedOnlyContent =
       attachmentItems.filePaths.length > 0 ||
       attachmentItems.imageItems.length > 0 ||
@@ -532,43 +529,26 @@ export const GeneratedConversationMessage = memo(
           className={`${NESTED_TIMELINE_GROUP_LINE_CLASS_NAME} max-w-full min-w-0`}
         >
           <div className="flex min-w-0 items-baseline truncate pl-2 text-sm leading-relaxed text-foreground">
-            {renderMessageMarkdown ? (
-              // Render the collapsed first line as markdown too (inline
-              // formatting + @thread pills), clamped to a single line, so a
-              // not-yet-expanded system or side-chat message shows formatted
-              // text rather than raw markdown. Block nodes are flattened to inline via
-              // COLLAPSED_MARKDOWN_PREVIEW_CLASS.
-              <div
-                ref={setCollapsedPreviewTextRef}
-                className="min-w-0 truncate"
-              >
-                <MarkdownPreview
-                  content={collapsedPreviewLine}
-                  linkRouting={linkRouting}
-                  threadMentions={
-                    resolveSegmentLinkHref
-                      ? {
-                          mentions: collapsedPreviewBody.mentions,
-                          preserveSoftBreaks: true,
-                          resolveLinkHref: resolveSegmentLinkHref,
-                        }
-                      : undefined
-                  }
-                  className={COLLAPSED_MARKDOWN_PREVIEW_CLASS}
-                />
-              </div>
-            ) : (
-              <span
-                ref={setCollapsedPreviewTextRef}
-                className="min-w-0 truncate"
-              >
-                {renderMentionTextSegments({
+            {/* Render every generated preview through the combined Markdown
+                mention pipeline. Offset mentions preserve paths and commands;
+                token mentions also recognize raw persisted thread ids. */}
+            <div ref={setCollapsedPreviewTextRef} className="min-w-0 truncate">
+              <MarkdownPreview
+                content={collapsedPreviewBody.text}
+                linkRouting={linkRouting}
+                promptMentions={{
                   mentions: collapsedPreviewBody.mentions,
+                  resolveLinkHref: resolveSegmentLinkHref,
                   resolveMentionLink,
-                  text: collapsedPreviewBody.text,
-                })}
-              </span>
-            )}
+                }}
+                threadMentions={{
+                  mentions: collapsedPreviewBody.mentions,
+                  preserveSoftBreaks: true,
+                  resolveLinkHref: resolveSegmentLinkHref,
+                }}
+                className={COLLAPSED_MARKDOWN_PREVIEW_CLASS}
+              />
+            </div>
             {renderManualContinuation ? (
               <span
                 className={cn(
@@ -587,33 +567,20 @@ export const GeneratedConversationMessage = memo(
         <div className={NESTED_TIMELINE_GROUP_LINE_CLASS_NAME}>
           <div className="pl-2 text-sm leading-relaxed text-foreground">
             {messageText ? (
-              // System and side-chat handoffs render markdown while preserving
-              // `@thread:<id>` pills. Other generated agent messages stay on
-              // the offset-based renderer because their path mentions cannot
-              // be represented by the markdown mention transport.
-              renderMessageMarkdown ? (
-                <MarkdownPreview
-                  content={messageText}
-                  linkRouting={linkRouting}
-                  threadMentions={
-                    resolveSegmentLinkHref
-                      ? {
-                          mentions: messageMentions,
-                          preserveSoftBreaks: true,
-                          resolveLinkHref: resolveSegmentLinkHref,
-                        }
-                      : undefined
-                  }
-                />
-              ) : (
-                <p className="whitespace-pre-wrap break-words">
-                  {renderMentionTextSegments({
-                    mentions: messageMentions,
-                    resolveMentionLink,
-                    text: messageText,
-                  })}
-                </p>
-              )
+              <MarkdownPreview
+                content={messageText}
+                linkRouting={linkRouting}
+                promptMentions={{
+                  mentions: messageMentions,
+                  resolveLinkHref: resolveSegmentLinkHref,
+                  resolveMentionLink,
+                }}
+                threadMentions={{
+                  mentions: messageMentions,
+                  preserveSoftBreaks: true,
+                  resolveLinkHref: resolveSegmentLinkHref,
+                }}
+              />
             ) : (
               <p className="text-muted-foreground">
                 {generatedConversationEmptyText(sourceKind)}
@@ -644,7 +611,6 @@ export const GeneratedConversationMessage = memo(
         projectId,
         resolveSegmentLinkHref,
         resolveMentionLink,
-        renderMessageMarkdown,
         sourceKind,
         requestLabel,
         turnRequest,

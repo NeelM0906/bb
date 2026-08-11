@@ -5,6 +5,8 @@ import type { ReactNode, Ref } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ThreadDetailHeader } from "./ThreadDetailHeader";
 import { PaneContext, type PaneContextValue } from "./PaneContext";
+import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
+import { makeThreadListEntry } from "@/test/fixtures/thread-list-entries";
 
 vi.mock("@/components/layout/AppPageHeader", () => ({
   HEADER_ICON_BUTTON_CLASS: "header-icon-button",
@@ -232,6 +234,41 @@ describe("ThreadDetailHeader", () => {
       container.querySelectorAll('[data-prompt-mention="true"]'),
     ).toHaveLength(2);
     expect(screen.queryByText("@thread:thr_worker")).toBeNull();
+  });
+
+  it("renders a raw thread id in the title as an unlinked mention pill", () => {
+    const mentionedThread = makeThreadListEntry({
+      id: "thr_dcwivn5n8w",
+      projectId: "proj_target",
+      title: "Raw title target",
+      titleFallback: "Raw title target",
+    });
+
+    render(
+      <ThreadTitleMentionResourcesProvider
+        sectionNamesById={new Map()}
+        projectNamesById={new Map()}
+        threadById={new Map([[mentionedThread.id, mentionedThread]])}
+      >
+        <PaneContext.Provider value={PANE_CONTEXT}>
+          <ThreadDetailHeader
+            actionsMenu={null}
+            childPillLabel={null}
+            isSecondaryPanelOpen={false}
+            onOpenThreadGitAction={vi.fn()}
+            onToggleSecondaryPanel={vi.fn()}
+            threadHeaderGitActions={[]}
+            threadTitle="Continue from thr_dcwivn5n8w docs/foo.ts"
+          />
+        </PaneContext.Provider>
+      </ThreadTitleMentionResourcesProvider>,
+    );
+
+    const pill = screen.getByText("Raw title target");
+    expect(pill.closest('[data-prompt-mention="true"]')).not.toBeNull();
+    expect(pill.closest("a")).toBeNull();
+    expect(screen.queryByText("thr_dcwivn5n8w")).toBeNull();
+    expect(screen.getByText(/docs\/foo\.ts/u)).not.toBeNull();
   });
 
   it("uses a title tab for the focused split and no pane-wide dimming", () => {

@@ -15,10 +15,15 @@ import {
   useThreadMentionResource,
 } from "@/components/thread/ThreadTitleMentions.js";
 import type { TimelineTitleLinkResolver } from "@/components/thread/timeline/TimelineTitleView.js";
+import { RAW_THREAD_ID_PATTERN_SOURCE } from "@/lib/raw-thread-id.js";
 
-// Literal token the generated-message body uses to reference a thread:
-// `@thread:<id>`. The id is the trailing run of id-safe characters.
-const THREAD_MENTION_PATTERN = /@thread:([A-Za-z0-9_-]+)/gu;
+// Matches both the serialized generated-message token (`@thread:<id>`) and a
+// raw persisted thread id. Raw ids deliberately use the exact db alphabet and
+// suffix length so lookalike words and other entity ids remain ordinary text.
+const THREAD_MENTION_PATTERN = new RegExp(
+  `@thread:([A-Za-z0-9_-]+)|(${RAW_THREAD_ID_PATTERN_SOURCE})`,
+  "gu",
+);
 const THREAD_MENTION_PREFIX = "@thread";
 const THREAD_MENTION_ID_PATTERN = /^[A-Za-z0-9_-]+$/u;
 
@@ -29,23 +34,27 @@ const THREAD_MENTION_HAST_NAME = "bb-thread-mention";
 // hast property key — `mdast-util-to-hast` lowercases it into the
 // `data-thread-id` DOM attribute that the component reads back.
 const THREAD_MENTION_THREAD_ID_PROPERTY = "dataThreadId";
+const RAW_THREAD_ID_PROPERTY = "dataRawThreadId";
 
 // Builds a real mdast `text` node that, via `data.hName`, renders as the custom
 // element rather than its (empty) text value. `mdast-util-to-hast` honours
 // `data.hName`/`data.hProperties` for any node.
-function threadMentionNode(threadId: string): Text {
+function threadMentionNode(threadId: string, rawThreadId = false): Text {
   return {
     type: "text",
     value: "",
     data: {
       hName: THREAD_MENTION_HAST_NAME,
-      hProperties: { [THREAD_MENTION_THREAD_ID_PROPERTY]: threadId },
+      hProperties: {
+        [THREAD_MENTION_THREAD_ID_PROPERTY]: threadId,
+        ...(rawThreadId ? { [RAW_THREAD_ID_PROPERTY]: threadId } : {}),
+      },
     },
   };
 }
 
-// Splits a text node on the `@thread:<id>` token, returning the original node
-// when no token is present so untouched text stays a plain text node.
+// Splits a text node on serialized mentions and raw thread ids, returning the
+// original node when neither is present so untouched text stays plain.
 function splitTextNodeOnMentions(node: Text): PhrasingContent[] {
   const { value } = node;
   THREAD_MENTION_PATTERN.lastIndex = 0;
@@ -53,7 +62,9 @@ function splitTextNodeOnMentions(node: Text): PhrasingContent[] {
   let cursor = 0;
   let match: RegExpExecArray | null;
   while ((match = THREAD_MENTION_PATTERN.exec(value)) !== null) {
-    const threadId = match[1];
+    const serializedThreadId = match[1];
+    const rawThreadId = match[2];
+    const threadId = serializedThreadId ?? rawThreadId;
     const matchEnd = match.index + match[0].length;
     if (
       threadId === undefined ||
@@ -68,7 +79,7 @@ function splitTextNodeOnMentions(node: Text): PhrasingContent[] {
         value: value.slice(cursor, match.index),
       });
     }
-    replacements.push(threadMentionNode(threadId));
+    replacements.push(threadMentionNode(threadId, rawThreadId !== undefined));
     cursor = match.index + match[0].length;
   }
   if (replacements.length === 0) {
@@ -153,12 +164,13 @@ function isDirectiveMentionEndBoundary(parent: Parent, index: number): boolean {
 }
 
 /**
- * Remark plugin that rewrites the literal `@thread:<id>` token inside text
- * nodes into custom inline nodes the `components` map renders as the canonical
- * thread-mention pill. When `remark-directive` is active, its parser splits the
- * same source into an `@thread` text suffix plus a `:<id>` text directive; the
- * second pass rejoins that exact pair before the directive renderer sees it.
- * No-op for bodies without the token.
+ * Remark plugin that rewrites serialized thread mentions and raw persisted
+ * thread ids inside text nodes into custom inline nodes the `components` map
+ * renders as the canonical thread-mention pill. Markdown code nodes are not
+ * text nodes, so inline and fenced code remain literal. When `remark-directive`
+ * is active, its parser splits `@thread:<id>` into an `@thread` text suffix plus
+ * a `:<id>` text directive; the second pass rejoins that exact pair before the
+ * directive renderer sees it.
  */
 export function remarkThreadMentions() {
   return (tree: Nodes): void => {
@@ -229,6 +241,7 @@ interface BuildThreadMentionComponentArgs {
 }
 
 interface ThreadMentionElementProps {
+  "data-raw-thread-id"?: string;
   "data-thread-id"?: string;
 }
 
@@ -264,6 +277,20 @@ export function buildThreadMentionComponent({
   mentions,
   resolveSegmentLinkHref,
 }: BuildThreadMentionComponentArgs): ComponentType<ThreadMentionElementProps> {
+  function RawThreadMentionPillWithQuery({ threadId }: { threadId: string }) {
+    const resource = useThreadMentionResource(threadId);
+    if (resource === null) {
+      return threadId;
+    }
+    return (
+      <PromptMentionPill
+        resource={resource}
+        serializedText={threadId}
+        linkHref={resolveThreadMentionHref(threadId, resolveSegmentLinkHref)}
+      />
+    );
+  }
+
   function ThreadMentionPillWithQuery({ threadId }: { threadId: string }) {
     const liveResource = useThreadMentionResource(threadId);
     const resource =
@@ -279,6 +306,7 @@ export function buildThreadMentionComponent({
 
   function ThreadMentionElement(props: ThreadMentionElementProps) {
     const threadId = props["data-thread-id"] ?? "";
+    const rawThreadId = props["data-raw-thread-id"];
     const sidebarResource = useSidebarThreadMentionResource(threadId);
     if (threadId.length === 0) {
       return null;
@@ -290,12 +318,15 @@ export function buildThreadMentionComponent({
     )?.resource;
     const resource = sidebarResource ?? persistedResource;
     if (resource === undefined) {
+      if (rawThreadId !== undefined) {
+        return <RawThreadMentionPillWithQuery threadId={threadId} />;
+      }
       return <ThreadMentionPillWithQuery threadId={threadId} />;
     }
     return (
       <PromptMentionPill
         resource={resource}
-        serializedText={`@thread:${threadId}`}
+        serializedText={rawThreadId ?? `@thread:${threadId}`}
         linkHref={resolveThreadMentionHref(threadId, resolveSegmentLinkHref)}
       />
     );
