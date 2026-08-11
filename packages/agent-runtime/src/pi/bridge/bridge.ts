@@ -11,7 +11,6 @@ import { dirname, extname } from "node:path";
 import { z } from "zod";
 import {
   decodeBridgeJsonRpcResponse,
-  decodeToolCallResponsePayload,
   jsonRpcEnvelopeSchema,
   type BridgeToolCallRequest,
 } from "../../shared/bridge-tool-calls.js";
@@ -21,6 +20,10 @@ import {
   runBridgeRequest,
   startBridgeStdio,
 } from "../../shared/bridge-harness.js";
+import {
+  createBridgeSessionRegistry,
+  type PendingBridgeToolCall,
+} from "../../shared/bridge-session-registry.js";
 import type { ThreadEventContextWindowUsage } from "@bb/domain";
 import {
   SessionManager,
@@ -37,11 +40,7 @@ import {
   resolvePiBridgeSessionDir,
   resolvePiSessionFilePath,
 } from "./session-paths.js";
-import {
-  buildDynamicTools,
-  type DynamicToolDefinition,
-  type ToolCallForwarder,
-} from "./tool-proxy.js";
+import { buildDynamicTools, type DynamicToolDefinition } from "./tool-proxy.js";
 import { listPiBridgeModels } from "./model-list.js";
 import { getPiModelRuntime } from "./model-runtime.js";
 import {
@@ -264,10 +263,6 @@ interface BridgeEventNotification {
   params: Record<string, unknown>;
 }
 
-interface PendingToolCall {
-  resolve: (value: { content: string; isError?: boolean }) => void;
-}
-
 interface CurrentThreadSessionArgs {
   sessionSerial: number;
   threadId: string;
@@ -281,13 +276,8 @@ interface CreateSessionCallbackArgs {
 interface ThreadSession {
   session: PiSdkSession;
   sessionSerial: number;
-  stopping: boolean;
-  pendingToolCalls: Map<string | number, PendingToolCall>;
-}
-
-interface CloseThreadSessionArgs {
-  message: string;
-  threadId: string;
+  closing: boolean;
+  pendingToolCalls: Map<string | number, PendingBridgeToolCall>;
 }
 
 interface StartPiThreadSessionArgs {
@@ -300,10 +290,7 @@ interface PiThreadStopResult {
   ok: true;
 }
 
-const sessions = new Map<string, ThreadSession>();
-const closingSessions = new Map<string, Promise<void>>();
 let sessionSerialCounter = 0;
-let toolCallRequestIdCounter = 0;
 
 // Runtime waits on thread/stop until Pi aborts the active operation or this
 // timeout forces disposal. Stop remains a best-effort success boundary.
@@ -312,6 +299,19 @@ const THREAD_STOP_CLOSE_TIMEOUT_MS = 4_000;
 const { send, sendResult, sendError } = createBridgeIo<
   SdkEventNotification | BridgeEventNotification | BridgeToolCallRequest
 >({ write: writePiBridgeProtocol });
+
+const {
+  closeThreadSession,
+  closeThreadSessionsGracefully,
+  createForwardToolCall,
+  handleToolCallResponse,
+  sessions,
+} = createBridgeSessionRegistry<ThreadSession>({
+  closeSessionGracefully: (threadSession) =>
+    threadSession.session.closeGracefully(THREAD_STOP_CLOSE_TIMEOUT_MS),
+  getProviderThreadId: (_threadSession, threadId) => threadId,
+  sendToolCall: send,
+});
 
 function toContextWindowUsagePayload(
   contextUsage: ContextUsage | undefined,
@@ -361,10 +361,10 @@ function getCurrentThreadSession(
 ): ThreadSession | undefined {
   const threadSession = sessions.get(args.threadId);
   // Runtime treats stop as a terminal boundary for pending acks and active turn
-  // state, so callbacks from a stopping session must not leak stale SDK events.
+  // state, so callbacks from a closing session must not leak stale SDK events.
   if (
     !threadSession ||
-    threadSession.stopping ||
+    threadSession.closing ||
     threadSession.sessionSerial !== args.sessionSerial
   ) {
     return undefined;
@@ -437,87 +437,6 @@ function reportSessionError(
   });
 }
 
-function createForwardToolCall(threadId: string): ToolCallForwarder {
-  return (toolName, args) => {
-    return new Promise<{ content: string; isError?: boolean }>((resolve) => {
-      const threadSession = sessions.get(threadId);
-      if (!threadSession || threadSession.stopping) {
-        resolve({ content: "Thread session not found", isError: true });
-        return;
-      }
-      toolCallRequestIdCounter += 1;
-      const requestId = toolCallRequestIdCounter;
-      threadSession.pendingToolCalls.set(requestId, { resolve });
-      send({
-        jsonrpc: "2.0",
-        id: requestId,
-        method: "item/tool/call",
-        params: {
-          threadId,
-          providerThreadId: threadId,
-          turnId: null,
-          callId: `call-${requestId}`,
-          tool: toolName,
-          arguments: args,
-        },
-      });
-    });
-  };
-}
-
-function findSessionByPendingToolCall(
-  id: string | number,
-): ThreadSession | undefined {
-  for (const session of sessions.values()) {
-    if (session.pendingToolCalls.has(id)) return session;
-  }
-  return undefined;
-}
-
-function resolvePendingToolCalls(
-  threadSession: ThreadSession,
-  message: string,
-): void {
-  for (const [requestId, pending] of threadSession.pendingToolCalls) {
-    threadSession.pendingToolCalls.delete(requestId);
-    pending.resolve({ content: message, isError: true });
-  }
-}
-
-async function closeThreadSession(args: CloseThreadSessionArgs): Promise<void> {
-  const existingClose = closingSessions.get(args.threadId);
-  if (existingClose) {
-    await existingClose;
-    return;
-  }
-
-  const threadSession = sessions.get(args.threadId);
-  if (!threadSession) {
-    return;
-  }
-
-  threadSession.stopping = true;
-  resolvePendingToolCalls(threadSession, args.message);
-  const closePromise = (async () => {
-    await threadSession.session.closeGracefully(THREAD_STOP_CLOSE_TIMEOUT_MS);
-  })().finally(() => {
-    if (sessions.get(args.threadId) === threadSession) {
-      sessions.delete(args.threadId);
-    }
-    closingSessions.delete(args.threadId);
-  });
-  closingSessions.set(args.threadId, closePromise);
-  await closePromise;
-}
-
-async function closeThreadSessionsGracefully(message: string): Promise<void> {
-  await Promise.all(
-    Array.from(sessions.keys()).map((threadId) =>
-      closeThreadSession({ message, threadId }),
-    ),
-  );
-}
-
 function extractEnvOverrides(
   config: Record<string, unknown> | undefined,
 ): ShellEnvOverrides {
@@ -578,7 +497,7 @@ function applyDynamicTools(
   if (dynamicTools && dynamicTools.length > 0) {
     sessionOptions.customTools = buildDynamicTools(
       dynamicTools,
-      createForwardToolCall(threadId),
+      createForwardToolCall(() => threadId),
     );
   }
 }
@@ -710,7 +629,7 @@ async function startPiThreadSession({
   const threadSession: ThreadSession = {
     session,
     sessionSerial,
-    stopping: false,
+    closing: false,
     pendingToolCalls: new Map(),
   };
   sessions.set(threadId, threadSession);
@@ -828,7 +747,7 @@ async function handleTurnStart(
   params: TurnStartParams,
 ): Promise<void> {
   const threadSession = sessions.get(params.threadId);
-  if (!threadSession || threadSession.stopping) {
+  if (!threadSession || threadSession.closing) {
     sendError(id, -32000, "No active pi session");
     return;
   }
@@ -851,7 +770,7 @@ async function handleTurnSteer(
   params: TurnSteerParams,
 ): Promise<void> {
   const threadSession = sessions.get(params.threadId);
-  if (!threadSession || threadSession.stopping) {
+  if (!threadSession || threadSession.closing) {
     sendError(id, -32000, "No active pi session");
     return;
   }
@@ -894,7 +813,7 @@ function handleThreadCompact(
   params: ThreadIdParams,
 ): void {
   const threadSession = sessions.get(params.threadId);
-  if (!threadSession || threadSession.stopping) {
+  if (!threadSession || threadSession.closing) {
     sendError(id, -32000, "No active pi session");
     return;
   }
@@ -990,18 +909,7 @@ function extractInput(input: unknown): ExtractedInput {
 
 function handleParsedMessage(parsed: unknown): void {
   const response = decodeBridgeJsonRpcResponse(parsed);
-  if (response && findSessionByPendingToolCall(response.id)) {
-    const threadSession = findSessionByPendingToolCall(response.id)!;
-    const pending = threadSession.pendingToolCalls.get(response.id)!;
-    threadSession.pendingToolCalls.delete(response.id);
-    if ("error" in response) {
-      pending.resolve({
-        content: response.error.message ?? "Tool call failed",
-        isError: true,
-      });
-    } else {
-      pending.resolve(decodeToolCallResponsePayload(response.result));
-    }
+  if (response && handleToolCallResponse(response)) {
     return;
   }
 
