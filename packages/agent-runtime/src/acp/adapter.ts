@@ -61,10 +61,7 @@ import {
 } from "../shared/json-rpc-envelope.js";
 import { createStandardAdapterMembers } from "../shared/standard-adapter-members.js";
 import { buildUnhandledProviderEvents } from "../shared/provider-unhandled-event.js";
-import {
-  getOrCreateScopedItemId,
-  resolveCompletedScopedItemId,
-} from "../shared/scoped-item-ids.js";
+import { createScopedItemIdFactory } from "../shared/scoped-item-ids.js";
 import {
   createProviderTurnStateRegistry,
   finishOpenProviderTurn,
@@ -152,6 +149,13 @@ const ACP_PLAN_STEP_STATUS_BY_ENTRY_STATUS = {
   in_progress: "active",
   completed: "completed",
 } as const;
+
+const acpCompactionItemIds = createScopedItemIdFactory({
+  prefix: "acp-compaction",
+});
+const acpReasoningItemIds = createScopedItemIdFactory({
+  prefix: "acp-reasoning",
+});
 
 function mapAcpToolCallStatus(
   status: AcpToolCallUpdateEvent["status"],
@@ -635,11 +639,6 @@ export function createAcpProviderAdapter(
     return turnState.getOrCreate({ threadId: context?.threadId ?? "" });
   }
 
-  function createReasoningItemId(state: AcpTurnState): string {
-    state.reasoningItemCounter += 1;
-    return `acp-reasoning-${state.reasoningItemCounter}`;
-  }
-
   /** Close the open thought item (if any) with its accumulated content. */
   function flushOpenThoughtItem(
     events: ThreadEvent[],
@@ -654,9 +653,8 @@ export function createAcpProviderAdapter(
     if (!openItemId) {
       return;
     }
-    const itemId = resolveCompletedScopedItemId({
-      createItemId: () => createReasoningItemId(state),
-      openItemIdsByScope: state.openReasoningItemIdsByScope,
+    const itemId = acpReasoningItemIds.resolveCompleted({
+      state,
       parentToolCallId,
       scopeId: "thought",
     });
@@ -832,9 +830,8 @@ export function createAcpProviderAdapter(
           state,
           threadId: UNSTAMPED_THREAD_ID,
         });
-        const itemId = getOrCreateScopedItemId({
-          createItemId: () => createReasoningItemId(state),
-          openItemIdsByScope: state.openReasoningItemIdsByScope,
+        const itemId = acpReasoningItemIds.getOrCreate({
+          state,
           parentToolCallId,
           scopeId: "thought",
         });
@@ -1156,7 +1153,7 @@ export function createAcpProviderAdapter(
           scope: turnScope(turnId),
           item: {
             type: "contextCompaction",
-            id: `acp-compaction-${turnId}`,
+            id: acpCompactionItemIds.createId(turnId),
           },
         });
         return events;

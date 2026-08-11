@@ -16,10 +16,7 @@ import type {
   EnsureProviderTurnStartedArgs,
   ProviderTurnStateRegistry,
 } from "../shared/turn-state.js";
-import {
-  getOrCreateScopedItemId,
-  resolveCompletedScopedItemId,
-} from "../shared/scoped-item-ids.js";
+import { createScopedItemIdFactory } from "../shared/scoped-item-ids.js";
 import { UNSTAMPED_THREAD_ID } from "../shared/unstamped-thread-id.js";
 import type { ProviderTranslationContext } from "../provider-adapter.js";
 import {
@@ -134,12 +131,6 @@ export interface TranslateClaudeSdkMessageArgs {
     input: ClaudeToolUseTranslationInput,
   ) => ThreadEventItem;
   turnState: ProviderTurnStateRegistry<ClaudeTurnState>;
-}
-
-interface ClaudeReasoningItemIdArgs {
-  contentIndex: number;
-  parentToolCallId?: string;
-  state: ClaudeTurnState;
 }
 
 interface BuildClaudeCompactedEventArgs {
@@ -266,38 +257,12 @@ function buildClaudeProviderErrorEvent(
   };
 }
 
-function buildClaudeCompactionItemId(turnId: string): string {
-  return turnId.length > 0
-    ? `claude-compaction-${turnId}`
-    : "claude-compaction";
-}
-
-function createClaudeReasoningItemId(state: ClaudeTurnState): string {
-  state.reasoningItemCounter += 1;
-  return `claude-reasoning-${state.reasoningItemCounter}`;
-}
-
-function getOrCreateClaudeReasoningItemId(
-  args: ClaudeReasoningItemIdArgs,
-): string {
-  return getOrCreateScopedItemId({
-    createItemId: () => createClaudeReasoningItemId(args.state),
-    openItemIdsByScope: args.state.openReasoningItemIdsByScope,
-    parentToolCallId: args.parentToolCallId,
-    scopeId: String(args.contentIndex),
-  });
-}
-
-function resolveCompletedClaudeReasoningItemId(
-  args: ClaudeReasoningItemIdArgs,
-): string {
-  return resolveCompletedScopedItemId({
-    createItemId: () => createClaudeReasoningItemId(args.state),
-    openItemIdsByScope: args.state.openReasoningItemIdsByScope,
-    parentToolCallId: args.parentToolCallId,
-    scopeId: String(args.contentIndex),
-  });
-}
+const claudeCompactionItemIds = createScopedItemIdFactory({
+  prefix: "claude-compaction",
+});
+const claudeReasoningItemIds = createScopedItemIdFactory({
+  prefix: "claude-reasoning",
+});
 
 function buildClaudeCompactedEvent(
   args: BuildClaudeCompactedEventArgs,
@@ -527,7 +492,7 @@ export function translateClaudeSdkMessage(
           state,
           threadId,
         });
-        const compactionItemId = buildClaudeCompactionItemId(turnId);
+        const compactionItemId = claudeCompactionItemIds.createId(turnId);
         state.openCompaction = { itemId: compactionItemId, turnId };
         events.push({
           type: "item/started",
@@ -759,10 +724,10 @@ export function translateClaudeSdkMessage(
 
       const thinkingBlocks = extractThinkingBlocks(message);
       for (const thinkingBlock of thinkingBlocks) {
-        const itemId = resolveCompletedClaudeReasoningItemId({
+        const itemId = claudeReasoningItemIds.resolveCompleted({
           state,
           parentToolCallId,
-          contentIndex: thinkingBlock.contentIndex,
+          scopeId: thinkingBlock.contentIndex,
         });
         events.push({
           type: "item/completed",
@@ -842,10 +807,10 @@ export function translateClaudeSdkMessage(
           state,
           threadId,
         });
-        const itemId = getOrCreateClaudeReasoningItemId({
+        const itemId = claudeReasoningItemIds.getOrCreate({
           state,
           parentToolCallId,
-          contentIndex: reasoningDelta.contentIndex,
+          scopeId: reasoningDelta.contentIndex,
         });
         events.push({
           type: "item/reasoning/textDelta",

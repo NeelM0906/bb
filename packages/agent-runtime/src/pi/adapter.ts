@@ -49,10 +49,7 @@ import {
   createProviderTurnStateRegistry,
   finishOpenProviderTurn,
 } from "../shared/turn-state.js";
-import {
-  getOrCreateScopedItemId,
-  resolveCompletedScopedItemId,
-} from "../shared/scoped-item-ids.js";
+import { createScopedItemIdFactory } from "../shared/scoped-item-ids.js";
 import {
   buildUnhandledProviderEvents,
   createUnhandledProviderEvent,
@@ -687,40 +684,12 @@ interface PiTurnState {
   toolItemsByCallId: Map<string, ThreadEventItem>;
 }
 
-function buildPiCompactionItemId(turnId: string): string {
-  return turnId.length > 0 ? `pi-compaction-${turnId}` : "pi-compaction";
-}
-
-function createPiReasoningItemId(state: PiTurnState): string {
-  state.reasoningItemCounter += 1;
-  return `pi-reasoning-${state.reasoningItemCounter}`;
-}
-
-interface PiReasoningItemIdArgs {
-  contentIndex: number;
-  parentToolCallId?: string;
-  state: PiTurnState;
-}
-
-function getOrCreatePiReasoningItemId(args: PiReasoningItemIdArgs): string {
-  return getOrCreateScopedItemId({
-    createItemId: () => createPiReasoningItemId(args.state),
-    openItemIdsByScope: args.state.openReasoningItemIdsByScope,
-    parentToolCallId: args.parentToolCallId,
-    scopeId: String(args.contentIndex),
-  });
-}
-
-function resolveCompletedPiReasoningItemId(
-  args: PiReasoningItemIdArgs,
-): string {
-  return resolveCompletedScopedItemId({
-    createItemId: () => createPiReasoningItemId(args.state),
-    openItemIdsByScope: args.state.openReasoningItemIdsByScope,
-    parentToolCallId: args.parentToolCallId,
-    scopeId: String(args.contentIndex),
-  });
-}
+const piCompactionItemIds = createScopedItemIdFactory({
+  prefix: "pi-compaction",
+});
+const piReasoningItemIds = createScopedItemIdFactory({
+  prefix: "pi-reasoning",
+});
 
 function resetPiCommandOutputSnapshots(state: PiTurnState): void {
   state.commandOutputSnapshotsByCallId.clear();
@@ -915,7 +884,7 @@ export function createPiProviderAdapter(
           scope: turnScope(turnId),
           item: {
             type: "contextCompaction",
-            id: buildPiCompactionItemId(turnId),
+            id: piCompactionItemIds.createId(turnId),
           },
         });
         break;
@@ -1081,10 +1050,10 @@ export function createPiProviderAdapter(
             if (typeof assistantEvent.contentIndex !== "number") {
               return buildUnexpectedEvent(event);
             }
-            const itemId = getOrCreatePiReasoningItemId({
+            const itemId = piReasoningItemIds.getOrCreate({
               state,
               parentToolCallId: context?.parentToolCallId,
-              contentIndex: assistantEvent.contentIndex,
+              scopeId: assistantEvent.contentIndex,
             });
             events.push({
               type: "item/reasoning/textDelta",
@@ -1105,10 +1074,10 @@ export function createPiProviderAdapter(
             if (typeof assistantEvent.contentIndex !== "number") {
               return buildUnexpectedEvent(event);
             }
-            const itemId = resolveCompletedPiReasoningItemId({
+            const itemId = piReasoningItemIds.resolveCompleted({
               state,
               parentToolCallId: context?.parentToolCallId,
-              contentIndex: assistantEvent.contentIndex,
+              scopeId: assistantEvent.contentIndex,
             });
             events.push({
               type: "item/completed",
