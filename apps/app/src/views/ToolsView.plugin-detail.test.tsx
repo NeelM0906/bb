@@ -202,6 +202,54 @@ describe("PluginDetail official catalog lifecycle", () => {
     expect(container.textContent).toBe("");
   });
 
+  it("offers Submit to gallery only on user-provenance plugins", async () => {
+    // Submission is an ownership action: you submit your own plugin, and
+    // official (builtin/catalog) plugins are already in the gallery.
+    const harness = createQueryClientTestHarness();
+    const directPlugin: PluginListItem = {
+      ...GITHUB_PLUGIN,
+      source: "path:/Users/you/Code/github-plugin",
+      provenance: "direct",
+      catalogEntryId: null,
+    };
+    const detail = (plugin: PluginListItem) => (
+      <MemoryRouter>
+        <harness.wrapper>
+          <PluginDetail
+            isLoading={false}
+            plugin={plugin}
+            pending={false}
+            openSourceDisabled
+            onToggle={() => {}}
+            onEdit={() => {}}
+            onOpenSource={() => {}}
+            onDelete={() => {}}
+          />
+        </harness.wrapper>
+      </MemoryRouter>
+    );
+
+    render(detail(directPlugin));
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "GitHub actions" }),
+    );
+    expect(
+      await screen.findByRole("menuitem", { name: "Submit to gallery" }),
+    ).toBeTruthy();
+    cleanup();
+
+    render(detail(GITHUB_PLUGIN));
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "GitHub actions" }),
+    );
+    expect(
+      await screen.findByRole("menuitem", { name: "Uninstall" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("menuitem", { name: "Submit to gallery" }),
+    ).toBeNull();
+  });
+
   it("keeps catalog provenance and release management in the unified detail taxonomy", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
