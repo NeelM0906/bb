@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/markdown-message-directives";
 import { ConversationMessageContent } from "./ConversationMessageContent";
 import { USER_MESSAGE_CHAR_CAP } from "./conversation-message-limits";
+import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 
 afterEach(cleanup);
 
@@ -192,6 +193,7 @@ describe("ConversationMessageContent user thread mentions", () => {
       title: "Raw ID mention target",
     });
 
+    const { wrapper } = createQueryClientTestHarness();
     render(
       <MemoryRouter>
         <RouteNavigationProvider>
@@ -217,6 +219,7 @@ describe("ConversationMessageContent user thread mentions", () => {
           </ThreadTitleMentionResourcesProvider>
         </RouteNavigationProvider>
       </MemoryRouter>,
+      { wrapper },
     );
 
     const mentionLink = screen.getByRole("link", {

@@ -271,6 +271,82 @@ describe("ThreadDetailHeader", () => {
     expect(screen.getByText(/docs\/foo\.ts/u)).not.toBeNull();
   });
 
+  it.each([
+    ["straight closing quote", 'Review "thr_dcwivn5n8w."'],
+    ["curly closing quote", "Review “thr_dcwivn5n8w.”"],
+  ])(
+    "renders a sentence-final raw id before a %s in a title",
+    (_label, title) => {
+      const mentionedThread = makeThreadListEntry({
+        id: "thr_dcwivn5n8w",
+        projectId: "proj_target",
+        title: "Quoted title target",
+        titleFallback: "Quoted title target",
+      });
+
+      render(
+        <ThreadTitleMentionResourcesProvider
+          sectionNamesById={new Map()}
+          projectNamesById={new Map()}
+          threadById={new Map([[mentionedThread.id, mentionedThread]])}
+        >
+          <PaneContext.Provider value={PANE_CONTEXT}>
+            <ThreadDetailHeader
+              actionsMenu={null}
+              childPillLabel={null}
+              isSecondaryPanelOpen={false}
+              onOpenThreadGitAction={vi.fn()}
+              onToggleSecondaryPanel={vi.fn()}
+              threadHeaderGitActions={[]}
+              threadTitle={title}
+            />
+          </PaneContext.Provider>
+        </ThreadTitleMentionResourcesProvider>,
+      );
+
+      const pill = screen.getByText("Quoted title target");
+      expect(pill.closest('[data-prompt-mention="true"]')).not.toBeNull();
+      expect(pill.closest("a")).toBeNull();
+      expect(screen.queryByText("thr_dcwivn5n8w")).toBeNull();
+    },
+  );
+
+  it("leaves raw-id path, extension, and overlong continuations literal in titles", () => {
+    const title = [
+      "thr_dcwivn5n8w.md",
+      "thr_dcwivn5n8w/path",
+      "thr_dcwivn5n8w2",
+    ].join(" ");
+    const mentionedThread = makeThreadListEntry({
+      id: "thr_dcwivn5n8w",
+      title: "Should not render",
+      titleFallback: "Should not render",
+    });
+
+    const { container } = render(
+      <ThreadTitleMentionResourcesProvider
+        sectionNamesById={new Map()}
+        projectNamesById={new Map()}
+        threadById={new Map([[mentionedThread.id, mentionedThread]])}
+      >
+        <PaneContext.Provider value={PANE_CONTEXT}>
+          <ThreadDetailHeader
+            actionsMenu={null}
+            childPillLabel={null}
+            isSecondaryPanelOpen={false}
+            onOpenThreadGitAction={vi.fn()}
+            onToggleSecondaryPanel={vi.fn()}
+            threadHeaderGitActions={[]}
+            threadTitle={title}
+          />
+        </PaneContext.Provider>
+      </ThreadTitleMentionResourcesProvider>,
+    );
+
+    expect(container.textContent).toContain(title);
+    expect(container.querySelector('[data-prompt-mention="true"]')).toBeNull();
+  });
+
   it("uses a title tab for the focused split and no pane-wide dimming", () => {
     const splitContext: PaneContextValue = {
       ...PANE_CONTEXT,

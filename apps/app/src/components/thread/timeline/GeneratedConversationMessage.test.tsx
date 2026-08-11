@@ -15,6 +15,7 @@ import { ConversationMessageContent } from "./ConversationMessageContent";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
 import { RouteNavigationProvider } from "@/components/ui/app-route-anchor";
 import type { TimelineTitleActionResolver } from "./TimelineTitleView";
+import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 
 function resolveThreadLink(link: TimelineTitleLink): string | null {
   return link.kind === "thread"
@@ -166,9 +167,11 @@ function renderAgentMessage(
 
   const rawMentionTarget = threadListEntry({
     id: RAW_THREAD_ID,
+    projectId: "proj_target",
     title: "Raw agent mention target",
     titleFallback: "Raw agent mention target",
   });
+  const { wrapper } = createQueryClientTestHarness();
 
   return render(
     <MemoryRouter>
@@ -198,6 +201,7 @@ function renderAgentMessage(
         </ThreadTitleMentionResourcesProvider>
       </RouteNavigationProvider>
     </MemoryRouter>,
+    { wrapper },
   );
 }
 
@@ -292,7 +296,7 @@ describe("GeneratedConversationMessage markdown body", () => {
       name: "Raw agent mention target",
     });
     expect(collapsedLink.getAttribute("href")).toBe(
-      `/projects/proj_demo/threads/${RAW_THREAD_ID}`,
+      `/projects/proj_target/threads/${RAW_THREAD_ID}`,
     );
     expect(container.querySelector("code")?.textContent).toBe(RAW_THREAD_ID);
 
@@ -302,7 +306,7 @@ describe("GeneratedConversationMessage markdown body", () => {
       name: "Raw agent mention target",
     });
     expect(expandedLink.getAttribute("href")).toBe(
-      `/projects/proj_demo/threads/${RAW_THREAD_ID}`,
+      `/projects/proj_target/threads/${RAW_THREAD_ID}`,
     );
     expect(container.querySelector("code")?.textContent).toBe(RAW_THREAD_ID);
   });

@@ -153,7 +153,7 @@ function isMentionEndBoundary(text: string, index: number): boolean {
   if (next === undefined) return true;
   if (next === ".") {
     const afterPeriod = text[index + 1];
-    return afterPeriod === undefined || /[\s,;:!?)}\]]/u.test(afterPeriod);
+    return afterPeriod === undefined || /[\s,;:!?)}\]"'’”]/u.test(afterPeriod);
   }
   return !/[\p{L}\p{N}_.+\/-]/u.test(next);
 }
@@ -270,8 +270,8 @@ function resolveThreadMentionHref(
 /**
  * The `components` renderer for thread mentions, keyed (by the caller) on the
  * custom hast element the remark plugin emits. Resolves the mention's display
- * resource from the body `mentions` array and routes the link through
- * `resolveSegmentLinkHref`, reusing the canonical `PromptMentionPill`.
+ * resource and reuses the canonical `PromptMentionPill`. Serialized mentions
+ * retain timeline-resolver routing; raw ids use their resolved target project.
  */
 export function buildThreadMentionComponent({
   mentions,
@@ -282,13 +282,7 @@ export function buildThreadMentionComponent({
     if (resource === null) {
       return threadId;
     }
-    return (
-      <PromptMentionPill
-        resource={resource}
-        serializedText={threadId}
-        linkHref={resolveThreadMentionHref(threadId, resolveSegmentLinkHref)}
-      />
-    );
+    return <PromptMentionPill resource={resource} serializedText={threadId} />;
   }
 
   function ThreadMentionPillWithQuery({ threadId }: { threadId: string }) {
@@ -311,6 +305,12 @@ export function buildThreadMentionComponent({
     if (threadId.length === 0) {
       return null;
     }
+    // A raw id has no persisted mention contract. Always resolve it through
+    // the authoritative thread lookup so its pill routes through the target
+    // thread's project rather than the project owning the current timeline.
+    if (rawThreadId !== undefined) {
+      return <RawThreadMentionPillWithQuery threadId={threadId} />;
+    }
     const persistedResource = mentions.find(
       (mention) =>
         mention.resource.kind === "thread" &&
@@ -318,15 +318,12 @@ export function buildThreadMentionComponent({
     )?.resource;
     const resource = sidebarResource ?? persistedResource;
     if (resource === undefined) {
-      if (rawThreadId !== undefined) {
-        return <RawThreadMentionPillWithQuery threadId={threadId} />;
-      }
       return <ThreadMentionPillWithQuery threadId={threadId} />;
     }
     return (
       <PromptMentionPill
         resource={resource}
-        serializedText={rawThreadId ?? `@thread:${threadId}`}
+        serializedText={`@thread:${threadId}`}
         linkHref={resolveThreadMentionHref(threadId, resolveSegmentLinkHref)}
       />
     );

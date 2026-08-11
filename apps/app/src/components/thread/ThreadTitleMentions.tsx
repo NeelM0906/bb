@@ -63,7 +63,7 @@ function isMentionEndBoundary(text: string, index: number): boolean {
   if (next === undefined) return true;
   if (next === ".") {
     const afterPeriod = text[index + 1];
-    return afterPeriod === undefined || /[\s,;:!?)}\]]/u.test(afterPeriod);
+    return afterPeriod === undefined || /[\s,;:!?)}\]"'’”]/u.test(afterPeriod);
   }
   return !/[\p{L}\p{N}_.+\/-]/u.test(next);
 }

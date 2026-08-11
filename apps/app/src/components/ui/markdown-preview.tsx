@@ -88,8 +88,11 @@ import {
   useRewriteLocalhostLinksPreference,
 } from "@/lib/localhost-link-rewrite-preference";
 import { resolveRouteHref } from "@/lib/route-paths";
+import { isRawThreadId } from "@/lib/raw-thread-id";
 import { cn } from "@bb/shared-ui/lib/utils";
 import remarkDirective from "remark-directive";
+import { PromptMentionPill } from "@/components/thread/timeline/ConversationMessageMentions.js";
+import { useThreadMentionResource } from "@/components/thread/ThreadTitleMentions.js";
 
 export interface MarkdownPreviewProps {
   allowHtml?: boolean;
@@ -102,8 +105,8 @@ export interface MarkdownPreviewProps {
    * When supplied, serialized `@thread:<id>` tokens and exact raw persisted
    * thread ids in markdown prose render as canonical thread-mention pills.
    * Raw ids remain text unless the live thread lookup or `mentions` resolves
-   * them. When present, `resolveLinkHref` routes links through the same resolver
-   * as timeline titles; otherwise the mention resource's project route is used.
+   * them. Raw-id pills always use the resolved thread resource's project route;
+   * `resolveLinkHref` continues to route serialized and offset-based mentions.
    */
   threadMentions?: MarkdownThreadMentions;
   /**
@@ -1006,13 +1009,42 @@ function buildMarkdownComponents({
   promptMentions,
   messageDirectives,
 }: BuildMarkdownComponentsArgs): Components {
+  function RawThreadIdMarkdownLink({
+    threadId,
+    ...anchorProps
+  }: Omit<MarkdownAnchorProps, "children"> & { threadId: string }) {
+    const resource = useThreadMentionResource(threadId);
+    if (resource === null) {
+      return (
+        <MarkdownAnchor
+          {...anchorProps}
+          linkRouting={linkRouting}
+          rewriteLocalhostLinks={rewriteLocalhostLinks}
+        >
+          {threadId}
+        </MarkdownAnchor>
+      );
+    }
+    return <PromptMentionPill resource={resource} serializedText={threadId} />;
+  }
+
   function MarkdownLink(props: MarkdownAnchorProps) {
+    const { children, ...anchorProps } = props;
+    if (
+      threadMentions !== undefined &&
+      typeof children === "string" &&
+      isRawThreadId(children)
+    ) {
+      return <RawThreadIdMarkdownLink threadId={children} {...anchorProps} />;
+    }
     return (
       <MarkdownAnchor
-        {...props}
+        {...anchorProps}
         linkRouting={linkRouting}
         rewriteLocalhostLinks={rewriteLocalhostLinks}
-      />
+      >
+        {children}
+      </MarkdownAnchor>
     );
   }
 

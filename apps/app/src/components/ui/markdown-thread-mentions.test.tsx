@@ -201,6 +201,8 @@ describe("MarkdownPreview thread mentions", () => {
       "thr_dcwivn5n8",
       "thr_dcwivn5n8w2",
       "prefixthr_dcwivn5n8w",
+      "thr_dcwivn5n8w.md",
+      "thr_dcwivn5n8w/path",
     ].join(" ");
     const { container } = renderMarkdown(
       <MarkdownPreview
@@ -213,6 +215,62 @@ describe("MarkdownPreview thread mentions", () => {
     expect(container.querySelector('[data-prompt-mention="true"]')).toBeNull();
     expect(screen.queryByRole("link")).toBeNull();
     expect(sdk.threads.get).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["straight closing quote", 'He said "Continue in thr_dcwivn5n8w."'],
+    ["curly closing quote", "He said “Continue in thr_dcwivn5n8w.”"],
+  ])(
+    "recognizes a sentence-final raw thread id before a %s",
+    (_label, content) => {
+      renderMarkdown(
+        <MarkdownPreview
+          content={content}
+          threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+        />,
+        [
+          threadResponse({
+            id: "thr_dcwivn5n8w",
+            projectId: "proj_target",
+            title: "Quoted target",
+            titleFallback: "Quoted target",
+          }),
+        ],
+      );
+
+      expect(
+        screen
+          .getByRole("link", { name: "Quoted target" })
+          .getAttribute("href"),
+      ).toBe("/projects/proj_target/threads/thr_dcwivn5n8w");
+    },
+  );
+
+  it("routes a known raw id through its resolved project instead of the timeline resolver", () => {
+    renderMarkdown(
+      <MarkdownPreview
+        content="Continue in thr_dcwivn5n8w."
+        threadMentions={{
+          mentions: [],
+          preserveSoftBreaks: true,
+          resolveLinkHref: resolveThreadLink,
+        }}
+      />,
+      [
+        threadResponse({
+          id: "thr_dcwivn5n8w",
+          projectId: "proj_target",
+          title: "Cross-project raw target",
+          titleFallback: "Cross-project raw target",
+        }),
+      ],
+    );
+
+    expect(
+      screen
+        .getByRole("link", { name: "Cross-project raw target" })
+        .getAttribute("href"),
+    ).toBe("/projects/proj_target/threads/thr_dcwivn5n8w");
   });
 
   it("resolves and links a thread absent from sidebar resources through the authoritative thread query", () => {
@@ -367,6 +425,54 @@ describe("MarkdownPreview thread mentions", () => {
     expect(link.getAttribute("href")).toBe("https://example.com");
     expect(screen.getAllByRole("link")).toHaveLength(1);
     expect(screen.queryByText("Rebuild comments")).toBeNull();
+  });
+
+  it("replaces a resolvable raw-id Markdown link label with one thread pill", () => {
+    renderMarkdown(
+      <MarkdownPreview
+        content="[thr_dcwivn5n8w](https://example.com)"
+        threadMentions={{
+          mentions: [],
+          preserveSoftBreaks: true,
+          resolveLinkHref: resolveThreadLink,
+        }}
+      />,
+      [
+        threadResponse({
+          id: "thr_dcwivn5n8w",
+          projectId: "proj_target",
+          title: "Linked-label target",
+          titleFallback: "Linked-label target",
+        }),
+      ],
+    );
+
+    const pill = screen.getByRole("link", { name: "Linked-label target" });
+    expect(pill.getAttribute("href")).toBe(
+      "/projects/proj_target/threads/thr_dcwivn5n8w",
+    );
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+    expect(pill.querySelector("a")).toBeNull();
+  });
+
+  it("preserves an unresolvable raw-id Markdown link", async () => {
+    const { queryClient } = renderMarkdown(
+      <MarkdownPreview
+        content="[thr_2222222222](https://example.com)"
+        threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+      />,
+      [],
+    );
+
+    await waitFor(() => {
+      expect(
+        queryClient.getQueryState(threadQueryKey("thr_2222222222"))?.status,
+      ).toBe("error");
+    });
+
+    const link = screen.getByRole("link", { name: "thr_2222222222" });
+    expect(link.getAttribute("href")).toBe("https://example.com");
+    expect(screen.getAllByRole("link")).toHaveLength(1);
   });
 
   it("reconstructs a directive-split thread token inside an authored Markdown link", () => {
