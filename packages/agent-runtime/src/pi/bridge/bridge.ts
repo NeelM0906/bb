@@ -7,8 +7,9 @@ import {
   renameSync,
   rmSync,
 } from "node:fs";
-import { dirname, extname } from "node:path";
+import { dirname } from "node:path";
 import { z } from "zod";
+import { extractEnvOverrides } from "../../shared/adapter-utils.js";
 import {
   decodeBridgeJsonRpcResponse,
   jsonRpcEnvelopeSchema,
@@ -24,6 +25,7 @@ import {
   createBridgeSessionRegistry,
   type PendingBridgeToolCall,
 } from "../../shared/bridge-session-registry.js";
+import { mimeTypeFromExtension } from "../../shared/mime-types.js";
 import type { ThreadEventContextWindowUsage } from "@bb/domain";
 import {
   SessionManager,
@@ -437,24 +439,6 @@ function reportSessionError(
   });
 }
 
-function extractEnvOverrides(
-  config: Record<string, unknown> | undefined,
-): ShellEnvOverrides {
-  const envOverrides: ShellEnvOverrides = {};
-  if (config) {
-    for (const [key, value] of Object.entries(config)) {
-      if (
-        key.startsWith("shell_environment_policy.set.") &&
-        typeof value === "string"
-      ) {
-        const envVar = key.slice("shell_environment_policy.set.".length);
-        envOverrides[envVar] = value;
-      }
-    }
-  }
-  return envOverrides;
-}
-
 function normalizeShellEnvOverrides(
   shellEnvOverrides: ShellEnvOverrides,
 ): ShellEnvOverrides | undefined {
@@ -850,25 +834,6 @@ async function handleThreadDiscard(
 interface ExtractedInput {
   text?: string;
   images: ImageContent[];
-}
-
-function mimeTypeFromExtension(filePath: string): string {
-  const ext = extname(filePath).toLowerCase();
-  switch (ext) {
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".svg":
-      return "image/svg+xml";
-    default:
-      return "image/png";
-  }
 }
 
 function extractInput(input: unknown): ExtractedInput {

@@ -32,6 +32,7 @@ import {
   type SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { extractEnvOverrides } from "../../shared/adapter-utils.js";
 import {
   decodeBridgeJsonRpcResponse,
   type BridgeToolCallRequest,
@@ -1090,24 +1091,6 @@ async function closeClaudeThreadSession(
     await threadSession.mockCliTrafficProxy?.close();
     threadSession.mockCliTrafficProxy = null;
   }
-}
-
-function extractEnvOverrides(
-  config: Record<string, unknown> | undefined,
-): Record<string, string> {
-  const envOverrides: Record<string, string> = {};
-  if (config) {
-    for (const [key, value] of Object.entries(config)) {
-      if (
-        key.startsWith("shell_environment_policy.set.") &&
-        typeof value === "string"
-      ) {
-        const envVar = key.slice("shell_environment_policy.set.".length);
-        envOverrides[envVar] = value;
-      }
-    }
-  }
-  return envOverrides;
 }
 
 /**

@@ -15,14 +15,7 @@ import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { promises as fs, readFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
-import {
-  dirname,
-  extname,
-  isAbsolute,
-  basename,
-  relative,
-  resolve,
-} from "node:path";
+import { dirname, isAbsolute, basename, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
@@ -46,6 +39,7 @@ import {
   jsonRpcEnvelopeSchema,
 } from "../../shared/bridge-tool-calls.js";
 import { withoutBridgeRuntimeEnv } from "../../shared/bridge-runtime-env.js";
+import { mimeTypeFromExtension } from "../../shared/mime-types.js";
 import {
   ACP_COMPACTION_COMPLETED_METHOD,
   ACP_COMPACTION_STARTED_METHOD,
@@ -1102,24 +1096,6 @@ async function selectAcpNativeReasoning(args: {
 // ---------------------------------------------------------------------------
 // Prompt content
 // ---------------------------------------------------------------------------
-
-function mimeTypeFromExtension(filePath: string): string {
-  switch (extname(filePath).toLowerCase()) {
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".svg":
-      return "image/svg+xml";
-    default:
-      return "image/png";
-  }
-}
 
 function buildPromptContentBlocks(
   session: AcpThreadSession,
