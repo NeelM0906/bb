@@ -484,6 +484,10 @@ const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
 };
 
 const SETTLED_RESPONSE_RESULT_FIXTURES: SettledResponseResultFixtures = {
+  "thread.rewind.discard": {},
+  "thread.rewind.prepare": {
+    providerThreadId: "provider-thread-rewind",
+  },
   "thread.start": {
     providerThreadId: "provider-thread-123",
   },
@@ -1051,12 +1055,14 @@ describe("host-daemon local schemas", () => {
 });
 
 describe("host-daemon command schemas", () => {
-  // Version 100 makes Codex inference timeoutMs an end-to-end daemon deadline
-  // and classifies streamed service-unavailable failures for bounded retries.
-  // An older daemon can outlive the server's wait or hide a retryable failure,
-  // so it must update before connecting.
-  it("uses protocol version 100 for Codex inference deadlines", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(100);
+  // Version 102 stops the event sink from reposting a batch the server has
+  // permanently refused. An enrolled daemon on an older build retries such a
+  // batch forever, and because the queue is host-wide that stalls every thread
+  // on the machine until it restarts, so it must update before it delivers more
+  // events. It also stops scoping provider/unhandled events to turn ids that
+  // came from the provider rather than from bb.
+  it("uses protocol version 102 for non-repeating permanent event rejections", () => {
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(102);
   });
 
   it("binds Plan cancellation to a required turn id and typed result", () => {

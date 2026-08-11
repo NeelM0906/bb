@@ -212,6 +212,10 @@ function createFakeRuntime(): AgentRuntime {
     startThread: vi.fn(async () => ({
       providerThreadId: "provider-thread",
     })),
+    prepareThreadRewind: vi.fn(async () => ({
+      providerThreadId: "provider-thread-rewind",
+    })),
+    discardThreadRewind: vi.fn(async () => undefined),
     resumeThread: vi.fn(async () => ({
       providerThreadId: "provider-thread",
     })),

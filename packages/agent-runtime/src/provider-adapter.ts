@@ -160,6 +160,7 @@ export type AdapterCommand =
       threadId: string;
       cwd: string;
       sourceProviderThreadId: string;
+      sourceProviderCheckpointId?: string;
       options: ProviderExecutionContext;
       dynamicTools?: DynamicTool[];
       disallowedTools?: readonly string[];
@@ -194,6 +195,11 @@ export type AdapterCommand =
        * means idle/no-active-turn stop and should not invalidate the session.
        */
       activeTurnId: string | null;
+    }
+  | {
+      type: "thread/discard";
+      threadId: string;
+      providerThreadId: string;
     }
   | {
       type: "thread/goal/clear";

@@ -90,6 +90,30 @@ function normalizeExecutionOptions(args: {
   return args.adapter.normalizeExecutionOptions?.(args.options) ?? args.options;
 }
 
+interface PreparedThreadRewind {
+  state: "prepared";
+  cleanupPromise: Promise<void> | null;
+  cleanupTimer: ReturnType<typeof setTimeout> | null;
+  processKey: string;
+  providerId: string;
+  providerState: RuntimeProviderProcess["identity"];
+  providerThreadId: string;
+  stagingThreadId: string;
+  threadId: string;
+}
+
+interface PreparingThreadRewind {
+  state: "preparing";
+  promise: Promise<{ providerThreadId: string }>;
+}
+
+/**
+ * A staged rewind fork, keyed by the server-minted per-attempt lease id.
+ * Each attempt owns exactly one staged fork; there is no cross-attempt
+ * sharing, so discarding a lease can never affect another attempt.
+ */
+type StagedThreadRewind = PreparingThreadRewind | PreparedThreadRewind;
+
 interface ReapIdleProviderSessionCandidate {
   idleSinceMs: number;
   providerThreadId: string;
@@ -155,6 +179,8 @@ type ProviderProcess = RuntimeProviderProcess;
 
 const threadGoalClearResultSchema = z.object({ cleared: z.boolean() }).strict();
 const THREAD_GOAL_CLEAR_EVENT_TIMEOUT_MS = 5_000;
+const PREPARED_THREAD_REWIND_TTL_MS = 5 * 60_000;
+const PREPARED_THREAD_REWIND_RETRY_MS = 30_000;
 
 interface ThreadRuntimeConfig {
   dynamicTools?: DynamicTool[];
@@ -252,6 +278,8 @@ function createAgentRuntimeInternal(
   const idleProviderSessionSinceMsByThreadId = new Map<string, number>();
   const pendingTurnStartThreadIds = new Set<string>();
   const threadOperationCounts = new Map<string, number>();
+  const stagedThreadRewinds = new Map<string, StagedThreadRewind>();
+  const suppressedThreadEventIds = new Set<string>();
   const threadGoalState = new RuntimeThreadGoalState();
   const turnState = new RuntimeTurnState();
   const backgroundWorkState = new RuntimeBackgroundWorkState();
@@ -556,8 +584,15 @@ function createAgentRuntimeInternal(
     proc: ProviderProcess,
     threadId: string,
   ): void {
+    forgetThreadRuntimeStateForProviderState(proc.identity, threadId);
+  }
+
+  function forgetThreadRuntimeStateForProviderState(
+    providerState: RuntimeProviderProcess["identity"],
+    threadId: string,
+  ): void {
     threadIdentityRegistry.forgetThread({
-      providerState: proc.identity,
+      providerState,
       threadId,
     });
     clearThreadRuntimeConfig(threadId);
@@ -958,6 +993,9 @@ function createAgentRuntimeInternal(
       }
 
       for (const targetThreadId of targetThreadIds) {
+        if (suppressedThreadEventIds.has(targetThreadId)) {
+          continue;
+        }
         const stampedEvent = stampThreadEventScope({
           event,
           providerThreadId:
@@ -1009,6 +1047,12 @@ function createAgentRuntimeInternal(
 
   function handleProviderNotification(args: RuntimeParsedMessageArgs): void {
     const sourceThreadId = getJsonRpcStringParam(args.parsed, "threadId");
+    if (
+      sourceThreadId !== undefined &&
+      suppressedThreadEventIds.has(sourceThreadId)
+    ) {
+      return;
+    }
     emitTranslatedEvents({
       events: args.proc.adapter.translateEvent(args.parsed, {
         threadId: sourceThreadId,
@@ -1070,6 +1114,128 @@ function createAgentRuntimeInternal(
   // -------------------------------------------------------------------------
   // Public API
   // -------------------------------------------------------------------------
+
+  function schedulePreparedThreadRewindCleanup(
+    leaseId: string,
+    prepared: PreparedThreadRewind,
+    delayMs: number,
+  ): void {
+    if (prepared.cleanupTimer !== null) {
+      clearTimeout(prepared.cleanupTimer);
+    }
+    prepared.cleanupTimer = setTimeout(() => {
+      void discardStagedThreadRewind(leaseId);
+    }, delayMs);
+    prepared.cleanupTimer.unref?.();
+  }
+
+  function finishPreparedThreadRewindCleanup(
+    leaseId: string,
+    prepared: PreparedThreadRewind,
+  ): void {
+    if (prepared.cleanupTimer !== null) {
+      clearTimeout(prepared.cleanupTimer);
+      prepared.cleanupTimer = null;
+    }
+    if (stagedThreadRewinds.get(leaseId) === prepared) {
+      stagedThreadRewinds.delete(leaseId);
+    }
+    suppressedThreadEventIds.delete(prepared.stagingThreadId);
+  }
+
+  async function sendStagedThreadDiscard(
+    proc: ProviderProcess,
+    stagingThreadId: string,
+    providerThreadId: string,
+  ): Promise<void> {
+    const command = proc.adapter.buildCommandPlan({
+      type: "thread/discard",
+      threadId: stagingThreadId,
+      providerThreadId,
+    });
+    if (command.kind === "request") {
+      await sendCommand({
+        proc,
+        message: command,
+        resultSchema: ignoredJsonRpcResultSchema,
+      });
+    }
+  }
+
+  async function discardStagedThreadRewind(leaseId: string): Promise<void> {
+    const staged = stagedThreadRewinds.get(leaseId);
+    if (staged?.state === "preparing") {
+      try {
+        await staged.promise;
+      } catch {
+        return;
+      }
+    }
+    const prepared = stagedThreadRewinds.get(leaseId);
+    if (prepared === undefined || prepared.state !== "prepared") {
+      return;
+    }
+    if (prepared.cleanupPromise !== null) {
+      await prepared.cleanupPromise;
+      return;
+    }
+
+    const cleanup = (async () => {
+      let proc: ProviderProcess;
+      try {
+        proc = requireProviderProcess({
+          processKey: prepared.processKey,
+          providerId: prepared.providerId,
+        });
+      } catch {
+        forgetThreadRuntimeStateForProviderState(
+          prepared.providerState,
+          prepared.stagingThreadId,
+        );
+        finishPreparedThreadRewindCleanup(leaseId, prepared);
+        return;
+      }
+
+      try {
+        await sendStagedThreadDiscard(
+          proc,
+          prepared.stagingThreadId,
+          prepared.providerThreadId,
+        );
+      } catch (error) {
+        schedulePreparedThreadRewindCleanup(
+          leaseId,
+          prepared,
+          PREPARED_THREAD_REWIND_RETRY_MS,
+        );
+        options.onStderr?.(
+          `Failed to discard staged rewind ${leaseId}; retrying: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return;
+      }
+
+      forgetThreadRuntimeState(proc, prepared.stagingThreadId);
+      finishPreparedThreadRewindCleanup(leaseId, prepared);
+      try {
+        await shutdownThreadScopedCodexProcessIfIdle(proc);
+      } catch (error) {
+        options.onStderr?.(
+          `Failed to stop the idle provider after discarding staged rewind ${leaseId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    })();
+    prepared.cleanupPromise = cleanup;
+    try {
+      await cleanup;
+    } finally {
+      if (
+        stagedThreadRewinds.get(leaseId) === prepared &&
+        prepared.cleanupPromise === cleanup
+      ) {
+        prepared.cleanupPromise = null;
+      }
+    }
+  }
 
   const runtime: AgentRuntime = {
     async ensureProvider({ providerId, forThreadId, acpLaunchSpec }) {
@@ -1252,6 +1418,190 @@ function createAgentRuntimeInternal(
           return { providerThreadId: resolved };
         },
       });
+    },
+
+    async prepareThreadRewind({
+      environmentId,
+      threadId,
+      leaseId,
+      projectId,
+      providerId,
+      sourceProviderThreadId,
+      retainThroughProviderCheckpoint,
+      acpLaunchSpec,
+      options: execOpts,
+      instructions,
+      dynamicTools,
+      disallowedTools,
+      instructionMode = "append",
+    }) {
+      const existing = stagedThreadRewinds.get(leaseId);
+      if (existing !== undefined) {
+        // The server mints a fresh lease per attempt, so a duplicate can only
+        // be a replay of this exact request; return the same staged fork.
+        return existing.state === "preparing"
+          ? existing.promise
+          : { providerThreadId: existing.providerThreadId };
+      }
+
+      const preparation = runThreadOperation({
+        threadId,
+        work: async () => {
+          const processKey = resolveProviderProcessKey({
+            ...(acpLaunchSpec !== undefined ? { acpLaunchSpec } : {}),
+            providerId,
+            threadId,
+          });
+          await runtime.ensureProvider({
+            providerId,
+            forThreadId: threadId,
+            ...(acpLaunchSpec !== undefined ? { acpLaunchSpec } : {}),
+          });
+          const proc = requireProviderProcess({ processKey, providerId });
+          if (!proc.adapter.capabilities.supportsFork) {
+            throw new Error(
+              `Preparing a thread rewind is not supported by ${providerId}`,
+            );
+          }
+          const providerSkillRoots = skillRootsForProvider(providerId);
+          assertProviderSupportsExecutionOptions({
+            adapter: proc.adapter,
+            options: execOpts,
+            providerId,
+          });
+
+          // The lease id is a server-minted UUID, so it is safe inside
+          // identities that provider adapters may turn into filesystem keys.
+          const stagingThreadId = `${threadId}:rewind:${leaseId}`;
+          suppressedThreadEventIds.add(stagingThreadId);
+          threadIdentityRegistry.registerThreadProvider({
+            providerId,
+            providerState: proc.identity,
+            shouldWaitForProviderIdentity: true,
+            threadId: stagingThreadId,
+          });
+          let retainedForDiscard = false;
+          let providerThreadIdForCleanup: string | undefined;
+          try {
+            const envVars = buildThreadShellEnvironment({
+              baseShellEnv: options.shellEnv,
+              environmentId,
+              projectId,
+              threadStoragePath: resolveThreadStoragePath({
+                options,
+                threadId,
+              }),
+              threadId,
+            });
+            const adapterCommand: AdapterCommand = {
+              type: "thread/fork",
+              threadId: stagingThreadId,
+              cwd: options.workspacePath,
+              sourceProviderThreadId,
+              sourceProviderCheckpointId: retainThroughProviderCheckpoint,
+              options: toProviderExecutionContext({
+                envVars,
+                execOpts,
+                instructions,
+                skillRoots: providerSkillRoots,
+              }),
+              dynamicTools,
+              disallowedTools,
+              instructionMode,
+            };
+            const command = requireProviderRequestPlan({
+              commandType: adapterCommand.type,
+              plan: proc.adapter.buildCommandPlan(adapterCommand),
+              providerId,
+            });
+            const result = await sendCommand({
+              proc,
+              message: command,
+              resultSchema: threadIdentityResultSchema,
+              timeoutMs: THREAD_CREATION_REQUEST_TIMEOUT_MS,
+            });
+            // An ambiguous threadId is not sufficient to adopt a provider
+            // thread, but it is safe to use for best-effort cleanup because
+            // the BB staging id is unique to this rewind operation.
+            providerThreadIdForCleanup =
+              result.providerThreadId ??
+              result.thread?.id ??
+              result.threadId ??
+              undefined;
+            const providerThreadId = resolveThreadIdentityResult({
+              result,
+              threadId: stagingThreadId,
+            });
+            if (!providerThreadId) {
+              throw new Error(
+                `${providerId} did not return a provider thread for rewind lease ${leaseId}`,
+              );
+            }
+            recordProviderThreadIdentity(
+              proc,
+              stagingThreadId,
+              providerThreadId,
+            );
+            const prepared: PreparedThreadRewind = {
+              state: "prepared",
+              cleanupPromise: null,
+              cleanupTimer: null,
+              processKey,
+              providerId,
+              providerState: proc.identity,
+              providerThreadId,
+              stagingThreadId,
+              threadId,
+            };
+            stagedThreadRewinds.set(leaseId, prepared);
+            schedulePreparedThreadRewindCleanup(
+              leaseId,
+              prepared,
+              PREPARED_THREAD_REWIND_TTL_MS,
+            );
+            retainedForDiscard = true;
+            return { providerThreadId };
+          } finally {
+            if (!retainedForDiscard) {
+              if (providerThreadIdForCleanup !== undefined) {
+                try {
+                  await sendStagedThreadDiscard(
+                    proc,
+                    stagingThreadId,
+                    providerThreadIdForCleanup,
+                  );
+                } catch (error) {
+                  options.onStderr?.(
+                    `Failed to discard unretained staged rewind ${leaseId}: ${error instanceof Error ? error.message : String(error)}`,
+                  );
+                }
+              }
+              suppressedThreadEventIds.delete(stagingThreadId);
+              threadIdentityRegistry.forgetThread({
+                providerState: proc.identity,
+                threadId: stagingThreadId,
+              });
+            }
+          }
+        },
+      });
+      stagedThreadRewinds.set(leaseId, {
+        state: "preparing",
+        promise: preparation,
+      });
+      try {
+        return await preparation;
+      } catch (error) {
+        const current = stagedThreadRewinds.get(leaseId);
+        if (current?.state === "preparing" && current.promise === preparation) {
+          stagedThreadRewinds.delete(leaseId);
+        }
+        throw error;
+      }
+    },
+
+    async discardThreadRewind({ leaseId }) {
+      await discardStagedThreadRewind(leaseId);
     },
 
     async resumeThread({
@@ -1809,6 +2159,11 @@ function createAgentRuntimeInternal(
     },
 
     async shutdown() {
+      await Promise.all(
+        [...stagedThreadRewinds.keys()].map((leaseId) =>
+          discardStagedThreadRewind(leaseId),
+        ),
+      );
       idleProviderSessionSinceMsByThreadId.clear();
       pendingTurnStartThreadIds.clear();
       threadOperationCounts.clear();

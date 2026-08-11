@@ -177,6 +177,10 @@ function createRuntime(): FakeDispatchRuntime {
       hostedThreadIds.add(args.threadId);
       return { providerThreadId: "provider-thread-1" };
     }),
+    prepareThreadRewind: vi.fn(async () => ({
+      providerThreadId: "provider-thread-rewind-1",
+    })),
+    discardThreadRewind: vi.fn(async () => undefined),
     resumeThread: vi.fn(async (args: { threadId: string }) => {
       hostedThreadIds.add(args.threadId);
       return { providerThreadId: "provider-thread-1" };
@@ -939,6 +943,130 @@ describe("dispatchCommand", () => {
     expect(result).toEqual({ providerThreadId: "provider-thread-1" });
     expect(getProviderCliStatusForProvider).not.toHaveBeenCalled();
     expect(runtime.startThread).toHaveBeenCalledOnce();
+  });
+
+  it("prepares a Codex rewind through the requested retained turn", async () => {
+    const runtime = createRuntime();
+    const manager = new RuntimeManager({
+      createRuntime: () => runtime,
+      provisionWorkspace: async () => createWorkspace(),
+    });
+    const command: CommandOf<"thread.rewind.prepare"> = {
+      type: "thread.rewind.prepare",
+      environmentId: "env-1",
+      threadId: "thread-1",
+      workspaceContext: {
+        workspacePath: WORKSPACE_PATH,
+        workspaceProvisionType: "unmanaged",
+      },
+      projectId: "proj_1",
+      providerId: "codex",
+      leaseId: "lease-1",
+      sourceProviderThreadId: "provider-source-1",
+      retainThroughProviderCheckpoint: "turn-before-edit",
+      options: {
+        model: "gpt-5",
+        serviceTier: "default",
+        reasoningLevel: "medium",
+        workflowsEnabled: false,
+        permissionMode: "full",
+        permissionScope: "full",
+        approvalReviewer: null,
+        permissionEscalation: null,
+      },
+      instructions: "Be concise.",
+      dynamicTools: [],
+      injectedSkillSources: [],
+      instructionMode: "append",
+    };
+    const supportedCodexStatus: ProviderCliStatus = {
+      displayName: "Codex",
+      executableName: "codex",
+      executablePath: "/usr/local/bin/codex",
+      installed: true,
+      installSource: "npmGlobal",
+      currentVersion: "0.146.0",
+      latestVersion: null,
+      minimumSupportedVersion: "0.136.0",
+      npmPackageName: "@openai/codex",
+      npmGlobalPackageVersion: "0.146.0",
+      installAction: null,
+      needsUpdate: false,
+      versionUnsupported: false,
+    };
+
+    await expect(
+      dispatchCommand(command, {
+        dataDir: "/tmp/bb-data",
+        eventSink: {
+          emit: vi.fn(),
+          flush: vi.fn(async () => undefined),
+        },
+        fetchProjectAttachment: async () => {
+          throw new Error("Unexpected project attachment fetch");
+        },
+        getProviderCliStatusForProvider: async () => supportedCodexStatus,
+        runtimeManager: manager,
+        threadStorageRootPath: "/tmp/bb-thread-storage",
+      }),
+    ).resolves.toEqual({ providerThreadId: "provider-thread-rewind-1" });
+    expect(runtime.prepareThreadRewind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        leaseId: "lease-1",
+        sourceProviderThreadId: "provider-source-1",
+        retainThroughProviderCheckpoint: "turn-before-edit",
+        threadId: "thread-1",
+      }),
+    );
+    await expect(
+      dispatchCommand(
+        { ...command, leaseId: "lease-old-codex" },
+        {
+          dataDir: "/tmp/bb-data",
+          eventSink: {
+            emit: vi.fn(),
+            flush: vi.fn(async () => undefined),
+          },
+          fetchProjectAttachment: async () => {
+            throw new Error("Unexpected project attachment fetch");
+          },
+          getProviderCliStatusForProvider: async () => ({
+            ...supportedCodexStatus,
+            currentVersion: "0.140.0",
+            npmGlobalPackageVersion: "0.140.0",
+          }),
+          runtimeManager: manager,
+          threadStorageRootPath: "/tmp/bb-thread-storage",
+        },
+      ),
+    ).rejects.toMatchObject({ code: "provider_cli_unsupported_version" });
+    expect(runtime.prepareThreadRewind).toHaveBeenCalledOnce();
+
+    await expect(
+      dispatchCommand(
+        {
+          type: "thread.rewind.discard",
+          environmentId: "env-1",
+          threadId: "thread-1",
+          leaseId: "lease-1",
+        },
+        {
+          dataDir: "/tmp/bb-data",
+          eventSink: {
+            emit: vi.fn(),
+            flush: vi.fn(async () => undefined),
+          },
+          fetchProjectAttachment: async () => {
+            throw new Error("Unexpected project attachment fetch");
+          },
+          runtimeManager: manager,
+          threadStorageRootPath: "/tmp/bb-thread-storage",
+        },
+      ),
+    ).resolves.toEqual({});
+    expect(runtime.discardThreadRewind).toHaveBeenCalledWith({
+      leaseId: "lease-1",
+    });
   });
 
   it("invalidates the provider maintenance runtime after a successful Codex CLI update", async () => {

@@ -51,6 +51,7 @@ function resolveThreadLink(link: TimelineTitleLink): string | null {
 }
 
 const acceptedMessage = {
+  isGrouped: false,
   kind: "message" as const,
   status: "accepted" as const,
 };
@@ -61,8 +62,16 @@ const rawThreadIdTarget = makeThreadListEntry({
   title: "Raw thread ID mention target",
   titleFallback: "Raw thread ID mention target",
 });
-const pendingSteer = { kind: "steer" as const, status: "pending" as const };
-const acceptedSteer = { kind: "steer" as const, status: "accepted" as const };
+const pendingSteer = {
+  isGrouped: false,
+  kind: "steer" as const,
+  status: "pending" as const,
+};
+const acceptedSteer = {
+  isGrouped: false,
+  kind: "steer" as const,
+  status: "accepted" as const,
+};
 
 interface StoryMentionArgs {
   resource: PromptMentionResource;
