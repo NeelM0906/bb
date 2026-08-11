@@ -13,7 +13,7 @@
 
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { promises as fs, readFileSync, realpathSync } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import {
   dirname,
@@ -23,7 +23,6 @@ import {
   relative,
   resolve,
 } from "node:path";
-import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
@@ -33,6 +32,13 @@ import {
   type ReasoningLevel,
 } from "@bb/domain";
 import { buildEditDiff } from "../../shared/adapter-utils.js";
+import {
+  createBridgeIo,
+  createBridgeLineHandler,
+  isMainModule,
+  runBridgeRequest,
+  startBridgeStdio,
+} from "../../shared/bridge-harness.js";
 import {
   decodeToolCallResponsePayload,
   type BridgeJsonRpcResponse,
@@ -155,13 +161,6 @@ const THREAD_STOP_CANCEL_TIMEOUT_MS = 4_000;
 // stdout helpers (bridge → runtime)
 // ---------------------------------------------------------------------------
 
-interface JsonRpcResponse {
-  jsonrpc: "2.0";
-  id: string | number;
-  result?: unknown;
-  error?: { code: number; message: string };
-}
-
 interface BridgeNotification {
   jsonrpc: "2.0";
   method: string;
@@ -175,19 +174,9 @@ interface BridgeRuntimeRequest {
   params: Record<string, unknown>;
 }
 
-function send(
-  msg: JsonRpcResponse | BridgeNotification | BridgeRuntimeRequest,
-): void {
-  process.stdout.write(JSON.stringify(msg) + "\n");
-}
-
-function sendResult(id: string | number, result: unknown): void {
-  send({ jsonrpc: "2.0", id, result });
-}
-
-function sendError(id: string | number, code: number, message: string): void {
-  send({ jsonrpc: "2.0", id, error: { code, message } });
-}
+const { send, sendResult, sendError } = createBridgeIo<
+  BridgeNotification | BridgeRuntimeRequest
+>();
 
 function sendNotification(
   method: string,
@@ -390,10 +379,7 @@ const AUTH_REQUIRED_MODEL_LIST_ERROR_MESSAGE =
 function reasoningSupportFromCli(
   reasoningCli: AcpBridgeReasoningCli | undefined,
 ):
-  | Pick<
-      AvailableModel,
-      "supportedReasoningEfforts" | "defaultReasoningEffort"
-    >
+  | Pick<AvailableModel, "supportedReasoningEfforts" | "defaultReasoningEffort">
   | undefined {
   if (reasoningCli === undefined) {
     return undefined;
@@ -415,10 +401,7 @@ function reasoningSupportFromCli(
 function reasoningSupportFromNativeHint(
   nativeReasoning: AcpBridgeNativeReasoning | undefined,
 ):
-  | Pick<
-      AvailableModel,
-      "supportedReasoningEfforts" | "defaultReasoningEffort"
-    >
+  | Pick<AvailableModel, "supportedReasoningEfforts" | "defaultReasoningEffort">
   | undefined {
   if (nativeReasoning === undefined) {
     return undefined;
@@ -511,8 +494,7 @@ function nativeReasoningLevelToValue(args: {
   nativeReasoning: AcpBridgeNativeReasoning;
   reasoningLevel: ReasoningLevel;
 }): string | undefined {
-  const override =
-    args.nativeReasoning.levelValues?.[args.reasoningLevel];
+  const override = args.nativeReasoning.levelValues?.[args.reasoningLevel];
   if (override !== undefined) {
     return override;
   }
@@ -577,7 +559,10 @@ function applyPermissionCliArgs(
   permissionCli: AcpBridgePermissionCli | undefined,
   permissionMode: AcpSessionPolicy["permissionMode"],
 ): string[] {
-  const permissionArgs = permissionCliArgsForMode(permissionCli, permissionMode);
+  const permissionArgs = permissionCliArgsForMode(
+    permissionCli,
+    permissionMode,
+  );
   if (permissionArgs.length === 0) {
     return [...agentArgs];
   }
@@ -1979,19 +1964,7 @@ async function handleRequest(
   }
 }
 
-export function handleLine(line: string): void {
-  const trimmed = line.trim();
-  if (!trimmed) {
-    return;
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return;
-  }
-
+function handleParsedMessage(parsed: unknown): void {
   const response = decodeBridgeJsonRpcResponse(parsed);
   if (response && typeof response.id === "number") {
     const pending = pendingRuntimeRequests.get(response.id);
@@ -2006,14 +1979,10 @@ export function handleLine(line: string): void {
   if (!request) {
     return;
   }
-  void handleRequest(request).catch((error: unknown) => {
-    sendError(
-      request.id,
-      -32000,
-      error instanceof Error ? error.message : String(error),
-    );
-  });
+  runBridgeRequest({ request, handleRequest, sendError });
 }
+
+export const handleLine = createBridgeLineHandler({ handleParsedMessage });
 
 async function stopAllSessions(): Promise<void> {
   await Promise.all(
@@ -2033,33 +2002,18 @@ async function stopAllSessions(): Promise<void> {
   });
 }
 
-function isMainModule(): boolean {
-  const entryPoint = process.argv[1];
-  if (entryPoint === undefined) {
-    return false;
-  }
-  try {
-    return (
-      realpathSync(fileURLToPath(import.meta.url)) ===
-      realpathSync(resolve(entryPoint))
-    );
-  } catch {
-    return false;
-  }
-}
-
-if (isMainModule()) {
-  if (process.argv.includes("--mcp-stdio")) {
-    runAcpDynamicToolMcpServer();
-  } else {
-    const rl = createInterface({ input: process.stdin, terminal: false });
-    rl.on("line", handleLine);
-    rl.on("close", () => {
+if (isMainModule(import.meta.url) && process.argv.includes("--mcp-stdio")) {
+  runAcpDynamicToolMcpServer();
+} else {
+  startBridgeStdio({
+    importMetaUrl: import.meta.url,
+    handleLine,
+    onClose: () => {
       // Stdin close is a process shutdown boundary; cancel and reap the agent
       // subprocesses before the bridge exits so none outlive the daemon.
       void stopAllSessions().finally(() => {
         process.exit(0);
       });
-    });
-  }
+    },
+  });
 }

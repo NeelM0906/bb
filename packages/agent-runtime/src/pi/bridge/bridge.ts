@@ -4,14 +4,10 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  realpathSync,
   renameSync,
   rmSync,
 } from "node:fs";
 import { dirname, extname } from "node:path";
-import { resolve } from "node:path";
-import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   decodeBridgeJsonRpcResponse,
@@ -19,6 +15,12 @@ import {
   jsonRpcEnvelopeSchema,
   type BridgeToolCallRequest,
 } from "../../shared/bridge-tool-calls.js";
+import {
+  createBridgeIo,
+  createBridgeLineHandler,
+  runBridgeRequest,
+  startBridgeStdio,
+} from "../../shared/bridge-harness.js";
 import type { ThreadEventContextWindowUsage } from "@bb/domain";
 import {
   SessionManager,
@@ -250,13 +252,6 @@ function decodePiJsonRpcRequest(
   return { ...command.data, jsonrpc: "2.0", id: envelope.data.id };
 }
 
-interface JsonRpcResponse {
-  jsonrpc: "2.0";
-  id: string | number;
-  result?: unknown;
-  error?: { code: number; message: string };
-}
-
 interface SdkEventNotification {
   jsonrpc: "2.0";
   method: "sdk/message";
@@ -314,23 +309,9 @@ let toolCallRequestIdCounter = 0;
 // timeout forces disposal. Stop remains a best-effort success boundary.
 const THREAD_STOP_CLOSE_TIMEOUT_MS = 4_000;
 
-function send(
-  msg:
-    | JsonRpcResponse
-    | SdkEventNotification
-    | BridgeEventNotification
-    | BridgeToolCallRequest,
-): void {
-  writePiBridgeProtocol(JSON.stringify(msg) + "\n");
-}
-
-function sendResult(id: string | number, result: unknown): void {
-  send({ jsonrpc: "2.0", id, result });
-}
-
-function sendError(id: string | number, code: number, message: string): void {
-  send({ jsonrpc: "2.0", id, error: { code, message } });
-}
+const { send, sendResult, sendError } = createBridgeIo<
+  SdkEventNotification | BridgeEventNotification | BridgeToolCallRequest
+>({ write: writePiBridgeProtocol });
 
 function toContextWindowUsagePayload(
   contextUsage: ContextUsage | undefined,
@@ -1007,17 +988,7 @@ function extractInput(input: unknown): ExtractedInput {
   };
 }
 
-export function handleLine(line: string): void {
-  const trimmed = line.trim();
-  if (!trimmed) return;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return;
-  }
-
+function handleParsedMessage(parsed: unknown): void {
   const response = decodeBridgeJsonRpcResponse(parsed);
   if (response && findSessionByPendingToolCall(response.id)) {
     const threadSession = findSessionByPendingToolCall(response.id)!;
@@ -1036,30 +1007,16 @@ export function handleLine(line: string): void {
 
   const request = decodePiJsonRpcRequest(parsed);
   if (!request) return;
-  void handleRequest(request).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(request.id, -32000, message);
-  });
+  runBridgeRequest({ request, handleRequest, sendError });
 }
 
-function isMainModule(): boolean {
-  const entryPoint = process.argv[1];
-  if (entryPoint === undefined) return false;
-  try {
-    return (
-      realpathSync(fileURLToPath(import.meta.url)) ===
-      realpathSync(resolve(entryPoint))
-    );
-  } catch {
-    return false;
-  }
-}
+export const handleLine = createBridgeLineHandler({ handleParsedMessage });
 
-if (isMainModule()) {
-  takeOverPiBridgeStdout();
-  const rl = createInterface({ input: process.stdin, terminal: false });
-  rl.on("line", handleLine);
-  rl.on("close", () => {
+startBridgeStdio({
+  importMetaUrl: import.meta.url,
+  handleLine,
+  beforeStart: takeOverPiBridgeStdout,
+  onClose: () => {
     // Stdin close is a process shutdown boundary; wait briefly for per-thread
     // abort/dispose so SDK work does not continue while the bridge exits.
     void closeThreadSessionsGracefully(
@@ -1067,5 +1024,5 @@ if (isMainModule()) {
     ).finally(() => {
       process.exit(0);
     });
-  });
-}
+  },
+});

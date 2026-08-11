@@ -16,11 +16,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
-import { createInterface } from "node:readline";
 import { isDeepStrictEqual } from "node:util";
-import { fileURLToPath } from "node:url";
 import {
   DEFAULT_CLAUDE_CODE_MOCK_CLI_TRAFFIC_ENDPOINT,
   type PendingInteractionGrantedPermissionProfile,
@@ -40,6 +37,12 @@ import {
   decodeToolCallResponsePayload,
   type BridgeToolCallRequest,
 } from "../../shared/bridge-tool-calls.js";
+import {
+  createBridgeIo,
+  createBridgeLineHandler,
+  runBridgeRequest,
+  startBridgeStdio,
+} from "../../shared/bridge-harness.js";
 import { withoutBridgeRuntimeEnv } from "../../shared/bridge-runtime-env.js";
 import { shouldAutoDenyInteractiveRequest } from "../../shared/permission-policy.js";
 import { SdkSession, type SdkSessionOptions } from "./sdk-session.js";
@@ -118,13 +121,6 @@ const promptInputItemSchema = z.discriminatedUnion("type", [
 
 const CLAUDE_PROVIDER_SUBAGENT_TOOL_NAMES = new Set(["Agent", "Task"]);
 const CLAUDE_WORKFLOW_TOOL_NAME = "Workflow";
-
-interface JsonRpcResponse {
-  jsonrpc: "2.0";
-  id: string | number;
-  result?: unknown;
-  error?: { code: number; message: string; data?: unknown };
-}
 
 /** JSON-RPC notification carrying a raw SDK message. */
 interface SdkMessageNotification {
@@ -446,23 +442,9 @@ function shouldCacheClaudeSessionPermission(
   );
 }
 
-function send(
-  msg:
-    | JsonRpcResponse
-    | SdkMessageNotification
-    | BridgeEventNotification
-    | BridgeToolCallRequest,
-): void {
-  process.stdout.write(JSON.stringify(msg) + "\n");
-}
-
-function sendResult(id: string | number, result: unknown): void {
-  send({ jsonrpc: "2.0", id, result });
-}
-
-function sendError(id: string | number, code: number, message: string): void {
-  send({ jsonrpc: "2.0", id, error: { code, message } });
-}
+const { send, sendResult, sendError } = createBridgeIo<
+  SdkMessageNotification | BridgeEventNotification | BridgeToolCallRequest
+>();
 
 // stdout is the JSON-RPC channel; the runtime captures stderr into the
 // provider's diagnostics buffer.
@@ -2104,17 +2086,7 @@ function buildPromptText(input: unknown): string | undefined {
   return chunks.length > 0 ? chunks.join("\n") : undefined;
 }
 
-export function handleLine(line: string): void {
-  const trimmed = line.trim();
-  if (!trimmed) return;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return;
-  }
-
+function handleParsedMessage(parsed: unknown): void {
   const response = decodeBridgeJsonRpcResponse(parsed);
   if (response && findSessionByPendingToolCall(response.id)) {
     const threadSession = findSessionByPendingToolCall(response.id)!;
@@ -2196,15 +2168,17 @@ export function handleLine(line: string): void {
       return;
     }
     case "request": {
-      const request = decoded.request;
-      void handleRequest(request).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        sendError(request.id, -32000, message);
+      runBridgeRequest({
+        request: decoded.request,
+        handleRequest,
+        sendError,
       });
       return;
     }
   }
 }
+
+export const handleLine = createBridgeLineHandler({ handleParsedMessage });
 
 // Main entry point
 let shuttingDown = false;
@@ -2219,33 +2193,18 @@ function shutdownGracefully(message: string): void {
   });
 }
 
-function isMainModule(): boolean {
-  const entryPoint = process.argv[1];
-  if (entryPoint === undefined) return false;
-  try {
-    return (
-      realpathSync(fileURLToPath(import.meta.url)) ===
-      realpathSync(resolvePath(entryPoint))
-    );
-  } catch {
-    return false;
-  }
-}
-
-if (isMainModule()) {
-  process.once("SIGTERM", () => {
+startBridgeStdio({
+  importMetaUrl: import.meta.url,
+  handleLine,
+  onSigterm: () => {
     shutdownGracefully(
       "Bridge shutting down while awaiting permission approval",
     );
-  });
-
-  process.once("SIGINT", () => {
+  },
+  onSigint: () => {
     shutdownGracefully("Bridge interrupted while awaiting permission approval");
-  });
-
-  const rl = createInterface({ input: process.stdin, terminal: false });
-  rl.on("line", handleLine);
-  rl.on("close", () => {
+  },
+  onClose: () => {
     shutdownGracefully("Bridge closed while awaiting permission approval");
-  });
-}
+  },
+});
