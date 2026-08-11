@@ -34,9 +34,9 @@ import {
   isUserQuestionPendingInteractionPayload,
   isUserQuestionPendingInteractionResolution,
 } from "@bb/domain";
-import { decodeNormalizedProviderToolCallRequest } from "../shared/provider-tool-call-contract.js";
 import { resolveAdapterPermissionPolicy } from "../shared/permission-policy.js";
 import { resolveBridgeProcessArgs } from "../shared/bridge-path.js";
+import { createStandardAdapterMembers } from "../shared/standard-adapter-members.js";
 import { bashArgsSchema } from "../shared/tool-arg-schemas.js";
 import {
   buildEditDiff,
@@ -46,11 +46,7 @@ import {
   toOptionalString,
   withParentToolCallId,
 } from "../shared/adapter-utils.js";
-import {
-  buildAcceptedUserMessageEvent,
-  drainAcceptedUserMessages,
-  queueAcceptedUserMessage,
-} from "../shared/accepted-user-messages.js";
+import { drainAcceptedUserMessages } from "../shared/accepted-user-messages.js";
 import {
   createProviderTurnStateRegistry,
   finishOpenProviderTurn,
@@ -62,7 +58,6 @@ import {
 } from "../shared/provider-unhandled-event.js";
 import { UNSTAMPED_THREAD_ID } from "../shared/unstamped-thread-id.js";
 import { buildScopedProviderErrorEvents } from "../shared/provider-error-events.js";
-import { parseAvailableModelList } from "../shared/available-models.js";
 import {
   errorEnvelopeSchema,
   jsonRpcEnvelopeSchema,
@@ -70,16 +65,12 @@ import {
   threadIdentityEnvelopeSchema,
 } from "../shared/json-rpc-envelope.js";
 import type {
-  AdapterCommand,
   DecodedInteractiveRequest,
-  DecodedToolCallRequest,
-  ProviderCommandPlan,
   ProviderExecutionContext,
   ProviderTranslationContext,
   ProviderAdapter,
   ProviderAdapterFactoryOptions,
 } from "../provider-adapter.js";
-import { noPreparedProviderCommandDispatch } from "../provider-adapter.js";
 import {
   classifyClaudeExecutionSettingsChange,
   normalizeClaudeExecutionOptions,
@@ -87,7 +78,6 @@ import {
 import {
   type JsonRpcMessage,
   type ProviderInboundRequest,
-  type ProviderRuntimeEvent,
   ProviderResponseEncodeError,
 } from "../runtime-json-rpc.js";
 import type { AgentRuntimeSkillRoot } from "../types.js";
@@ -1043,420 +1033,373 @@ export function createClaudeCodeProviderAdapter(
   }
 
   return {
-    // -- Identity & launch -------------------------------------------------
-
-    id: providerInfo.id,
-    displayName: providerInfo.displayName,
-    capabilities,
-    approvalRequestPolicy: "provider",
-    classifyExecutionSettingsChange: classifyClaudeExecutionSettingsChange,
-    normalizeExecutionOptions: normalizeClaudeExecutionOptions,
-    process: {
-      command: opts?.bridgeNodeExecutablePath ?? "node",
-      args: resolveBridgeProcessArgs({
-        bridgeBundleDir: opts?.bridgeBundleDir,
-        bundleFileName: "bb-claude-code-bridge.mjs",
-        importMetaUrl: import.meta.url,
-        bridgeRelativePath: "bridge/bridge.js",
-      }),
-      ...(opts?.bridgeNodeEnv !== undefined ? { env: opts.bridgeNodeEnv } : {}),
-    },
-
-    // -- Unified command builder -------------------------------------------
-
-    buildCommandPlan(command: AdapterCommand): ProviderCommandPlan {
-      switch (command.type) {
-        case "initialize":
-          return {
-            kind: "request",
-            method: "initialize",
-            params: { clientInfo: { name: "bb", version: "1.0.0" } },
-          };
-        case "model/list":
-          return {
-            kind: "request",
-            method: "model/list",
-            params: {},
-          };
-        case "skills/configure":
-          return {
-            kind: "noop",
-            reason: "Claude Code skill roots are configured per session",
-          };
-        case "thread/start": {
-          finishOpenProviderTurn({
-            registry: turnState,
-            threadId: command.threadId,
-          });
-          const baseInstructions = command.options?.instructions ?? "";
-          if (command.options?.model) {
-            setClaudeModelContextWindowHint(
-              command.threadId,
-              command.options.model,
-            );
-          }
-          const config = buildClaudeCodeConfig(command.options?.envVars);
-          const dynamicTools = command.dynamicTools?.map((t) => ({
-            name: t.name,
-            description: t.description,
-            inputSchema: jsonValueSchema.parse(t.inputSchema),
-          }));
-          const permissionPolicy = resolveAdapterPermissionPolicy(
-            command.options,
-          );
-          const additionalWorkspaceWriteRootsParams =
-            permissionPolicy.permissionScope === "workspace"
-              ? buildAdditionalWorkspaceWriteRootsParams(
-                  additionalWorkspaceWriteRoots,
-                )
-              : undefined;
-          const skillConfig = buildClaudeSkillConfigParams(
-            command.options.skillRoots,
-          );
-          return {
-            kind: "request",
-            method: "thread/start",
-            params: {
-              baseInstructions,
-              threadId: command.threadId,
-              cwd: command.cwd,
-              instructionMode: command.instructionMode,
-              claudeCodeMockCliTraffic:
-                command.options.claudeCodeMockCliTraffic,
-              permissionMode: resolveClaudeSessionPermissionMode(
-                command.options,
-              ),
-              approvedPlanPermissionMode:
-                toClaudePermissionMode(permissionPolicy),
-              permissionScope: permissionPolicy.permissionScope,
-              permissionEscalation: permissionPolicy.permissionEscalation,
-              ...(additionalWorkspaceWriteRootsParams
-                ? additionalWorkspaceWriteRootsParams
-                : {}),
-              ...(skillConfig ? skillConfig : {}),
-              ...(config ? { config } : {}),
-              ...(command.options?.model
-                ? { model: command.options.model }
-                : {}),
-              ...(command.options?.reasoningLevel
-                ? { reasoningLevel: command.options.reasoningLevel }
-                : {}),
-              workflowsEnabled: command.options.workflowsEnabled,
-              memoryEnabled: command.options.memoryEnabled,
-              providerSubagentsEnabled:
-                command.options.providerSubagentsEnabled,
-              ...(dynamicTools && dynamicTools.length > 0
-                ? { dynamicTools }
-                : {}),
-              ...(command.disallowedTools && command.disallowedTools.length > 0
-                ? { disallowedTools: [...command.disallowedTools] }
-                : {}),
-            },
-          };
-        }
-        case "thread/resume": {
-          finishOpenProviderTurn({
-            registry: turnState,
-            threadId: command.threadId,
-          });
-          const baseInstructions = command.options?.instructions ?? "";
-          if (command.options?.model) {
-            setClaudeModelContextWindowHint(
-              command.threadId,
-              command.options.model,
-            );
-          }
-          const resumeConfig = buildClaudeCodeConfig(command.options?.envVars);
-          const dynamicTools = command.dynamicTools?.map((t) => ({
-            name: t.name,
-            description: t.description,
-            inputSchema: jsonValueSchema.parse(t.inputSchema),
-          }));
-          const permissionPolicy = resolveAdapterPermissionPolicy(
-            command.options,
-          );
-          const additionalWorkspaceWriteRootsParams =
-            permissionPolicy.permissionScope === "workspace"
-              ? buildAdditionalWorkspaceWriteRootsParams(
-                  additionalWorkspaceWriteRoots,
-                )
-              : undefined;
-          const skillConfig = buildClaudeSkillConfigParams(
-            command.options.skillRoots,
-          );
-          return {
-            kind: "request",
-            method: "thread/resume",
-            params: {
-              baseInstructions,
-              threadId: command.threadId,
-              cwd: command.cwd,
-              providerThreadId: command.providerThreadId,
-              instructionMode: command.instructionMode,
-              claudeCodeMockCliTraffic:
-                command.options.claudeCodeMockCliTraffic,
-              permissionMode: resolveClaudeSessionPermissionMode(
-                command.options,
-              ),
-              approvedPlanPermissionMode:
-                toClaudePermissionMode(permissionPolicy),
-              permissionScope: permissionPolicy.permissionScope,
-              permissionEscalation: permissionPolicy.permissionEscalation,
-              ...(additionalWorkspaceWriteRootsParams
-                ? additionalWorkspaceWriteRootsParams
-                : {}),
-              ...(skillConfig ? skillConfig : {}),
-              ...(resumeConfig ? { config: resumeConfig } : {}),
-              ...(command.options?.model
-                ? { model: command.options.model }
-                : {}),
-              ...(command.options?.reasoningLevel
-                ? { reasoningLevel: command.options.reasoningLevel }
-                : {}),
-              workflowsEnabled: command.options.workflowsEnabled,
-              memoryEnabled: command.options.memoryEnabled,
-              providerSubagentsEnabled:
-                command.options.providerSubagentsEnabled,
-              ...(dynamicTools && dynamicTools.length > 0
-                ? { dynamicTools }
-                : {}),
-              ...(command.disallowedTools && command.disallowedTools.length > 0
-                ? { disallowedTools: [...command.disallowedTools] }
-                : {}),
-            },
-          };
-        }
-        case "turn/start":
-          if (command.options?.model) {
-            setClaudeModelContextWindowHint(
-              command.threadId,
-              command.options.model,
-            );
-          }
-          return {
-            kind: "request",
-            method: "turn/start",
-            params: {
-              threadId: command.threadId,
-              providerThreadId: command.providerThreadId,
-              input: stripClaudePlanCommandInput(
-                command.input,
-                command.options,
-              ),
-              ...(command.inputGroups !== undefined
-                ? {
-                    inputGroups: command.inputGroups.map((inputGroup) =>
-                      stripClaudePlanCommandInput(inputGroup, command.options),
-                    ),
-                  }
-                : {}),
-              ...(command.options?.model
-                ? { model: command.options.model }
-                : {}),
-              ...(command.options?.reasoningLevel
-                ? { reasoningLevel: command.options.reasoningLevel }
-                : {}),
-              workflowsEnabled: command.options.workflowsEnabled,
-              memoryEnabled: command.options.memoryEnabled,
-              providerSubagentsEnabled:
-                command.options.providerSubagentsEnabled,
-              permissionEscalation: command.options.permissionEscalation,
-            },
-          };
-        case "turn/steer":
-          return {
-            kind: "request",
-            method: "turn/steer",
-            params: {
-              threadId: command.threadId,
-              providerThreadId: command.providerThreadId,
-              expectedTurnId: command.expectedTurnId,
-              input: stripClaudePlanCommandInput(
-                command.input,
-                command.options,
-              ),
-              ...(command.inputGroups !== undefined
-                ? {
-                    inputGroups: command.inputGroups.map((inputGroup) =>
-                      stripClaudePlanCommandInput(inputGroup, command.options),
-                    ),
-                  }
-                : {}),
-              ...(command.options?.model
-                ? { model: command.options.model }
-                : {}),
-              ...(command.options?.reasoningLevel
-                ? { reasoningLevel: command.options.reasoningLevel }
-                : {}),
-              workflowsEnabled: command.options.workflowsEnabled,
-              memoryEnabled: command.options.memoryEnabled,
-              providerSubagentsEnabled:
-                command.options.providerSubagentsEnabled,
-              permissionEscalation: command.options.permissionEscalation,
-            },
-          };
-        case "thread/fork": {
-          finishOpenProviderTurn({
-            registry: turnState,
-            threadId: command.threadId,
-          });
-          const baseInstructions = command.options?.instructions ?? "";
-          if (command.options?.model) {
-            setClaudeModelContextWindowHint(
-              command.threadId,
-              command.options.model,
-            );
-          }
-          const forkConfig = buildClaudeCodeConfig(command.options?.envVars);
-          const dynamicTools = command.dynamicTools?.map((t) => ({
-            name: t.name,
-            description: t.description,
-            inputSchema: jsonValueSchema.parse(t.inputSchema),
-          }));
-          const permissionPolicy = resolveAdapterPermissionPolicy(
-            command.options,
-          );
-          const additionalWorkspaceWriteRootsParams =
-            permissionPolicy.permissionScope === "workspace"
-              ? buildAdditionalWorkspaceWriteRootsParams(
-                  additionalWorkspaceWriteRoots,
-                )
-              : undefined;
-          const skillConfig = buildClaudeSkillConfigParams(
-            command.options.skillRoots,
-          );
-          return {
-            kind: "request",
-            method: "thread/fork",
-            params: {
-              baseInstructions,
-              threadId: command.threadId,
-              cwd: command.cwd,
-              sourceProviderThreadId: command.sourceProviderThreadId,
-              ...(command.sourceProviderCheckpointId !== undefined
-                ? {
-                    sourceProviderCheckpointId:
-                      command.sourceProviderCheckpointId,
-                  }
-                : {}),
-              instructionMode: command.instructionMode,
-              claudeCodeMockCliTraffic:
-                command.options.claudeCodeMockCliTraffic,
-              permissionMode: resolveClaudeSessionPermissionMode(
-                command.options,
-              ),
-              approvedPlanPermissionMode:
-                toClaudePermissionMode(permissionPolicy),
-              permissionScope: permissionPolicy.permissionScope,
-              permissionEscalation: permissionPolicy.permissionEscalation,
-              ...(additionalWorkspaceWriteRootsParams
-                ? additionalWorkspaceWriteRootsParams
-                : {}),
-              ...(skillConfig ? skillConfig : {}),
-              ...(forkConfig ? { config: forkConfig } : {}),
-              ...(command.options?.model
-                ? { model: command.options.model }
-                : {}),
-              ...(command.options?.reasoningLevel
-                ? { reasoningLevel: command.options.reasoningLevel }
-                : {}),
-              workflowsEnabled: command.options.workflowsEnabled,
-              memoryEnabled: command.options.memoryEnabled,
-              providerSubagentsEnabled:
-                command.options.providerSubagentsEnabled,
-              ...(dynamicTools && dynamicTools.length > 0
-                ? { dynamicTools }
-                : {}),
-              ...(command.disallowedTools && command.disallowedTools.length > 0
-                ? { disallowedTools: [...command.disallowedTools] }
-                : {}),
-            },
-          };
-        }
-        case "thread/stop":
-          finishOpenProviderTurn({
-            registry: turnState,
-            threadId: command.threadId,
-          });
-          return {
-            kind: "request",
-            method: "thread/stop",
-            params: {
-              threadId: command.threadId,
-            },
-          };
-        case "thread/discard":
-          return {
-            kind: "request",
-            method: "thread/stop",
-            params: { threadId: command.threadId },
-          };
-        case "thread/goal/clear":
-          return { kind: "noop", reason: "goals unsupported" };
-        case "thread/name/set":
-          return { kind: "noop", reason: "rename unsupported" };
-        case "thread/archive":
-        case "thread/unarchive":
-          return { kind: "noop", reason: "archive unsupported" };
-      }
-    },
-
-    // -- Unified event translator ------------------------------------------
-
-    translateEvent(
-      event: ProviderRuntimeEvent,
-      context?: ProviderTranslationContext,
-    ): ThreadEvent[] {
-      return translateClaudeEvent(event, context);
-    },
-
-    prepareTurnStart: noPreparedProviderCommandDispatch,
-
-    translateAcceptedCommand({ command }) {
-      if (
-        command.type === "thread/start" ||
-        command.type === "thread/resume" ||
-        command.type === "thread/fork" ||
-        command.type === "thread/stop"
-      ) {
-        const state = turnState.getOrCreate({ threadId: command.threadId });
-        state.pendingAcceptedUserMessages = [];
-        // Starting, resuming, forking, or stopping a thread replaces/kills the
-        // CLI session, and background tasks die with it — settle them as
-        // interrupted so no workflow row dangles as running.
+    ...createStandardAdapterMembers({
+      id: providerInfo.id,
+      displayName: providerInfo.displayName,
+      capabilities,
+      approvalRequestPolicy: "provider",
+      classifyExecutionSettingsChange: classifyClaudeExecutionSettingsChange,
+      normalizeExecutionOptions: normalizeClaudeExecutionOptions,
+      process: {
+        command: opts?.bridgeNodeExecutablePath ?? "node",
+        args: resolveBridgeProcessArgs({
+          bridgeBundleDir: opts?.bridgeBundleDir,
+          bundleFileName: "bb-claude-code-bridge.mjs",
+          importMetaUrl: import.meta.url,
+          bridgeRelativePath: "bridge/bridge.js",
+        }),
+        ...(opts?.bridgeNodeEnv !== undefined
+          ? { env: opts.bridgeNodeEnv }
+          : {}),
+      },
+      initializeParams: { clientInfo: { name: "bb", version: "1.0.0" } },
+      codec: "normalized",
+      turnState,
+      translateEvent: translateClaudeEvent,
+      onSessionReplace: ({ command, state }) => {
+        // Replacing the CLI session kills background tasks with it.
         return buildInterruptedClaudeTaskEvents({
           tasks: state.tasksById,
           threadId: command.threadId,
         });
-      }
-
-      if (command.type === "turn/start") {
-        const state = turnState.getOrCreate({ threadId: command.threadId });
-        if (state.currentTurnId !== undefined) {
-          return buildAcceptedUserMessageEvent({
-            clientRequestId: command.clientRequestId,
-            providerThreadId: command.providerThreadId,
-            threadId: command.threadId,
-            turnId: state.currentTurnId,
-          });
+      },
+      buildProviderCommandPlan(command) {
+        switch (command.type) {
+          case "model/list":
+            return {
+              kind: "request",
+              method: "model/list",
+              params: {},
+            };
+          case "skills/configure":
+            return {
+              kind: "noop",
+              reason: "Claude Code skill roots are configured per session",
+            };
+          case "thread/start": {
+            finishOpenProviderTurn({
+              registry: turnState,
+              threadId: command.threadId,
+            });
+            const baseInstructions = command.options?.instructions ?? "";
+            if (command.options?.model) {
+              setClaudeModelContextWindowHint(
+                command.threadId,
+                command.options.model,
+              );
+            }
+            const config = buildClaudeCodeConfig(command.options?.envVars);
+            const dynamicTools = command.dynamicTools?.map((t) => ({
+              name: t.name,
+              description: t.description,
+              inputSchema: jsonValueSchema.parse(t.inputSchema),
+            }));
+            const permissionPolicy = resolveAdapterPermissionPolicy(
+              command.options,
+            );
+            const additionalWorkspaceWriteRootsParams =
+              permissionPolicy.permissionScope === "workspace"
+                ? buildAdditionalWorkspaceWriteRootsParams(
+                    additionalWorkspaceWriteRoots,
+                  )
+                : undefined;
+            const skillConfig = buildClaudeSkillConfigParams(
+              command.options.skillRoots,
+            );
+            return {
+              kind: "request",
+              method: "thread/start",
+              params: {
+                baseInstructions,
+                threadId: command.threadId,
+                cwd: command.cwd,
+                instructionMode: command.instructionMode,
+                claudeCodeMockCliTraffic:
+                  command.options.claudeCodeMockCliTraffic,
+                permissionMode: resolveClaudeSessionPermissionMode(
+                  command.options,
+                ),
+                approvedPlanPermissionMode:
+                  toClaudePermissionMode(permissionPolicy),
+                permissionScope: permissionPolicy.permissionScope,
+                permissionEscalation: permissionPolicy.permissionEscalation,
+                ...(additionalWorkspaceWriteRootsParams
+                  ? additionalWorkspaceWriteRootsParams
+                  : {}),
+                ...(skillConfig ? skillConfig : {}),
+                ...(config ? { config } : {}),
+                ...(command.options?.model
+                  ? { model: command.options.model }
+                  : {}),
+                ...(command.options?.reasoningLevel
+                  ? { reasoningLevel: command.options.reasoningLevel }
+                  : {}),
+                workflowsEnabled: command.options.workflowsEnabled,
+                memoryEnabled: command.options.memoryEnabled,
+                providerSubagentsEnabled:
+                  command.options.providerSubagentsEnabled,
+                ...(dynamicTools && dynamicTools.length > 0
+                  ? { dynamicTools }
+                  : {}),
+                ...(command.disallowedTools &&
+                command.disallowedTools.length > 0
+                  ? { disallowedTools: [...command.disallowedTools] }
+                  : {}),
+              },
+            };
+          }
+          case "thread/resume": {
+            finishOpenProviderTurn({
+              registry: turnState,
+              threadId: command.threadId,
+            });
+            const baseInstructions = command.options?.instructions ?? "";
+            if (command.options?.model) {
+              setClaudeModelContextWindowHint(
+                command.threadId,
+                command.options.model,
+              );
+            }
+            const resumeConfig = buildClaudeCodeConfig(
+              command.options?.envVars,
+            );
+            const dynamicTools = command.dynamicTools?.map((t) => ({
+              name: t.name,
+              description: t.description,
+              inputSchema: jsonValueSchema.parse(t.inputSchema),
+            }));
+            const permissionPolicy = resolveAdapterPermissionPolicy(
+              command.options,
+            );
+            const additionalWorkspaceWriteRootsParams =
+              permissionPolicy.permissionScope === "workspace"
+                ? buildAdditionalWorkspaceWriteRootsParams(
+                    additionalWorkspaceWriteRoots,
+                  )
+                : undefined;
+            const skillConfig = buildClaudeSkillConfigParams(
+              command.options.skillRoots,
+            );
+            return {
+              kind: "request",
+              method: "thread/resume",
+              params: {
+                baseInstructions,
+                threadId: command.threadId,
+                cwd: command.cwd,
+                providerThreadId: command.providerThreadId,
+                instructionMode: command.instructionMode,
+                claudeCodeMockCliTraffic:
+                  command.options.claudeCodeMockCliTraffic,
+                permissionMode: resolveClaudeSessionPermissionMode(
+                  command.options,
+                ),
+                approvedPlanPermissionMode:
+                  toClaudePermissionMode(permissionPolicy),
+                permissionScope: permissionPolicy.permissionScope,
+                permissionEscalation: permissionPolicy.permissionEscalation,
+                ...(additionalWorkspaceWriteRootsParams
+                  ? additionalWorkspaceWriteRootsParams
+                  : {}),
+                ...(skillConfig ? skillConfig : {}),
+                ...(resumeConfig ? { config: resumeConfig } : {}),
+                ...(command.options?.model
+                  ? { model: command.options.model }
+                  : {}),
+                ...(command.options?.reasoningLevel
+                  ? { reasoningLevel: command.options.reasoningLevel }
+                  : {}),
+                workflowsEnabled: command.options.workflowsEnabled,
+                memoryEnabled: command.options.memoryEnabled,
+                providerSubagentsEnabled:
+                  command.options.providerSubagentsEnabled,
+                ...(dynamicTools && dynamicTools.length > 0
+                  ? { dynamicTools }
+                  : {}),
+                ...(command.disallowedTools &&
+                command.disallowedTools.length > 0
+                  ? { disallowedTools: [...command.disallowedTools] }
+                  : {}),
+              },
+            };
+          }
+          case "turn/start":
+            if (command.options?.model) {
+              setClaudeModelContextWindowHint(
+                command.threadId,
+                command.options.model,
+              );
+            }
+            return {
+              kind: "request",
+              method: "turn/start",
+              params: {
+                threadId: command.threadId,
+                providerThreadId: command.providerThreadId,
+                input: stripClaudePlanCommandInput(
+                  command.input,
+                  command.options,
+                ),
+                ...(command.inputGroups !== undefined
+                  ? {
+                      inputGroups: command.inputGroups.map((inputGroup) =>
+                        stripClaudePlanCommandInput(
+                          inputGroup,
+                          command.options,
+                        ),
+                      ),
+                    }
+                  : {}),
+                ...(command.options?.model
+                  ? { model: command.options.model }
+                  : {}),
+                ...(command.options?.reasoningLevel
+                  ? { reasoningLevel: command.options.reasoningLevel }
+                  : {}),
+                workflowsEnabled: command.options.workflowsEnabled,
+                memoryEnabled: command.options.memoryEnabled,
+                providerSubagentsEnabled:
+                  command.options.providerSubagentsEnabled,
+                permissionEscalation: command.options.permissionEscalation,
+              },
+            };
+          case "turn/steer":
+            return {
+              kind: "request",
+              method: "turn/steer",
+              params: {
+                threadId: command.threadId,
+                providerThreadId: command.providerThreadId,
+                expectedTurnId: command.expectedTurnId,
+                input: stripClaudePlanCommandInput(
+                  command.input,
+                  command.options,
+                ),
+                ...(command.inputGroups !== undefined
+                  ? {
+                      inputGroups: command.inputGroups.map((inputGroup) =>
+                        stripClaudePlanCommandInput(
+                          inputGroup,
+                          command.options,
+                        ),
+                      ),
+                    }
+                  : {}),
+                ...(command.options?.model
+                  ? { model: command.options.model }
+                  : {}),
+                ...(command.options?.reasoningLevel
+                  ? { reasoningLevel: command.options.reasoningLevel }
+                  : {}),
+                workflowsEnabled: command.options.workflowsEnabled,
+                memoryEnabled: command.options.memoryEnabled,
+                providerSubagentsEnabled:
+                  command.options.providerSubagentsEnabled,
+                permissionEscalation: command.options.permissionEscalation,
+              },
+            };
+          case "thread/fork": {
+            finishOpenProviderTurn({
+              registry: turnState,
+              threadId: command.threadId,
+            });
+            const baseInstructions = command.options?.instructions ?? "";
+            if (command.options?.model) {
+              setClaudeModelContextWindowHint(
+                command.threadId,
+                command.options.model,
+              );
+            }
+            const forkConfig = buildClaudeCodeConfig(command.options?.envVars);
+            const dynamicTools = command.dynamicTools?.map((t) => ({
+              name: t.name,
+              description: t.description,
+              inputSchema: jsonValueSchema.parse(t.inputSchema),
+            }));
+            const permissionPolicy = resolveAdapterPermissionPolicy(
+              command.options,
+            );
+            const additionalWorkspaceWriteRootsParams =
+              permissionPolicy.permissionScope === "workspace"
+                ? buildAdditionalWorkspaceWriteRootsParams(
+                    additionalWorkspaceWriteRoots,
+                  )
+                : undefined;
+            const skillConfig = buildClaudeSkillConfigParams(
+              command.options.skillRoots,
+            );
+            return {
+              kind: "request",
+              method: "thread/fork",
+              params: {
+                baseInstructions,
+                threadId: command.threadId,
+                cwd: command.cwd,
+                sourceProviderThreadId: command.sourceProviderThreadId,
+                ...(command.sourceProviderCheckpointId !== undefined
+                  ? {
+                      sourceProviderCheckpointId:
+                        command.sourceProviderCheckpointId,
+                    }
+                  : {}),
+                instructionMode: command.instructionMode,
+                claudeCodeMockCliTraffic:
+                  command.options.claudeCodeMockCliTraffic,
+                permissionMode: resolveClaudeSessionPermissionMode(
+                  command.options,
+                ),
+                approvedPlanPermissionMode:
+                  toClaudePermissionMode(permissionPolicy),
+                permissionScope: permissionPolicy.permissionScope,
+                permissionEscalation: permissionPolicy.permissionEscalation,
+                ...(additionalWorkspaceWriteRootsParams
+                  ? additionalWorkspaceWriteRootsParams
+                  : {}),
+                ...(skillConfig ? skillConfig : {}),
+                ...(forkConfig ? { config: forkConfig } : {}),
+                ...(command.options?.model
+                  ? { model: command.options.model }
+                  : {}),
+                ...(command.options?.reasoningLevel
+                  ? { reasoningLevel: command.options.reasoningLevel }
+                  : {}),
+                workflowsEnabled: command.options.workflowsEnabled,
+                memoryEnabled: command.options.memoryEnabled,
+                providerSubagentsEnabled:
+                  command.options.providerSubagentsEnabled,
+                ...(dynamicTools && dynamicTools.length > 0
+                  ? { dynamicTools }
+                  : {}),
+                ...(command.disallowedTools &&
+                command.disallowedTools.length > 0
+                  ? { disallowedTools: [...command.disallowedTools] }
+                  : {}),
+              },
+            };
+          }
+          case "thread/stop":
+            finishOpenProviderTurn({
+              registry: turnState,
+              threadId: command.threadId,
+            });
+            return {
+              kind: "request",
+              method: "thread/stop",
+              params: {
+                threadId: command.threadId,
+              },
+            };
+          case "thread/discard":
+            return {
+              kind: "request",
+              method: "thread/stop",
+              params: { threadId: command.threadId },
+            };
+          default:
+            return null;
         }
-        queueAcceptedUserMessage({
-          clientRequestId: command.clientRequestId,
-          state,
-        });
-      }
-
-      if (command.type === "turn/steer") {
-        return buildAcceptedUserMessageEvent({
-          clientRequestId: command.clientRequestId,
-          providerThreadId: command.providerThreadId,
-          threadId: command.threadId,
-          turnId: command.expectedTurnId,
-        });
-      }
-
-      return [];
-    },
+      },
+    }),
 
     buildThreadDetachedEvents({ threadId }) {
       const state = turnState.get({ threadId });
@@ -1467,25 +1410,6 @@ export function createClaudeCodeProviderAdapter(
         tasks: state.tasksById,
         threadId,
       });
-    },
-
-    parseModelListResult(result: unknown) {
-      return parseAvailableModelList(result);
-    },
-
-    // -- Tool call codec ---------------------------------------------------
-
-    decodeToolCallRequest(
-      request: ProviderInboundRequest,
-    ): DecodedToolCallRequest | null {
-      if (typeof request.id !== "string" && typeof request.id !== "number") {
-        return null;
-      }
-      return decodeNormalizedProviderToolCallRequest(
-        request.id,
-        request.method,
-        request.params,
-      );
     },
 
     decodeInteractiveRequest(

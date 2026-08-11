@@ -32,16 +32,11 @@ import { z } from "zod";
 import type {
   AdapterCommand,
   DecodedInteractiveRequest,
-  DecodedToolCallRequest,
   ProviderAdapter,
-  ProviderCommandPlan,
   ProviderExecutionContext,
   ProviderTranslationContext,
 } from "../provider-adapter.js";
-import {
-  flattenPromptInputGroups,
-  noPreparedProviderCommandDispatch,
-} from "../provider-adapter.js";
+import { flattenPromptInputGroups } from "../provider-adapter.js";
 import { classifySessionExecutionSettingsChange } from "../execution-options.js";
 import { ProviderResponseEncodeError } from "../runtime-json-rpc.js";
 import type {
@@ -49,9 +44,7 @@ import type {
   ProviderRuntimeEvent,
 } from "../runtime-json-rpc.js";
 import {
-  buildAcceptedUserMessageEvent,
   drainAcceptedUserMessages,
-  queueAcceptedUserMessage,
   type AcceptedUserMessageState,
 } from "../shared/accepted-user-messages.js";
 import {
@@ -60,7 +53,6 @@ import {
   toOptionalString,
   withParentToolCallId,
 } from "../shared/adapter-utils.js";
-import { parseAvailableModelList } from "../shared/available-models.js";
 import { resolveBridgeProcessArgs } from "../shared/bridge-path.js";
 import {
   errorEnvelopeSchema,
@@ -68,7 +60,7 @@ import {
   threadIdentityEnvelopeSchema,
 } from "../shared/json-rpc-envelope.js";
 import { buildScopedProviderErrorEvents } from "../shared/provider-error-events.js";
-import { decodeNormalizedProviderToolCallRequest } from "../shared/provider-tool-call-contract.js";
+import { createStandardAdapterMembers } from "../shared/standard-adapter-members.js";
 import { buildUnhandledProviderEvents } from "../shared/provider-unhandled-event.js";
 import {
   getOrCreateScopedItemId,
@@ -1422,212 +1414,128 @@ export function createAcpProviderAdapter(
   }
 
   return {
-    // -- Identity & launch -------------------------------------------------
-
-    id: providerInfo.id,
-    displayName: providerInfo.displayName,
-    capabilities: providerInfo.capabilities,
-    approvalRequestPolicy: "runtime",
-    classifyExecutionSettingsChange: classifySessionExecutionSettingsChange,
-    process: {
-      command: opts.bridgeNodeExecutablePath ?? "node",
-      args: resolveBridgeProcessArgs({
-        bridgeBundleDir: opts.bridgeBundleDir,
-        bundleFileName: "bb-acp-bridge.mjs",
-        importMetaUrl: import.meta.url,
-        bridgeRelativePath: "bridge/bridge.js",
-      }),
-      ...(opts.bridgeNodeEnv !== undefined ? { env: opts.bridgeNodeEnv } : {}),
-    },
-
-    // -- Unified command builder -------------------------------------------
-
-    buildCommandPlan(command: AdapterCommand): ProviderCommandPlan {
-      switch (command.type) {
-        case "initialize":
-          return {
-            kind: "request",
-            method: "initialize",
-            params: { clientInfo: { name: "bb", version: "1.0.0" } },
-          };
-        case "model/list":
-          const listCommand = buildModelListCommand();
-          const agent = buildModelDiscoveryAgentCommand();
-          return {
-            kind: "request",
-            method: "model/list",
-            params: {
-              ...(listCommand !== undefined ? { listCommand } : {}),
-              ...(agent !== undefined ? { agent } : {}),
-              primaryModels: [...(profile.modelCli?.primaryModels ?? [])],
-              ...buildReasoningCliParam(),
-              ...buildNativeReasoningParam(),
-            },
-          };
-        case "skills/configure":
-          return {
-            kind: "noop",
-            reason: "ACP skills are delivered through session instructions",
-          };
-        case "thread/start": {
-          finishOpenProviderTurn({
-            registry: turnState,
-            threadId: command.threadId,
-          });
-          return {
-            kind: "request",
-            method: "thread/start",
-            params: buildSessionParams(command),
-          };
-        }
-        case "thread/resume": {
-          finishOpenProviderTurn({
-            registry: turnState,
-            threadId: command.threadId,
-          });
-          return {
-            kind: "request",
-            method: "thread/resume",
-            params: {
-              ...buildSessionParams(command),
-              providerThreadId: command.providerThreadId,
-            },
-          };
-        }
-        case "turn/start": {
-          const input = flattenPromptInputGroups(
-            command.input,
-            command.inputGroups,
-          );
-          if (
-            profile.providerId === "acp-opencode" &&
-            isStandaloneBuiltinCompactCommand(input)
-          ) {
+    ...createStandardAdapterMembers({
+      id: providerInfo.id,
+      displayName: providerInfo.displayName,
+      capabilities: providerInfo.capabilities,
+      approvalRequestPolicy: "runtime",
+      classifyExecutionSettingsChange: classifySessionExecutionSettingsChange,
+      process: {
+        command: opts.bridgeNodeExecutablePath ?? "node",
+        args: resolveBridgeProcessArgs({
+          bridgeBundleDir: opts.bridgeBundleDir,
+          bundleFileName: "bb-acp-bridge.mjs",
+          importMetaUrl: import.meta.url,
+          bridgeRelativePath: "bridge/bridge.js",
+        }),
+        ...(opts.bridgeNodeEnv !== undefined
+          ? { env: opts.bridgeNodeEnv }
+          : {}),
+      },
+      initializeParams: { clientInfo: { name: "bb", version: "1.0.0" } },
+      codec: "normalized",
+      turnState,
+      translateEvent: translateAcpEvent,
+      buildProviderCommandPlan(command) {
+        switch (command.type) {
+          case "model/list":
+            const listCommand = buildModelListCommand();
+            const agent = buildModelDiscoveryAgentCommand();
             return {
               kind: "request",
-              method: "thread/compact",
-              params: { threadId: command.providerThreadId },
+              method: "model/list",
+              params: {
+                ...(listCommand !== undefined ? { listCommand } : {}),
+                ...(agent !== undefined ? { agent } : {}),
+                primaryModels: [...(profile.modelCli?.primaryModels ?? [])],
+                ...buildReasoningCliParam(),
+                ...buildNativeReasoningParam(),
+              },
+            };
+          case "skills/configure":
+            return {
+              kind: "noop",
+              reason: "ACP skills are delivered through session instructions",
+            };
+          case "thread/start": {
+            finishOpenProviderTurn({
+              registry: turnState,
+              threadId: command.threadId,
+            });
+            return {
+              kind: "request",
+              method: "thread/start",
+              params: buildSessionParams(command),
             };
           }
-          return {
-            kind: "request",
-            method: "turn/start",
-            params: {
-              threadId: command.providerThreadId,
-              input,
-            },
-          };
+          case "thread/resume": {
+            finishOpenProviderTurn({
+              registry: turnState,
+              threadId: command.threadId,
+            });
+            return {
+              kind: "request",
+              method: "thread/resume",
+              params: {
+                ...buildSessionParams(command),
+                providerThreadId: command.providerThreadId,
+              },
+            };
+          }
+          case "turn/start": {
+            const input = flattenPromptInputGroups(
+              command.input,
+              command.inputGroups,
+            );
+            if (
+              profile.providerId === "acp-opencode" &&
+              isStandaloneBuiltinCompactCommand(input)
+            ) {
+              return {
+                kind: "request",
+                method: "thread/compact",
+                params: { threadId: command.providerThreadId },
+              };
+            }
+            return {
+              kind: "request",
+              method: "turn/start",
+              params: {
+                threadId: command.providerThreadId,
+                input,
+              },
+            };
+          }
+          case "turn/steer":
+            return {
+              kind: "request",
+              method: "turn/steer",
+              params: {
+                threadId: command.providerThreadId,
+                expectedTurnId: command.expectedTurnId,
+                input: flattenPromptInputGroups(
+                  command.input,
+                  command.inputGroups,
+                ),
+              },
+            };
+          case "thread/stop":
+            finishOpenProviderTurn({
+              registry: turnState,
+              threadId: command.threadId,
+            });
+            return {
+              kind: "request",
+              method: "thread/stop",
+              params: { threadId: command.providerThreadId },
+            };
+          case "thread/discard":
+            return { kind: "noop", reason: "discard unsupported" };
+          default:
+            return null;
         }
-        case "turn/steer":
-          return {
-            kind: "request",
-            method: "turn/steer",
-            params: {
-              threadId: command.providerThreadId,
-              expectedTurnId: command.expectedTurnId,
-              input: flattenPromptInputGroups(
-                command.input,
-                command.inputGroups,
-              ),
-            },
-          };
-        case "thread/stop":
-          finishOpenProviderTurn({
-            registry: turnState,
-            threadId: command.threadId,
-          });
-          return {
-            kind: "request",
-            method: "thread/stop",
-            params: { threadId: command.providerThreadId },
-          };
-        case "thread/discard":
-          return { kind: "noop", reason: "discard unsupported" };
-        case "thread/goal/clear":
-          return { kind: "noop", reason: "goals unsupported" };
-        case "thread/name/set":
-          return { kind: "noop", reason: "rename unsupported" };
-        case "thread/archive":
-        case "thread/unarchive":
-          return { kind: "noop", reason: "archive unsupported" };
-        case "thread/fork":
-          // Unreachable: ACP declares supportsFork=false, so the server blocks
-          // forks before they reach the adapter. ACP has no session-fork
-          // primitive, so fail loudly if that guard is ever bypassed.
-          throw new Error(
-            `Provider "${profile.providerId}" does not support forking threads.`,
-          );
-      }
-    },
-
-    // -- Unified event translator ------------------------------------------
-
-    translateEvent(
-      event: ProviderRuntimeEvent,
-      context?: ProviderTranslationContext,
-    ): ThreadEvent[] {
-      return translateAcpEvent(event, context);
-    },
-
-    prepareTurnStart: noPreparedProviderCommandDispatch,
-
-    translateAcceptedCommand({ command }) {
-      if (
-        command.type === "thread/start" ||
-        command.type === "thread/resume" ||
-        command.type === "thread/stop"
-      ) {
-        const state = turnState.getOrCreate({ threadId: command.threadId });
-        state.pendingAcceptedUserMessages = [];
-        return [];
-      }
-
-      if (command.type === "turn/start") {
-        const state = turnState.getOrCreate({ threadId: command.threadId });
-        if (state.currentTurnId !== undefined) {
-          return buildAcceptedUserMessageEvent({
-            clientRequestId: command.clientRequestId,
-            providerThreadId: command.providerThreadId,
-            threadId: command.threadId,
-            turnId: state.currentTurnId,
-          });
-        }
-        queueAcceptedUserMessage({
-          clientRequestId: command.clientRequestId,
-          state,
-        });
-      }
-
-      if (command.type === "turn/steer") {
-        return buildAcceptedUserMessageEvent({
-          clientRequestId: command.clientRequestId,
-          providerThreadId: command.providerThreadId,
-          threadId: command.threadId,
-          turnId: command.expectedTurnId,
-        });
-      }
-
-      return [];
-    },
-
-    parseModelListResult(result: unknown) {
-      return parseAvailableModelList(result);
-    },
-
-    // -- Tool call & interactive codecs -------------------------------------
-
-    decodeToolCallRequest(
-      request: ProviderInboundRequest,
-    ): DecodedToolCallRequest | null {
-      if (typeof request.id !== "string" && typeof request.id !== "number") {
-        return null;
-      }
-      return decodeNormalizedProviderToolCallRequest(
-        request.id,
-        request.method,
-        request.params,
-      );
-    },
+      },
+    }),
 
     decodeInteractiveRequest(
       request: ProviderInboundRequest,

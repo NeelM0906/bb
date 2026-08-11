@@ -26,8 +26,8 @@ import {
   toPositiveNumber,
   turnScope,
 } from "@bb/domain";
-import { decodeNormalizedProviderToolCallRequest } from "../shared/provider-tool-call-contract.js";
 import { resolveBridgeProcessArgs } from "../shared/bridge-path.js";
+import { createStandardAdapterMembers } from "../shared/standard-adapter-members.js";
 import { classifySessionExecutionSettingsChange } from "../execution-options.js";
 import { bashArgsSchema, textBlockSchema } from "../shared/tool-arg-schemas.js";
 import {
@@ -42,9 +42,7 @@ import {
   withParentToolCallId,
 } from "../shared/adapter-utils.js";
 import {
-  buildAcceptedUserMessageEvent,
   drainAcceptedUserMessages,
-  queueAcceptedUserMessage,
   type AcceptedUserMessageState,
 } from "../shared/accepted-user-messages.js";
 import {
@@ -61,7 +59,6 @@ import {
 } from "../shared/provider-unhandled-event.js";
 import { UNSTAMPED_THREAD_ID } from "../shared/unstamped-thread-id.js";
 import { buildScopedProviderErrorEvents } from "../shared/provider-error-events.js";
-import { parseAvailableModelList } from "../shared/available-models.js";
 import {
   errorEnvelopeSchema,
   jsonRpcEnvelopeSchema,
@@ -71,21 +68,12 @@ import {
 } from "../shared/json-rpc-envelope.js";
 import type {
   AdapterCommand,
-  DecodedToolCallRequest,
   ProviderAdapter,
-  ProviderCommandPlan,
   ProviderExecutionContext,
   ProviderTranslationContext,
 } from "../provider-adapter.js";
-import {
-  flattenPromptInputGroups,
-  noPreparedProviderCommandDispatch,
-} from "../provider-adapter.js";
-import type {
-  JsonRpcMessage,
-  ProviderInboundRequest,
-  ProviderRuntimeEvent,
-} from "../runtime-json-rpc.js";
+import { flattenPromptInputGroups } from "../provider-adapter.js";
+import type { JsonRpcMessage } from "../runtime-json-rpc.js";
 import type { AgentRuntimeSkillRoot } from "../types.js";
 import { toCanonicalPiModelId } from "./model-list.js";
 import { piVisibilityMetadata } from "./visibility.js";
@@ -1300,309 +1288,234 @@ export function createPiProviderAdapter(
   }
 
   return {
-    // -- Identity & launch -------------------------------------------------
-
-    id: providerInfo.id,
-    displayName: providerInfo.displayName,
-    capabilities,
-    approvalRequestPolicy: "runtime",
-    classifyExecutionSettingsChange: classifySessionExecutionSettingsChange,
-    process: {
-      command: opts?.bridgeNodeExecutablePath ?? "node",
-      args: resolveBridgeProcessArgs({
-        bridgeBundleDir: opts?.bridgeBundleDir,
-        bundleFileName: "bb-pi-bridge.mjs",
-        importMetaUrl: import.meta.url,
-        bridgeRelativePath: "bridge/bridge.js",
-      }),
-      ...(opts?.bridgeNodeEnv !== undefined ? { env: opts.bridgeNodeEnv } : {}),
-    },
-
-    // -- Unified command builder -------------------------------------------
-
-    buildCommandPlan(command: AdapterCommand): ProviderCommandPlan {
-      switch (command.type) {
-        case "initialize":
-          return {
-            kind: "request",
-            method: "initialize",
-            params: { clientInfo: { name: "bb", version: "1.0.0" } },
-          };
-        case "model/list":
-          return {
-            kind: "request",
-            method: "model/list",
-            params: command.cwd ? { cwd: command.cwd } : {},
-          };
-        case "skills/configure":
-          return {
-            kind: "noop",
-            reason: "Pi skill paths are configured per session",
-          };
-        case "thread/start": {
-          finishOpenProviderTurn({
-            registry: turnState,
-            threadId: command.threadId,
-          });
-          resetPiCommandOutputSnapshots(
-            turnState.getOrCreate({ threadId: command.threadId }),
-          );
-          const config = buildPiConfig(command.threadId, command.options);
-          const dynamicTools = command.dynamicTools?.map((t) => ({
-            name: t.name,
-            description: t.description,
-            inputSchema: JSON.parse(JSON.stringify(t.inputSchema)),
-          }));
-          const additionalSkillPathsParams = buildPiAdditionalSkillPathsParams(
-            command.options.skillRoots,
-          );
-          return {
-            kind: "request",
-            method: "thread/start",
-            params: {
-              threadId: command.threadId,
-              cwd: command.cwd,
-              ...resolvePiInstructionOverrides(command),
-              ...(additionalSkillPathsParams ? additionalSkillPathsParams : {}),
-              ...(config ? { config } : {}),
-              ...(command.options?.model
-                ? { model: command.options.model }
-                : {}),
-              ...(command.options?.reasoningLevel
-                ? { reasoningLevel: command.options.reasoningLevel }
-                : {}),
-              ...(dynamicTools && dynamicTools.length > 0
-                ? { dynamicTools }
-                : {}),
-            },
-          };
-        }
-        case "thread/resume": {
-          finishOpenProviderTurn({
-            registry: turnState,
-            threadId: command.threadId,
-          });
-          resetPiCommandOutputSnapshots(
-            turnState.getOrCreate({ threadId: command.threadId }),
-          );
-          const threadId = command.providerThreadId;
-          const config = buildPiConfig(command.threadId, command.options);
-          const dynamicTools = command.dynamicTools?.map((t) => ({
-            name: t.name,
-            description: t.description,
-            inputSchema: JSON.parse(JSON.stringify(t.inputSchema)),
-          }));
-          const additionalSkillPathsParams = buildPiAdditionalSkillPathsParams(
-            command.options.skillRoots,
-          );
-          return {
-            kind: "request",
-            method: "thread/resume",
-            params: {
-              threadId,
-              cwd: command.cwd,
-              ...resolvePiInstructionOverrides(command),
-              ...(additionalSkillPathsParams ? additionalSkillPathsParams : {}),
-              ...(config ? { config } : {}),
-              ...(command.options?.model
-                ? { model: command.options.model }
-                : {}),
-              ...(command.options?.reasoningLevel
-                ? { reasoningLevel: command.options.reasoningLevel }
-                : {}),
-              ...(dynamicTools && dynamicTools.length > 0
-                ? { dynamicTools }
-                : {}),
-            },
-          };
-        }
-        case "turn/start": {
-          const input = flattenPromptInputGroups(
-            command.input,
-            command.inputGroups,
-          );
-          if (isStandaloneBuiltinCompactCommand(input)) {
+    ...createStandardAdapterMembers({
+      id: providerInfo.id,
+      displayName: providerInfo.displayName,
+      capabilities,
+      approvalRequestPolicy: "runtime",
+      classifyExecutionSettingsChange: classifySessionExecutionSettingsChange,
+      process: {
+        command: opts?.bridgeNodeExecutablePath ?? "node",
+        args: resolveBridgeProcessArgs({
+          bridgeBundleDir: opts?.bridgeBundleDir,
+          bundleFileName: "bb-pi-bridge.mjs",
+          importMetaUrl: import.meta.url,
+          bridgeRelativePath: "bridge/bridge.js",
+        }),
+        ...(opts?.bridgeNodeEnv !== undefined
+          ? { env: opts.bridgeNodeEnv }
+          : {}),
+      },
+      initializeParams: { clientInfo: { name: "bb", version: "1.0.0" } },
+      codec: "normalized",
+      turnState,
+      translateEvent: translatePiEvent,
+      buildProviderCommandPlan(command) {
+        switch (command.type) {
+          case "model/list":
             return {
               kind: "request",
-              method: "thread/compact",
-              params: { threadId: command.providerThreadId },
+              method: "model/list",
+              params: command.cwd ? { cwd: command.cwd } : {},
+            };
+          case "skills/configure":
+            return {
+              kind: "noop",
+              reason: "Pi skill paths are configured per session",
+            };
+          case "thread/start": {
+            finishOpenProviderTurn({
+              registry: turnState,
+              threadId: command.threadId,
+            });
+            resetPiCommandOutputSnapshots(
+              turnState.getOrCreate({ threadId: command.threadId }),
+            );
+            const config = buildPiConfig(command.threadId, command.options);
+            const dynamicTools = command.dynamicTools?.map((t) => ({
+              name: t.name,
+              description: t.description,
+              inputSchema: JSON.parse(JSON.stringify(t.inputSchema)),
+            }));
+            const additionalSkillPathsParams =
+              buildPiAdditionalSkillPathsParams(command.options.skillRoots);
+            return {
+              kind: "request",
+              method: "thread/start",
+              params: {
+                threadId: command.threadId,
+                cwd: command.cwd,
+                ...resolvePiInstructionOverrides(command),
+                ...(additionalSkillPathsParams
+                  ? additionalSkillPathsParams
+                  : {}),
+                ...(config ? { config } : {}),
+                ...(command.options?.model
+                  ? { model: command.options.model }
+                  : {}),
+                ...(command.options?.reasoningLevel
+                  ? { reasoningLevel: command.options.reasoningLevel }
+                  : {}),
+                ...(dynamicTools && dynamicTools.length > 0
+                  ? { dynamicTools }
+                  : {}),
+              },
             };
           }
-          return {
-            kind: "request",
-            method: "turn/start",
-            params: {
-              threadId: command.providerThreadId,
-              input,
-              ...(command.options?.model
-                ? { model: command.options.model }
-                : {}),
-            },
-          };
-        }
-        case "turn/steer":
-          return {
-            kind: "request",
-            method: "turn/steer",
-            params: {
-              threadId: command.providerThreadId,
-              expectedTurnId: command.expectedTurnId,
-              input: flattenPromptInputGroups(
-                command.input,
-                command.inputGroups,
-              ),
-            },
-          };
-        case "thread/fork": {
-          // Pi's provider identity == the bb threadId, so the source pi session
-          // id is command.sourceProviderThreadId (the source bb thread id). The
-          // new thread keeps command.threadId as its identity; the bridge forks
-          // the source session's full history into the new thread's
-          // deterministic session file. Same session-config fields as
-          // thread/start so the forked session launches identically.
-          finishOpenProviderTurn({
-            registry: turnState,
-            threadId: command.threadId,
-          });
-          resetPiCommandOutputSnapshots(
-            turnState.getOrCreate({ threadId: command.threadId }),
-          );
-          const config = buildPiConfig(command.threadId, command.options);
-          const dynamicTools = command.dynamicTools?.map((t) => ({
-            name: t.name,
-            description: t.description,
-            inputSchema: JSON.parse(JSON.stringify(t.inputSchema)),
-          }));
-          const additionalSkillPathsParams = buildPiAdditionalSkillPathsParams(
-            command.options.skillRoots,
-          );
-          return {
-            kind: "request",
-            method: "thread/fork",
-            params: {
+          case "thread/resume": {
+            finishOpenProviderTurn({
+              registry: turnState,
               threadId: command.threadId,
-              sourceProviderThreadId: command.sourceProviderThreadId,
-              cwd: command.cwd,
-              ...(command.sourceProviderCheckpointId !== undefined
-                ? {
-                    providerCheckpointId: command.sourceProviderCheckpointId,
-                  }
-                : {}),
-              ...resolvePiInstructionOverrides(command),
-              ...(additionalSkillPathsParams ? additionalSkillPathsParams : {}),
-              ...(config ? { config } : {}),
-              ...(command.options?.model
-                ? { model: command.options.model }
-                : {}),
-              ...(command.options?.reasoningLevel
-                ? { reasoningLevel: command.options.reasoningLevel }
-                : {}),
-              ...(dynamicTools && dynamicTools.length > 0
-                ? { dynamicTools }
-                : {}),
-            },
-          };
+            });
+            resetPiCommandOutputSnapshots(
+              turnState.getOrCreate({ threadId: command.threadId }),
+            );
+            const threadId = command.providerThreadId;
+            const config = buildPiConfig(command.threadId, command.options);
+            const dynamicTools = command.dynamicTools?.map((t) => ({
+              name: t.name,
+              description: t.description,
+              inputSchema: JSON.parse(JSON.stringify(t.inputSchema)),
+            }));
+            const additionalSkillPathsParams =
+              buildPiAdditionalSkillPathsParams(command.options.skillRoots);
+            return {
+              kind: "request",
+              method: "thread/resume",
+              params: {
+                threadId,
+                cwd: command.cwd,
+                ...resolvePiInstructionOverrides(command),
+                ...(additionalSkillPathsParams
+                  ? additionalSkillPathsParams
+                  : {}),
+                ...(config ? { config } : {}),
+                ...(command.options?.model
+                  ? { model: command.options.model }
+                  : {}),
+                ...(command.options?.reasoningLevel
+                  ? { reasoningLevel: command.options.reasoningLevel }
+                  : {}),
+                ...(dynamicTools && dynamicTools.length > 0
+                  ? { dynamicTools }
+                  : {}),
+              },
+            };
+          }
+          case "turn/start": {
+            const input = flattenPromptInputGroups(
+              command.input,
+              command.inputGroups,
+            );
+            if (isStandaloneBuiltinCompactCommand(input)) {
+              return {
+                kind: "request",
+                method: "thread/compact",
+                params: { threadId: command.providerThreadId },
+              };
+            }
+            return {
+              kind: "request",
+              method: "turn/start",
+              params: {
+                threadId: command.providerThreadId,
+                input,
+                ...(command.options?.model
+                  ? { model: command.options.model }
+                  : {}),
+              },
+            };
+          }
+          case "turn/steer":
+            return {
+              kind: "request",
+              method: "turn/steer",
+              params: {
+                threadId: command.providerThreadId,
+                expectedTurnId: command.expectedTurnId,
+                input: flattenPromptInputGroups(
+                  command.input,
+                  command.inputGroups,
+                ),
+              },
+            };
+          case "thread/fork": {
+            // Pi's provider identity == the bb threadId, so the source pi session
+            // id is command.sourceProviderThreadId (the source bb thread id). The
+            // new thread keeps command.threadId as its identity; the bridge forks
+            // the source session's full history into the new thread's
+            // deterministic session file. Same session-config fields as
+            // thread/start so the forked session launches identically.
+            finishOpenProviderTurn({
+              registry: turnState,
+              threadId: command.threadId,
+            });
+            resetPiCommandOutputSnapshots(
+              turnState.getOrCreate({ threadId: command.threadId }),
+            );
+            const config = buildPiConfig(command.threadId, command.options);
+            const dynamicTools = command.dynamicTools?.map((t) => ({
+              name: t.name,
+              description: t.description,
+              inputSchema: JSON.parse(JSON.stringify(t.inputSchema)),
+            }));
+            const additionalSkillPathsParams =
+              buildPiAdditionalSkillPathsParams(command.options.skillRoots);
+            return {
+              kind: "request",
+              method: "thread/fork",
+              params: {
+                threadId: command.threadId,
+                sourceProviderThreadId: command.sourceProviderThreadId,
+                cwd: command.cwd,
+                ...(command.sourceProviderCheckpointId !== undefined
+                  ? {
+                      providerCheckpointId: command.sourceProviderCheckpointId,
+                    }
+                  : {}),
+                ...resolvePiInstructionOverrides(command),
+                ...(additionalSkillPathsParams
+                  ? additionalSkillPathsParams
+                  : {}),
+                ...(config ? { config } : {}),
+                ...(command.options?.model
+                  ? { model: command.options.model }
+                  : {}),
+                ...(command.options?.reasoningLevel
+                  ? { reasoningLevel: command.options.reasoningLevel }
+                  : {}),
+                ...(dynamicTools && dynamicTools.length > 0
+                  ? { dynamicTools }
+                  : {}),
+              },
+            };
+          }
+          case "thread/stop":
+            finishOpenProviderTurn({
+              registry: turnState,
+              threadId: command.threadId,
+            });
+            resetPiCommandOutputSnapshots(
+              turnState.getOrCreate({ threadId: command.threadId }),
+            );
+            return {
+              kind: "request",
+              method: "thread/stop",
+              params: {
+                threadId: command.providerThreadId,
+              },
+            };
+          case "thread/discard":
+            return {
+              kind: "request",
+              method: "thread/discard",
+              params: { threadId: command.providerThreadId },
+            };
+          default:
+            return null;
         }
-        case "thread/stop":
-          finishOpenProviderTurn({
-            registry: turnState,
-            threadId: command.threadId,
-          });
-          resetPiCommandOutputSnapshots(
-            turnState.getOrCreate({ threadId: command.threadId }),
-          );
-          return {
-            kind: "request",
-            method: "thread/stop",
-            params: {
-              threadId: command.providerThreadId,
-            },
-          };
-        case "thread/discard":
-          return {
-            kind: "request",
-            method: "thread/discard",
-            params: { threadId: command.providerThreadId },
-          };
-        case "thread/goal/clear":
-          return { kind: "noop", reason: "goals unsupported" };
-        case "thread/name/set":
-          return { kind: "noop", reason: "rename unsupported" };
-        case "thread/archive":
-        case "thread/unarchive":
-          return { kind: "noop", reason: "archive unsupported" };
-      }
-    },
-
-    // -- Unified event translator ------------------------------------------
-
-    translateEvent(
-      event: ProviderRuntimeEvent,
-      context?: ProviderTranslationContext,
-    ): ThreadEvent[] {
-      return translatePiEvent(event, context);
-    },
-
-    prepareTurnStart: noPreparedProviderCommandDispatch,
-
-    translateAcceptedCommand({ command }) {
-      if (
-        command.type === "thread/start" ||
-        command.type === "thread/resume" ||
-        command.type === "thread/fork" ||
-        command.type === "thread/stop"
-      ) {
-        const state = turnState.getOrCreate({ threadId: command.threadId });
-        state.pendingAcceptedUserMessages = [];
-        return [];
-      }
-
-      if (command.type === "turn/start") {
-        const state = turnState.getOrCreate({ threadId: command.threadId });
-        if (state.currentTurnId !== undefined) {
-          return buildAcceptedUserMessageEvent({
-            clientRequestId: command.clientRequestId,
-            providerThreadId: command.providerThreadId,
-            threadId: command.threadId,
-            turnId: state.currentTurnId,
-          });
-        }
-        queueAcceptedUserMessage({
-          clientRequestId: command.clientRequestId,
-          state,
-        });
-      }
-
-      if (command.type === "turn/steer") {
-        return buildAcceptedUserMessageEvent({
-          clientRequestId: command.clientRequestId,
-          providerThreadId: command.providerThreadId,
-          threadId: command.threadId,
-          turnId: command.expectedTurnId,
-        });
-      }
-
-      return [];
-    },
-
-    parseModelListResult(result: unknown) {
-      return parseAvailableModelList(result);
-    },
-
-    // -- Tool call codec ---------------------------------------------------
-
-    decodeToolCallRequest(
-      request: ProviderInboundRequest,
-    ): DecodedToolCallRequest | null {
-      if (typeof request.id !== "string" && typeof request.id !== "number") {
-        return null;
-      }
-      return decodeNormalizedProviderToolCallRequest(
-        request.id,
-        request.method,
-        request.params,
-      );
-    },
+      },
+    }),
   };
 }
 

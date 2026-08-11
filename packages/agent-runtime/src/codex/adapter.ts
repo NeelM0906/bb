@@ -43,16 +43,13 @@ import {
   buildShellEnvironmentPolicyConfig,
   extractResultText,
 } from "../shared/adapter-utils.js";
-import { buildAcceptedUserMessageEvent } from "../shared/accepted-user-messages.js";
-import { decodeNativeProviderToolCallRequest } from "../shared/provider-tool-call-contract.js";
 import { resolveAdapterPermissionPolicy } from "../shared/permission-policy.js";
+import { createStandardAdapterMembers } from "../shared/standard-adapter-members.js";
 import type {
   AdapterCommand,
-  DecodedToolCallRequest,
   PreparedProviderCommandDispatch,
   ProviderAdapter,
   ProviderAdapterFactoryOptions,
-  ProviderCommandPlan,
   ProviderExecutionContext,
 } from "../provider-adapter.js";
 import { flattenPromptInputGroups } from "../provider-adapter.js";
@@ -1790,7 +1787,23 @@ export function createCodexProviderAdapter(
     return repairedEvents;
   }
 
-  return {
+  function buildPostInitializeRequests() {
+    return [
+      {
+        plan: {
+          kind: "request" as const,
+          method: "account/rateLimits/read",
+        },
+        required: false,
+        onResult(result: unknown) {
+          const response = codexRateLimitReadResponseSchema.parse(result);
+          applyCodexRateLimitUpdate(eventTranslationState, response.rateLimits);
+        },
+      },
+    ];
+  }
+
+  const standardAdapterMembers = createStandardAdapterMembers({
     id: providerInfo.id,
     displayName: providerInfo.displayName,
     capabilities,
@@ -1803,37 +1816,13 @@ export function createCodexProviderAdapter(
       command: opts?.processCommand ?? "codex",
       args: opts?.processArgs ?? ["app-server"],
     },
-
-    buildPostInitializeRequests() {
-      return [
-        {
-          plan: {
-            kind: "request",
-            method: "account/rateLimits/read",
-          },
-          required: false,
-          onResult(result: unknown) {
-            const response = codexRateLimitReadResponseSchema.parse(result);
-            applyCodexRateLimitUpdate(
-              eventTranslationState,
-              response.rateLimits,
-            );
-          },
-        },
-      ];
+    initializeParams: {
+      clientInfo: { name: "bb", version: "1.0.0", title: null },
+      capabilities: { experimentalApi: true },
     },
-
-    buildCommandPlan(command: AdapterCommand): ProviderCommandPlan {
+    codec: "native",
+    buildProviderCommandPlan(command) {
       switch (command.type) {
-        case "initialize":
-          return {
-            kind: "request",
-            method: "initialize",
-            params: {
-              clientInfo: { name: "bb", version: "1.0.0", title: null },
-              capabilities: { experimentalApi: true },
-            },
-          };
         case "model/list":
           return {
             kind: "request",
@@ -2077,48 +2066,14 @@ export function createCodexProviderAdapter(
       return applyRecoveredCommandOutput(completedSubAgentEvents);
     },
 
-    translateAcceptedCommand({ command, providerThreadId }) {
-      if (
-        (command.type === "thread/start" ||
-          command.type === "thread/resume" ||
-          command.type === "thread/fork") &&
-        providerThreadId
-      ) {
+    onSessionReplace({ command, providerThreadId }) {
+      if (providerThreadId) {
         activateThreadGitWritableRoots({
           providerThreadId,
           threadId: command.threadId,
         });
       }
-      if (command.type !== "turn/steer") {
-        return [];
-      }
-      return buildAcceptedUserMessageEvent({
-        clientRequestId: command.clientRequestId,
-        providerThreadId: command.providerThreadId,
-        threadId: command.threadId,
-        turnId: command.expectedTurnId,
-      });
-    },
-
-    decodeToolCallRequest(
-      request: ProviderInboundRequest,
-    ): DecodedToolCallRequest | null {
-      if (typeof request.id !== "string" && typeof request.id !== "number") {
-        return null;
-      }
-      return decodeNativeProviderToolCallRequest(
-        request.id,
-        request.method,
-        request.params,
-      );
-    },
-
-    decodeInteractiveRequest(request: ProviderInboundRequest) {
-      return decodeCodexInteractiveRequest(request);
-    },
-
-    buildInteractiveResponse(args) {
-      return buildCodexInteractiveResponse(args);
+      return [];
     },
 
     parseModelListResult(result: unknown) {
@@ -2128,6 +2083,17 @@ export function createCodexProviderAdapter(
         models: parseModelsResponse(result),
         selectedOnlyModels: [],
       };
+    },
+  });
+
+  return {
+    ...standardAdapterMembers,
+    buildPostInitializeRequests,
+    decodeInteractiveRequest(request: ProviderInboundRequest) {
+      return decodeCodexInteractiveRequest(request);
+    },
+    buildInteractiveResponse(args) {
+      return buildCodexInteractiveResponse(args);
     },
   };
 }
