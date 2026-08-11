@@ -39,13 +39,15 @@ import { resolveBridgeProcessArgs } from "../shared/bridge-path.js";
 import { createStandardAdapterMembers } from "../shared/standard-adapter-members.js";
 import { bashArgsSchema } from "../shared/tool-arg-schemas.js";
 import {
-  buildEditDiff,
   buildShellEnvironmentPolicyConfig,
   extractResultText,
-  toOptionalRecord,
   toOptionalString,
-  withParentToolCallId,
 } from "../shared/adapter-utils.js";
+import {
+  buildToolResultItem,
+  buildToolUseItem,
+  type ToolUseTranslationInput,
+} from "../shared/tool-item-translation.js";
 import { drainAcceptedUserMessages } from "../shared/accepted-user-messages.js";
 import {
   createProviderTurnStateRegistry,
@@ -122,11 +124,6 @@ import {
   buildInterruptedClaudeTaskEvents,
   hasOpenClaudeBackgroundTasks,
 } from "./task-translation.js";
-
-type ClaudePendingFileChangeItem = Extract<
-  ThreadEventItem,
-  { type: "fileChange" }
->;
 
 interface ClaudeBashCommand {
   command: string;
@@ -214,32 +211,6 @@ function parseClaudeBashCommand(input: unknown): ClaudeBashCommand | null {
 
 function getClaudeFileEditPath(args: ClaudeFileEditArgs): string | null {
   return args.file_path ?? args.path ?? null;
-}
-
-function buildClaudeFileChangeItem(
-  args: ClaudeFileEditArgs,
-): ClaudePendingFileChangeItem | null {
-  const filePath = getClaudeFileEditPath(args);
-  if (!filePath) {
-    return null;
-  }
-  const newText = args.new_string ?? args.content;
-
-  const diff = buildEditDiff(filePath, args.old_string, newText);
-
-  return {
-    type: "fileChange",
-    id: "",
-    changes: [
-      {
-        path: filePath,
-        kind: args.old_string === undefined ? "add" : "update",
-        ...(diff ? { diff } : {}),
-      },
-    ],
-    status: "pending",
-    approvalStatus: null,
-  };
 }
 
 function normalizeClaudeWebSearchArgs(
@@ -513,102 +484,67 @@ function getClaudePermissionUpdateToolName(
 function translateClaudeToolUseItem(
   input: ClaudeToolUseTranslationInput,
 ): ThreadEventItem {
-  const toolArguments = toOptionalRecord(input.args);
-  const baseToolCall = {
-    type: "toolCall" as const,
-    id: input.callId,
-    tool: input.toolName,
-    ...(toolArguments ? { arguments: toolArguments } : {}),
-    status: "pending" as const,
-  };
-
-  switch (input.toolName) {
-    case "Bash": {
-      const bashCommand = parseClaudeBashCommand(input.args);
-      if (!bashCommand) {
-        return withParentToolCallId(baseToolCall, input.parentToolCallId);
-      }
-      return withParentToolCallId(
-        {
-          type: "commandExecution",
-          id: input.callId,
-          command: bashCommand.command,
-          cwd: bashCommand.cwd ?? "",
-          status: "pending",
-          approvalStatus: null,
-        },
-        input.parentToolCallId,
-      );
-    }
-    case "Edit":
-    case "Write": {
-      const parsed = claudeFileEditArgsSchema.safeParse(input.args);
-      if (!parsed.success) {
-        return withParentToolCallId(baseToolCall, input.parentToolCallId);
-      }
-      const fileChangeItem = buildClaudeFileChangeItem(parsed.data);
-      if (!fileChangeItem) {
-        return withParentToolCallId(
-          {
-            ...baseToolCall,
+  return buildToolUseItem(input, {
+    commandToolNames: CLAUDE_COMMAND_TOOL_NAMES,
+    fileChangeToolNames: CLAUDE_FILE_CHANGE_TOOL_NAMES,
+    parseCommand(args) {
+      const command = parseClaudeBashCommand(args);
+      return command
+        ? { command: command.command, cwd: command.cwd ?? "" }
+        : null;
+    },
+    parseFileChange(args) {
+      const parsed = claudeFileEditArgsSchema.safeParse(args);
+      return parsed.success
+        ? {
             arguments: parsed.data,
-          },
-          input.parentToolCallId,
-        );
-      }
-      return withParentToolCallId(
-        {
-          ...fileChangeItem,
-          id: input.callId,
-        },
-        input.parentToolCallId,
-      );
-    }
-    case "WebSearch":
-    case "WebFetch": {
-      if (input.toolName === "WebSearch") {
-        const parsed = claudeWebSearchArgsSchema.safeParse(input.args);
-        if (!parsed.success) {
-          return withParentToolCallId(baseToolCall, input.parentToolCallId);
-        }
-        const normalized = normalizeClaudeWebSearchArgs(parsed.data);
-        if (!normalized) {
-          return withParentToolCallId(baseToolCall, input.parentToolCallId);
-        }
-        return withParentToolCallId(
-          {
-            type: "webSearch",
-            id: input.callId,
-            queries: normalized,
-            resultText: null,
-          },
-          input.parentToolCallId,
-        );
-      }
+            path: getClaudeFileEditPath(parsed.data) ?? undefined,
+            oldText: parsed.data.old_string,
+            newText: parsed.data.new_string ?? parsed.data.content,
+          }
+        : null;
+    },
+    translateSpecialToolUse: translateClaudeWebToolUse,
+  });
+}
 
-      const parsed = claudeWebFetchArgsSchema.safeParse(input.args);
-      if (!parsed.success) {
-        return withParentToolCallId(baseToolCall, input.parentToolCallId);
-      }
-      const normalized = normalizeClaudeWebFetchArgs(parsed.data);
-      if (!normalized) {
-        return withParentToolCallId(baseToolCall, input.parentToolCallId);
-      }
-      return withParentToolCallId(
-        {
-          type: "webFetch",
+const CLAUDE_COMMAND_TOOL_NAMES = new Set(["Bash"]);
+const CLAUDE_FILE_CHANGE_TOOL_NAMES = new Set(["Edit", "Write"]);
+
+function translateClaudeWebToolUse(
+  input: ToolUseTranslationInput,
+): ThreadEventItem | null {
+  if (input.toolName === "WebSearch") {
+    const parsed = claudeWebSearchArgsSchema.safeParse(input.args);
+    const queries = parsed.success
+      ? normalizeClaudeWebSearchArgs(parsed.data)
+      : null;
+    return queries
+      ? {
+          type: "webSearch",
           id: input.callId,
-          url: normalized.url,
-          prompt: normalized.prompt,
-          pattern: null,
+          queries,
           resultText: null,
-        },
-        input.parentToolCallId,
-      );
-    }
-    default:
-      return withParentToolCallId(baseToolCall, input.parentToolCallId);
+        }
+      : null;
   }
+  if (input.toolName !== "WebFetch") {
+    return null;
+  }
+  const parsed = claudeWebFetchArgsSchema.safeParse(input.args);
+  const normalized = parsed.success
+    ? normalizeClaudeWebFetchArgs(parsed.data)
+    : null;
+  return normalized
+    ? {
+        type: "webFetch",
+        id: input.callId,
+        url: normalized.url,
+        prompt: normalized.prompt,
+        pattern: null,
+        resultText: null,
+      }
+    : null;
 }
 
 function parseClaudeTaskToolOutputValue(
@@ -646,140 +582,27 @@ function translateClaudeToolResultItem(
           toolUseResult: input.toolUseResult,
         })
       : extractResultText(input.content);
-  const startedItem = input.startedItem;
-  const itemStatus = input.isError ? "failed" : "completed";
-  const bashExitCode = input.isError ? 1 : 0;
-
-  if (startedItem) {
-    switch (startedItem.type) {
-      case "commandExecution":
-        return withParentToolCallId(
-          {
-            type: "commandExecution",
-            id: input.callId,
-            command: startedItem.command,
-            cwd: startedItem.cwd,
-            ...(outputText === undefined
-              ? {}
-              : { aggregatedOutput: outputText }),
-            exitCode: bashExitCode,
-            status: itemStatus,
-            approvalStatus: startedItem.approvalStatus,
-          },
-          input.parentToolCallId ?? startedItem.parentToolCallId,
-        );
-      case "fileChange":
-        return withParentToolCallId(
-          {
-            type: "fileChange",
-            id: input.callId,
-            changes: startedItem.changes,
-            status: itemStatus,
-            approvalStatus: startedItem.approvalStatus,
-          },
-          input.parentToolCallId ?? startedItem.parentToolCallId,
-        );
-      case "webSearch":
-        return withParentToolCallId(
-          {
-            type: "webSearch",
-            id: input.callId,
-            queries: startedItem.queries,
-            resultText: outputText ?? null,
-          },
-          input.parentToolCallId ?? startedItem.parentToolCallId,
-        );
-      case "webFetch":
-        return withParentToolCallId(
-          {
-            type: "webFetch",
-            id: input.callId,
-            url: startedItem.url,
-            prompt: startedItem.prompt,
-            pattern: startedItem.pattern,
-            resultText: outputText ?? null,
-          },
-          input.parentToolCallId ?? startedItem.parentToolCallId,
-        );
-      case "toolCall": {
-        const taskToolResult = claudeTaskToolNameSchema.safeParse(
-          startedItem.tool,
-        ).success
-          ? parseClaudeTaskToolOutput({
-              content: input.content,
-              outputText,
-              toolUseResult: input.toolUseResult,
-            })
-          : null;
-        return withParentToolCallId(
-          {
-            type: "toolCall",
-            id: input.callId,
-            tool: startedItem.tool,
-            arguments: startedItem.arguments,
-            status: itemStatus,
-            result: taskToolResult ?? outputText,
-          },
-          input.parentToolCallId ?? startedItem.parentToolCallId,
-        );
-      }
-      default:
-        break;
-    }
-  }
-
-  const fallbackTaskToolResult =
-    input.toolName && claudeTaskToolNameSchema.safeParse(input.toolName).success
+  const resultToolName =
+    input.startedItem?.type === "toolCall"
+      ? input.startedItem.tool
+      : input.toolName;
+  const taskToolResult =
+    resultToolName && claudeTaskToolNameSchema.safeParse(resultToolName).success
       ? parseClaudeTaskToolOutput({
           content: input.content,
           outputText,
           toolUseResult: input.toolUseResult,
         })
       : null;
-  const fallbackToolCall = withParentToolCallId(
-    {
-      type: "toolCall",
-      id: input.callId,
-      tool: input.toolName ?? "unknown",
-      status: itemStatus,
-      result: fallbackTaskToolResult ?? outputText,
-    },
-    input.parentToolCallId,
-  );
-
-  switch (input.toolName) {
-    case "Bash":
-      return withParentToolCallId(
-        {
-          type: "commandExecution",
-          id: input.callId,
-          command: "",
-          cwd: "",
-          ...(outputText === undefined ? {} : { aggregatedOutput: outputText }),
-          exitCode: bashExitCode,
-          status: itemStatus,
-          approvalStatus: null,
-        },
-        input.parentToolCallId,
-      );
-    case "Edit":
-    case "Write":
-      return withParentToolCallId(
-        {
-          type: "fileChange",
-          id: input.callId,
-          changes: [],
-          status: itemStatus,
-          approvalStatus: null,
-        },
-        input.parentToolCallId,
-      );
-    case "WebSearch":
-    case "WebFetch":
-      return fallbackToolCall;
-    default:
-      return fallbackToolCall;
-  }
+  return buildToolResultItem({
+    ...input,
+    commandOutputText: outputText,
+    commandToolNames: CLAUDE_COMMAND_TOOL_NAMES,
+    completeWebItems: true,
+    fileChangeToolNames: CLAUDE_FILE_CHANGE_TOOL_NAMES,
+    outputText,
+    toolCallResult: taskToolResult ?? outputText,
+  });
 }
 
 // ---------------------------------------------------------------------------

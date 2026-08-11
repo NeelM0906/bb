@@ -31,16 +31,19 @@ import { createStandardAdapterMembers } from "../shared/standard-adapter-members
 import { classifySessionExecutionSettingsChange } from "../execution-options.js";
 import { bashArgsSchema, textBlockSchema } from "../shared/tool-arg-schemas.js";
 import {
-  buildEditDiff,
   buildShellEnvironmentPolicyConfig,
   diffCumulativeText,
   extractResultText,
   normalizeProviderCommandOutput,
   toNonNegativeNumber,
-  toOptionalRecord,
   toOptionalString,
   withParentToolCallId,
 } from "../shared/adapter-utils.js";
+import {
+  buildToolResultItem,
+  buildToolUseItem,
+  type ToolUseTranslationInput,
+} from "../shared/tool-item-translation.js";
 import {
   drainAcceptedUserMessages,
   type AcceptedUserMessageState,
@@ -336,8 +339,6 @@ const piFileEditArgsSchema = z
   })
   .passthrough();
 
-type PiFileEditArgs = z.infer<typeof piFileEditArgsSchema>;
-type PiPendingFileChangeItem = Extract<ThreadEventItem, { type: "fileChange" }>;
 type PiAssistantMessage = z.infer<typeof piAssistantMessageSchema>;
 type PiAssistantErrorMessage = PiAssistantMessage & {
   errorMessage: string;
@@ -347,13 +348,6 @@ type PiConversationMessage = z.infer<typeof piConversationMessageSchema>;
 type PiToolExecutionUpdateEvent = z.infer<
   typeof piToolExecutionUpdateEventSchema
 >;
-
-interface PiToolUseTranslationInput {
-  callId: string;
-  toolName: string;
-  args: unknown;
-  parentToolCallId?: string;
-}
 
 interface PiToolResultTranslationInput {
   callId: string;
@@ -376,192 +370,57 @@ interface PiCommandExecutionOutputDelta {
 }
 
 const PI_EMPTY_BASH_OUTPUT_PLACEHOLDERS = ["(no output)"] as const;
-
-function buildPiFileChangeItem(
-  args: PiFileEditArgs,
-): PiPendingFileChangeItem | null {
-  if (!args.path) {
-    return null;
-  }
-  const newText = args.newText ?? args.content;
-
-  const diff = buildEditDiff(args.path, args.oldText, newText);
-
-  return {
-    type: "fileChange",
-    id: "",
-    changes: [
-      {
-        path: args.path,
-        kind: args.oldText === undefined ? "add" : "update",
-        ...(diff ? { diff } : {}),
-      },
-    ],
-    status: "pending",
-    approvalStatus: null,
-  };
-}
+const PI_COMMAND_TOOL_NAMES = new Set(["bash"]);
+const PI_FILE_CHANGE_TOOL_NAMES = new Set(["edit", "write"]);
 
 function translatePiToolUseItem(
-  input: PiToolUseTranslationInput,
+  input: ToolUseTranslationInput,
 ): ThreadEventItem {
-  const toolArguments = toOptionalRecord(input.args);
-  const baseToolCall = {
-    type: "toolCall" as const,
-    id: input.callId,
-    tool: input.toolName,
-    ...(toolArguments ? { arguments: toolArguments } : {}),
-    status: "pending" as const,
-  };
-
-  switch (input.toolName) {
-    case "bash": {
-      const parsed = bashArgsSchema.safeParse(input.args);
+  return buildToolUseItem(input, {
+    commandToolNames: PI_COMMAND_TOOL_NAMES,
+    fileChangeToolNames: PI_FILE_CHANGE_TOOL_NAMES,
+    parseCommand(args) {
+      const parsed = bashArgsSchema.safeParse(args);
       const command = parsed.success
         ? toOptionalString(parsed.data.command)
         : undefined;
-      if (!command) {
-        return withParentToolCallId(baseToolCall, input.parentToolCallId);
-      }
-      return withParentToolCallId(
-        {
-          type: "commandExecution",
-          id: input.callId,
-          command,
-          cwd: parsed.success ? (toOptionalString(parsed.data.cwd) ?? "") : "",
-          status: "pending",
-          approvalStatus: null,
-        },
-        input.parentToolCallId,
-      );
-    }
-    case "edit":
-    case "write": {
-      const parsed = piFileEditArgsSchema.safeParse(input.args);
+      const cwd = parsed.success
+        ? (toOptionalString(parsed.data.cwd) ?? "")
+        : "";
+      return command ? { command, cwd } : null;
+    },
+    parseFileChange(args) {
+      const parsed = piFileEditArgsSchema.safeParse(args);
       if (!parsed.success) {
-        return withParentToolCallId(baseToolCall, input.parentToolCallId);
+        return null;
       }
-      const fileChangeItem = buildPiFileChangeItem(parsed.data);
-      if (!fileChangeItem) {
-        return withParentToolCallId(
-          {
-            ...baseToolCall,
-            arguments: parsed.data,
-          },
-          input.parentToolCallId,
-        );
-      }
-      return withParentToolCallId(
-        {
-          ...fileChangeItem,
-          id: input.callId,
-        },
-        input.parentToolCallId,
-      );
-    }
-    default:
-      return withParentToolCallId(baseToolCall, input.parentToolCallId);
-  }
+      return {
+        arguments: parsed.data,
+        path: parsed.data.path,
+        oldText: parsed.data.oldText,
+        newText: parsed.data.newText ?? parsed.data.content,
+      };
+    },
+  });
 }
 
 function translatePiToolResultItem(
   input: PiToolResultTranslationInput,
 ): ThreadEventItem {
   const outputText = extractResultText(input.content);
-  const status = input.isError ? "failed" : "completed";
   const startedItem = input.startedItem;
   const commandOutputText =
     input.toolName === "bash" || startedItem?.type === "commandExecution"
       ? extractPiCommandExecutionOutput(input.content)
       : undefined;
-
-  if (startedItem) {
-    switch (startedItem.type) {
-      case "commandExecution":
-        return withParentToolCallId(
-          {
-            type: "commandExecution",
-            id: input.callId,
-            command: startedItem.command,
-            cwd: startedItem.cwd,
-            ...(commandOutputText === undefined
-              ? {}
-              : { aggregatedOutput: commandOutputText }),
-            exitCode: input.isError ? 1 : 0,
-            status,
-            approvalStatus: startedItem.approvalStatus,
-          },
-          input.parentToolCallId ?? startedItem.parentToolCallId,
-        );
-      case "fileChange":
-        return withParentToolCallId(
-          {
-            type: "fileChange",
-            id: input.callId,
-            changes: startedItem.changes,
-            status,
-            approvalStatus: startedItem.approvalStatus,
-          },
-          input.parentToolCallId ?? startedItem.parentToolCallId,
-        );
-      case "toolCall":
-        return withParentToolCallId(
-          {
-            type: "toolCall",
-            id: input.callId,
-            tool: startedItem.tool,
-            arguments: startedItem.arguments,
-            status,
-            result: outputText,
-          },
-          input.parentToolCallId ?? startedItem.parentToolCallId,
-        );
-      default:
-        break;
-    }
-  }
-
-  switch (input.toolName) {
-    case "bash":
-      return withParentToolCallId(
-        {
-          type: "commandExecution",
-          id: input.callId,
-          command: "",
-          cwd: "",
-          ...(commandOutputText === undefined
-            ? {}
-            : { aggregatedOutput: commandOutputText }),
-          exitCode: input.isError ? 1 : 0,
-          status,
-          approvalStatus: null,
-        },
-        input.parentToolCallId,
-      );
-    case "edit":
-    case "write":
-      return withParentToolCallId(
-        {
-          type: "fileChange",
-          id: input.callId,
-          changes: [],
-          status,
-          approvalStatus: null,
-        },
-        input.parentToolCallId,
-      );
-    default:
-      return withParentToolCallId(
-        {
-          type: "toolCall",
-          id: input.callId,
-          tool: input.toolName ?? "unknown",
-          status,
-          result: outputText,
-        },
-        input.parentToolCallId,
-      );
-  }
+  return buildToolResultItem({
+    ...input,
+    commandOutputText,
+    commandToolNames: PI_COMMAND_TOOL_NAMES,
+    fileChangeToolNames: PI_FILE_CHANGE_TOOL_NAMES,
+    outputText,
+    toolCallResult: outputText,
+  });
 }
 
 interface PiAdditionalSkillPathsParams {

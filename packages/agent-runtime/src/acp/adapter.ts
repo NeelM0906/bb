@@ -60,6 +60,7 @@ import {
   threadIdentityEnvelopeSchema,
 } from "../shared/json-rpc-envelope.js";
 import { createStandardAdapterMembers } from "../shared/standard-adapter-members.js";
+import { completeStartedToolItem } from "../shared/tool-item-translation.js";
 import { buildUnhandledProviderEvents } from "../shared/provider-unhandled-event.js";
 import { createScopedItemIdFactory } from "../shared/scoped-item-ids.js";
 import {
@@ -328,60 +329,21 @@ function completeAcpStartedToolItem(
   status: ThreadEventItemStatus,
   parentToolCallId: string | undefined,
 ): ThreadEventItem {
-  const resolvedParentToolCallId = parentToolCallId ?? item.parentToolCallId;
-  switch (item.type) {
-    case "commandExecution": {
-      const outputText = event
-        ? extractAcpToolCallOutputText(event)
-        : undefined;
-      return withParentToolCallId(
-        {
-          type: "commandExecution",
-          id: item.id,
-          command: item.command,
-          cwd: item.cwd,
-          status,
-          approvalStatus: item.approvalStatus,
-          ...(outputText === undefined ? {} : { aggregatedOutput: outputText }),
-          ...(status === "completed" || status === "failed"
-            ? { exitCode: status === "failed" ? 1 : 0 }
-            : {}),
-        },
-        resolvedParentToolCallId,
-      );
-    }
-    case "fileChange":
-      return withParentToolCallId(
-        {
-          type: "fileChange",
-          id: item.id,
-          changes: item.changes,
-          status,
-          approvalStatus: item.approvalStatus,
-        },
-        resolvedParentToolCallId,
-      );
-    case "toolCall": {
-      const outputText = event
-        ? extractAcpToolCallOutputText(event)
-        : undefined;
-      return withParentToolCallId(
-        {
-          type: "toolCall",
-          id: item.id,
-          tool: item.tool,
-          ...(item.arguments === undefined
-            ? {}
-            : { arguments: item.arguments }),
-          status,
-          ...(outputText === undefined ? {} : { result: outputText }),
-        },
-        resolvedParentToolCallId,
-      );
-    }
-    default:
-      return item;
-  }
+  const outputText = event ? extractAcpToolCallOutputText(event) : undefined;
+  return (
+    completeStartedToolItem({
+      callId: item.id,
+      commandOutputText: outputText,
+      ...(status === "completed" || status === "failed"
+        ? { exitCode: status === "failed" ? 1 : 0 }
+        : {}),
+      outputText,
+      parentToolCallId,
+      startedItem: item,
+      status,
+      toolCallResult: outputText,
+    }) ?? item
+  );
 }
 
 function buildAcpTerminalToolCallItems(args: {
