@@ -141,6 +141,8 @@ function hashTargetId(hash: string): string | null {
   }
 }
 
+const HASH_NAVIGATION_WAIT_MS = 2_000;
+
 export function HashNavigationScroll() {
   const location = useLocation();
 
@@ -166,11 +168,22 @@ export function HashNavigationScroll() {
 
     // Lazy routes and plugin slots may mount after the URL changes. Observe the
     // app until the destination exists instead of dropping the navigation.
-    const observer = new MutationObserver(() => {
-      if (scrollToTarget()) observer.disconnect();
+    let observer: MutationObserver | null = null;
+    let timeoutId: number | null = null;
+    const stopWaiting = () => {
+      observer?.disconnect();
+      observer = null;
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+    };
+    observer = new MutationObserver(() => {
+      if (scrollToTarget()) stopWaiting();
     });
     observer.observe(document.body, { childList: true, subtree: true });
-    return () => observer.disconnect();
+    timeoutId = window.setTimeout(stopWaiting, HASH_NAVIGATION_WAIT_MS);
+    return stopWaiting;
   }, [location.hash, location.key]);
 
   return null;

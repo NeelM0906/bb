@@ -3,7 +3,7 @@ import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Button } from "@bb/shared-ui/button";
-import type { PluginCapability } from "@bb/server-contract";
+import type { PluginCapability, SkillListResponse } from "@bb/server-contract";
 import { Icon, type IconName } from "@bb/shared-ui/icon";
 import {
   ResourceDetailIncludesSection,
@@ -29,15 +29,15 @@ import {
 } from "@/hooks/queries/plugin-settings-queries";
 import { usePluginSlots, type PluginSlotSnapshot } from "@/lib/plugin-slots";
 import {
+  getPluginConfigurationRoutePath,
   getPluginPanelRoutePath,
-  getPluginDetailRoutePath,
   getRootComposeRoutePath,
   getSettingsRoutePath,
   getSkillDetailRoutePath,
   getSkillsRoutePath,
 } from "@/lib/route-paths";
 import { getPluginHomepageSectionAnchor } from "@/lib/plugin-homepage-section";
-import { useProjectSkills } from "@/hooks/queries/skills-queries";
+import { projectSkillsQueryKey } from "@/hooks/queries/query-keys";
 
 function pluginActivityIcon(
   activity: "service" | "schedule",
@@ -220,7 +220,7 @@ function pluginAppSurfaceItems(
             "settings",
             "Settings",
             "Opens this plugin's configuration.",
-            `${getPluginDetailRoutePath({ pluginId })}#configuration`,
+            getPluginConfigurationRoutePath({ pluginId }),
           ),
         ]
       : []),
@@ -348,16 +348,14 @@ function pluginAppSurfaceItems(
 
 export function PluginIncludes({ plugin }: { plugin: PluginListItem }) {
   const slots = usePluginSlots();
-  const hasSkillCapabilities = plugin.capabilities.some(
-    (capability) => capability.kind === "skill",
+  const queryClient = useQueryClient();
+  const cachedSkills = queryClient.getQueryData<SkillListResponse>(
+    projectSkillsQueryKey(PERSONAL_PROJECT_ID),
   );
-  const skillsQuery = useProjectSkills(PERSONAL_PROJECT_ID, {
-    enabled: hasSkillCapabilities,
-  });
   const appItems = pluginAppSurfaceItems(plugin, slots);
 
   const skillDestination = (capabilityId: string): string => {
-    const installedSkill = skillsQuery.data?.skills.find((skill) => {
+    const installedSkill = cachedSkills?.skills.find((skill) => {
       if (skill.pluginId !== plugin.id) return false;
       const segments = skill.filePath.split(/[\\/]/u);
       return segments.at(-2) === capabilityId || skill.name === capabilityId;

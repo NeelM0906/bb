@@ -176,6 +176,12 @@ export function getPluginDetailRoutePath({
   return `${TOOLS_PLUGINS_ROUTE_PATH}/${encodeURIComponent(pluginId)}`;
 }
 
+export function getPluginConfigurationRoutePath(
+  args: PluginDetailRoutePathArgs,
+): string {
+  return `${getPluginDetailRoutePath(args)}#configuration`;
+}
+
 export function getAutomationsRoutePath(): string {
   return AUTOMATIONS_ROUTE_PATH;
 }

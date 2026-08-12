@@ -43,10 +43,12 @@ import {
 import { PluginDetail } from "./PluginDetail";
 import { SkillDetailView } from "./SkillDetailView";
 import { projectSkillsQueryKey } from "@/hooks/queries/query-keys";
+import { sdk } from "@/lib/sdk";
 
 afterEach(() => {
   cleanup();
   resetPluginSlotStoreForTest();
+  vi.restoreAllMocks();
 });
 
 /** The rendered recipe: each section's kind and its visible label, in order. */
@@ -89,13 +91,15 @@ const PLUGIN: PluginListItem = {
 
 function renderPlugin(
   plugin: PluginListItem,
-  options?: { skills?: SkillSummary[] },
+  options?: { skills?: SkillSummary[]; seedSkillsCache?: boolean },
 ) {
   const { wrapper: QueryClientWrapper, queryClient } =
     createQueryClientTestHarness();
-  queryClient.setQueryData(projectSkillsQueryKey(PERSONAL_PROJECT_ID), {
-    skills: options?.skills ?? [],
-  });
+  if (options?.seedSkillsCache !== false) {
+    queryClient.setQueryData(projectSkillsQueryKey(PERSONAL_PROJECT_ID), {
+      skills: options?.skills ?? [],
+    });
+  }
   return render(
     <MemoryRouter>
       <QueryClientWrapper>
@@ -324,6 +328,9 @@ describe("Plugin detail recipe", () => {
   });
 
   it("links every capability with a stable destination to its owning surface", () => {
+    const listSkills = vi
+      .spyOn(sdk.skills, "list")
+      .mockResolvedValue({ skills: [] });
     setPluginSlotRegistrations("github", {
       homepageSections: [
         {
@@ -437,6 +444,33 @@ describe("Plugin detail recipe", () => {
     expect(screen.getAllByRole("link", { name: "Settings" })).toHaveLength(1);
     expect(screen.queryByRole("link", { name: "Inspect issue" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Sync status" })).toBeNull();
+    expect(listSkills).not.toHaveBeenCalled();
+  });
+
+  it("links uncached plugin skills to the library without discovering skills", () => {
+    const listSkills = vi
+      .spyOn(sdk.skills, "list")
+      .mockResolvedValue({ skills: [] });
+
+    renderPlugin(
+      {
+        ...PLUGIN,
+        capabilities: [
+          {
+            kind: "skill",
+            id: "review",
+            label: "review",
+            detail: "Reviews pull requests.",
+          },
+        ],
+      },
+      { seedSkillsCache: false },
+    );
+
+    expect(
+      screen.getByRole("link", { name: "review" }).getAttribute("href"),
+    ).toBe("/tools/skills?view=library");
+    expect(listSkills).not.toHaveBeenCalled();
   });
 
   it("does not preview an unloaded frontend app as a capability", () => {

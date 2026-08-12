@@ -8,6 +8,7 @@ import { HashNavigationScroll } from "./App";
 describe("HashNavigationScroll", () => {
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -54,5 +55,24 @@ describe("HashNavigationScroll", () => {
         inline: "nearest",
       });
     });
+  });
+
+  it("stops observing when a destination does not mount by the deadline", async () => {
+    vi.useFakeTimers();
+    const getElementById = vi.spyOn(document, "getElementById");
+    const view = render(
+      <MemoryRouter initialEntries={["/#destination-that-never-mounts"]}>
+        <HashNavigationScroll />
+      </MemoryRouter>,
+    );
+
+    expect(getElementById).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    const callsAfterDeadline = getElementById.mock.calls.length;
+
+    view.container.appendChild(document.createElement("div"));
+    await Promise.resolve();
+
+    expect(getElementById).toHaveBeenCalledTimes(callsAfterDeadline);
   });
 });
