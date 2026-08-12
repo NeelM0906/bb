@@ -63,15 +63,44 @@ afterEach(async () => {
 
 describe("provisionWorkspace", () => {
   describe("unmanaged", () => {
+    it("returns one canonical path for symlink and alternate spellings", async () => {
+      const repoPath = await initRepo();
+      const canonicalRepoPath = await fs.realpath(repoPath);
+      const aliasParent = await makeTempDir("bb-provision-alias-parent-");
+      const aliasPath = path.join(aliasParent, "repo-alias");
+      await fs.symlink(repoPath, aliasPath, "dir");
+
+      const [targetWorkspace, aliasWorkspace, alternateWorkspace] =
+        await Promise.all([
+          provisionWorkspace({
+            workspaceProvisionType: "unmanaged",
+            path: repoPath,
+          }),
+          provisionWorkspace({
+            workspaceProvisionType: "unmanaged",
+            path: aliasPath,
+          }),
+          provisionWorkspace({
+            workspaceProvisionType: "unmanaged",
+            path: `${repoPath}${path.sep}.`,
+          }),
+        ]);
+
+      expect(targetWorkspace.path).toBe(canonicalRepoPath);
+      expect(aliasWorkspace.path).toBe(canonicalRepoPath);
+      expect(alternateWorkspace.path).toBe(canonicalRepoPath);
+    });
+
     it("provisions an unmanaged git repo and discovers properties", async () => {
       const repoPath = await initRepo();
+      const canonicalRepoPath = await fs.realpath(repoPath);
 
       const ws = await provisionWorkspace({
         workspaceProvisionType: "unmanaged",
         path: repoPath,
       });
 
-      expect(ws.path).toBe(repoPath);
+      expect(ws.path).toBe(canonicalRepoPath);
       expect(ws.managed).toBe(false);
       expect(ws.isGitRepo).toBe(true);
       expect(ws.isWorktree).toBe(false);
@@ -466,6 +495,26 @@ describe("provisionWorkspace", () => {
   });
 
   describe("managed-worktree", () => {
+    it("preserves the requested path when reconnecting a managed worktree through a symlink", async () => {
+      const repoPath = await initRepo();
+      const parentDir = await makeTempDir("bb-provision-reconnect-parent-");
+      const targetPath = path.join(parentDir, "worktree");
+      const aliasPath = path.join(parentDir, "worktree-alias");
+      await runGit(["worktree", "add", "-B", "feature-alias", targetPath], {
+        cwd: repoPath,
+      });
+      await fs.symlink(targetPath, aliasPath, "dir");
+
+      const ws = await provisionWorkspace({
+        workspaceProvisionType: "reconnect-managed-worktree",
+        path: aliasPath,
+      });
+
+      expect(ws.path).toBe(aliasPath);
+      expect(ws.managed).toBe(true);
+      expect(ws.isWorktree).toBe(true);
+    });
+
     it("provisions a worktree and returns HostWorkspace", async () => {
       const repoPath = await initRepo();
       const parentDir = await makeTempDir("bb-provision-mwt-parent-");

@@ -1,9 +1,6 @@
 import { mkdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
-import type {
-  ProvisioningTranscriptEntry,
-  WorkspaceStatus,
-} from "@bb/domain";
+import type { ProvisioningTranscriptEntry, WorkspaceStatus } from "@bb/domain";
 import type {
   CommitOptions,
   CommitResult,
@@ -691,10 +688,11 @@ async function provisionUnmanaged(
     }
     isGitRepo = await detectGitRepo(opts.path);
   }
-  const isWorktree = isGitRepo ? await detectWorktree(opts.path) : false;
+  const canonicalPath = await realpath(opts.path);
+  const isWorktree = isGitRepo ? await detectWorktree(canonicalPath) : false;
 
   return new ProvisionedHostWorkspace({
-    path: opts.path,
+    path: canonicalPath,
     managed: false,
     isGitRepo,
     isWorktree,

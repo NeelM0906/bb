@@ -198,6 +198,28 @@ describe("environment command dispatch", () => {
     ]);
   });
 
+  it("returns the canonical unmanaged path reported by the host workspace", async () => {
+    const aliasPath = "/tmp/workspace-alias";
+    const canonicalPath = "/private/tmp/workspace-target";
+    const harness = createHarness({ workspacePath: aliasPath });
+    harness.setProvisionedWorkspace(
+      createFakeWorkspace(canonicalPath).workspace,
+    );
+
+    const result = await dispatchCommand(
+      {
+        type: "environment.provision",
+        environmentId: "env-canonical",
+        initiator: null,
+        workspaceProvisionType: "unmanaged",
+        path: aliasPath,
+      },
+      harness.dispatchOptions(),
+    );
+
+    expect(result.path).toBe(canonicalPath);
+  });
+
   it("covers environment.provision in managed-worktree mode", async () => {
     const harness = createHarness({
       workspacePath: "/tmp/worktree",

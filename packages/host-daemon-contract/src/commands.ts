@@ -1101,7 +1101,9 @@ const personalEnvironmentProvisionCommandSchema =
  * Idempotent — if path already exists and is valid, reports success.
  * Rolls back partial state on failure.
  *
- * Result: `{ path, isGitRepo, isWorktree, branchName, transcript }`.
+ * Result: `{ path, isGitRepo, isWorktree, branchName, transcript }`. For an
+ * unmanaged workspace, `path` is the canonical absolute path reported by the
+ * host filesystem.
  *
  * Lane-serialized per environmentId. Git worktree metadata mutations are
  * protected by the workspace implementation.
