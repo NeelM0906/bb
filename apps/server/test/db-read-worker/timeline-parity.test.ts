@@ -11,11 +11,16 @@ import {
   noopNotifier,
   upsertHost,
 } from "@bb/db";
-import { encodeClientTurnRequestIdNumber, threadScope } from "@bb/domain";
+import {
+  encodeClientTurnRequestIdNumber,
+  threadScope,
+  turnScope,
+} from "@bb/domain";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDbReadWorkerService } from "../../src/db-read-worker/service.js";
 import { buildThreadTimelineWithProfile } from "../../src/services/threads/timeline.js";
 import { toThreadListEntryResponses } from "../../src/services/threads/thread-runtime-display.js";
+import { DEFAULT_MAX_INLINE_OUTPUT_CHARS } from "../../src/services/threads/timeline-output-truncation.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -234,6 +239,90 @@ describe("database read worker timeline snapshot", () => {
 
     await Promise.all([read, timer]);
     expect(completionOrder[0]).toBe("timer");
+    await service.shutdown();
+    db.$client.close();
+  }, 20_000);
+
+  it("truncates nested oversized output in the worker without blocking a timer", async () => {
+    const { databasePath, db, thread } = setupFileDatabase(10);
+    const oversizedDiff = "z".repeat(DEFAULT_MAX_INLINE_OUTPUT_CHARS * 64);
+    const providerThreadId = "provider-thread-oversized";
+    insertEvents(db, noopNotifier, [
+      {
+        data: JSON.stringify({}),
+        itemId: null,
+        itemKind: null,
+        providerThreadId,
+        scope: turnScope("turn-oversized"),
+        sequence: 11,
+        threadId: thread.id,
+        type: "turn/started",
+      },
+      {
+        data: JSON.stringify({
+          item: {
+            approvalStatus: null,
+            changes: [
+              { diff: oversizedDiff, kind: "update", path: "src/large.ts" },
+            ],
+            id: "file-change-oversized",
+            status: "completed",
+            type: "fileChange",
+          },
+        }),
+        itemId: "file-change-oversized",
+        itemKind: "fileChange",
+        providerThreadId,
+        scope: turnScope("turn-oversized"),
+        sequence: 12,
+        threadId: thread.id,
+        type: "item/completed",
+      },
+      {
+        data: JSON.stringify({ status: "completed" }),
+        itemId: null,
+        itemKind: null,
+        providerThreadId,
+        scope: turnScope("turn-oversized"),
+        sequence: 13,
+        threadId: thread.id,
+        type: "turn/completed",
+      },
+    ]);
+    const service = createDbReadWorkerService({ databasePath });
+    await service.ready();
+    const completionOrder: string[] = [];
+    const snapshotPromise = service
+      .timelineSnapshot({
+        kind: "timeline",
+        options: {
+          eventBudget: 10_000,
+          includeNestedRows: true,
+          includeProviderUnhandledOperations: false,
+          maxInlineOutputChars: DEFAULT_MAX_INLINE_OUTPUT_CHARS,
+          page: { kind: "latest", segmentLimit: 20 },
+        },
+        threadId: thread.id,
+      })
+      .then((snapshot) => {
+        completionOrder.push("read");
+        return snapshot;
+      });
+    const timer = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        completionOrder.push("timer");
+        resolve();
+      }, 0);
+    });
+
+    const [snapshot] = await Promise.all([snapshotPromise, timer]);
+    expect(completionOrder[0]).toBe("timer");
+    expect(snapshot.kind).toBe("timeline");
+    if (snapshot.kind === "timeline") {
+      const serialized = JSON.stringify(snapshot.response.rows);
+      expect(serialized).toContain("more characters truncated");
+      expect(serialized).not.toContain(oversizedDiff);
+    }
     await service.shutdown();
     db.$client.close();
   }, 20_000);

@@ -15,6 +15,10 @@ import {
   buildTimelineTurnSummaryDetails,
 } from "../services/threads/timeline.js";
 import {
+  DEFAULT_MAX_INLINE_OUTPUT_CHARS,
+  truncateTimelineResponseOutputs,
+} from "../services/threads/timeline-output-truncation.js";
+import {
   dbReadWorkerRequestSchema,
   dbReadWorkerResponseSchema,
   type DbReadWorkerRequest,
@@ -123,7 +127,14 @@ export function runDbReadWorker(): void {
               ...input.options,
               maxSeq,
             });
-            return { kind: "timeline", ...result };
+            return {
+              kind: "timeline",
+              profile: result.profile,
+              response: truncateTimelineResponseOutputs(
+                result.response,
+                DEFAULT_MAX_INLINE_OUTPUT_CHARS,
+              ),
+            };
           }
           case "conversationOutline":
             return {

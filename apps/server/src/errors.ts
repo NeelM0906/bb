@@ -78,6 +78,20 @@ export function errorToResponse(
   error: unknown,
   logger: ServerLogger,
 ): Response {
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return new Response(
+      JSON.stringify({
+        code: "client_closed_request",
+        message: "Client closed request",
+      }),
+      {
+        status: 499,
+        headers: {
+          "content-type": "application/json",
+        },
+      },
+    );
+  }
   if (error instanceof TurnStartGuardError) {
     logger.warn(
       { err: error, ...error.details },

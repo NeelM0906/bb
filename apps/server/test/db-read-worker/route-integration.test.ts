@@ -7,9 +7,41 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { readJson } from "../helpers/json.js";
 import { seedThread, seedThreadFixture } from "../helpers/seed.js";
-import { withTestHarness } from "../helpers/test-app.js";
+import { testLogger, withTestHarness } from "../helpers/test-app.js";
 
 describe("database read worker production routes", () => {
+  it("quietly terminates cancelled reads across worker-backed routes", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedThreadFixture(harness);
+      const loggedError = vi.spyOn(testLogger, "error");
+      const paths = [
+        "/api/v1/threads",
+        "/api/v1/projects?include=threads",
+        "/api/v1/sidebar-bootstrap",
+        `/api/v1/threads/${thread.id}/timeline`,
+        `/api/v1/threads/${thread.id}/conversation-outline`,
+        `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=turn-1&sourceSeqStart=0&sourceSeqEnd=0`,
+      ];
+
+      for (const path of paths) {
+        const abortController = new AbortController();
+        abortController.abort();
+        const response = await harness.app.request(
+          new Request(`http://localhost${path}`, {
+            signal: abortController.signal,
+          }),
+        );
+
+        expect(response.status, path).toBe(499);
+        await expect(readJson(response), path).resolves.toEqual({
+          code: "client_closed_request",
+          message: "Client closed request",
+        });
+      }
+      expect(loggedError).not.toHaveBeenCalled();
+    });
+  });
+
   it("serves health while a production timeline route runs in the worker", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedThreadFixture(harness);
@@ -93,10 +125,7 @@ describe("database read worker production routes", () => {
         harness.deps.dbReadWorker,
         "threadListSnapshot",
       );
-      const liveHostLookup = vi.spyOn(
-        harness.hub,
-        "getDaemonSessionIdForHost",
-      );
+      const liveHostLookup = vi.spyOn(harness.hub, "getDaemonSessionIdForHost");
 
       const listResponse = await harness.app.request(
         `/api/v1/threads?projectId=${project.id}`,

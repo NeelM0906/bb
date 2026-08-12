@@ -56,10 +56,7 @@ import {
   createThreadTimelineCache,
 } from "../../services/threads/timeline-cache.js";
 import { createTimelineLatestRowsCache } from "../../services/threads/timeline-latest-rows-cache.js";
-import {
-  DEFAULT_MAX_INLINE_OUTPUT_CHARS,
-  truncateTimelineResponseOutputs,
-} from "../../services/threads/timeline-output-truncation.js";
+import { DEFAULT_MAX_INLINE_OUTPUT_CHARS } from "../../services/threads/timeline-output-truncation.js";
 import { computeTimelineRowDelta } from "@bb/server-contract";
 import {
   findThreadEvent,
@@ -424,10 +421,7 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
         profile: snapshot.profile,
         threadId: thread.id,
       });
-      full = truncateTimelineResponseOutputs(
-        snapshot.response,
-        DEFAULT_MAX_INLINE_OUTPUT_CHARS,
-      );
+      full = snapshot.response;
       maxSeq = snapshot.response.maxSeq;
       timelineCache.set(
         buildThreadTimelineCacheKey({ ...keyArgs, maxSeq }),
