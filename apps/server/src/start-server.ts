@@ -28,6 +28,7 @@ import type { ServerRuntimeConfig } from "./types.js";
 import { NotificationHub } from "./ws/hub.js";
 import { WatchInterestCoordinator } from "./ws/watch-interests.js";
 import { HostSharedPortCoordinator } from "./ws/host-shared-ports.js";
+import { createDbReadWorkerService } from "./db-read-worker/service.js";
 
 interface StartHttpListenerArgs {
   fetch: Parameters<typeof serve>[0]["fetch"];
@@ -51,6 +52,10 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     dataDir: serverConfig.BB_DATA_DIR,
     logger,
   });
+  const dbReadWorker = createDbReadWorkerService({
+    databasePath: serverConfig.databasePath,
+  });
+  await dbReadWorker.ready();
   const hub = new NotificationHub();
   const watchInterests = new WatchInterestCoordinator({ db, hub });
   const sharedPorts = new HostSharedPortCoordinator({ db, hub });
@@ -146,6 +151,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       bbAppManagedConfig,
       config: runtimeConfig,
       db,
+      dbReadWorker,
       hub,
       lifecycleDedupers,
       logger,
@@ -239,6 +245,8 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       });
       await closeWebSockets();
       await closeServer;
+      await dbReadWorker.shutdown();
+      db.$client.close();
     })();
     return shutdownPromise;
   };

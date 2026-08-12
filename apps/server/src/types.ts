@@ -17,6 +17,7 @@ import type { NotificationHub } from "./ws/hub.js";
 import type { WatchInterestCoordinator } from "./ws/watch-interests.js";
 import type { HostSharedPortCoordinator } from "./ws/host-shared-ports.js";
 import type { SkillTreeRegistry } from "./services/skills/injected-skills.js";
+import type { DbReadWorkerService } from "./db-read-worker/service.js";
 
 export type ServerLogger = Pick<Logger, "debug" | "error" | "info" | "warn">;
 
@@ -52,6 +53,7 @@ export interface ServerRuntimeConfig {
 export interface AppDeps {
   config: ServerRuntimeConfig;
   db: DbConnection;
+  dbReadWorker: DbReadWorkerService;
   hub: NotificationHub;
   lifecycleDedupers: LifecycleDedupers;
   logger: ServerLogger;

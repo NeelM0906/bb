@@ -99,7 +99,12 @@ export async function createTestAppHarness(
   const { appVersionService, terminalCloseTimeoutMs, ...configOverrides } =
     overrides;
   const dataDir = await mkdtemp(join(tmpdir(), "bb-server-test-"));
-  const db = initDb(":memory:");
+  const databasePath = join(dataDir, "bb.db");
+  const db = initDb(databasePath);
+  const { createDbReadWorkerService } =
+    await import("../../src/db-read-worker/service.js");
+  const dbReadWorker = createDbReadWorkerService({ databasePath });
+  await dbReadWorker.ready();
   const hub = new NotificationHubImpl();
   const watchInterests = new WatchInterestCoordinator({ db, hub });
   const sharedPorts = new HostSharedPortCoordinator({ db, hub });
@@ -189,6 +194,7 @@ export async function createTestAppHarness(
     bbAppManagedConfig,
     config,
     db,
+    dbReadWorker,
     hub,
     lifecycleDedupers,
     logger: testLogger,
@@ -211,6 +217,8 @@ export async function createTestAppHarness(
     pluginService,
     pluginCatalogService,
     async cleanup(): Promise<void> {
+      await dbReadWorker.shutdown();
+      db.$client.close();
       await rm(dataDir, { recursive: true, force: true });
     },
   };

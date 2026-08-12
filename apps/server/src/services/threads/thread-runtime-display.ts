@@ -439,6 +439,38 @@ export function toThreadListEntryResponses(
   });
 }
 
+/**
+ * The read worker projects persisted runtime state without access to the
+ * process-local websocket hub. Apply only that live connectivity overlay on
+ * the main loop after the file-backed snapshot returns.
+ */
+export function overlayThreadListEntryLiveRuntime(
+  deps: ThreadRuntimeDisplayDeps,
+  entries: readonly ThreadListEntry[],
+): ThreadListEntry[] {
+  const activeHostIds = new Set(
+    entries.flatMap((entry) =>
+      entry.status === "active" && entry.environmentHostId !== null
+        ? [entry.environmentHostId]
+        : [],
+    ),
+  );
+  const connectedActiveHostIds = new Set(
+    [...activeHostIds].filter((hostId) =>
+      hasOpenDaemonSessionForHost(deps, hostId),
+    ),
+  );
+  if (connectedActiveHostIds.size === 0) {
+    return [...entries];
+  }
+  return entries.map((entry) =>
+    entry.environmentHostId !== null &&
+    connectedActiveHostIds.has(entry.environmentHostId)
+      ? { ...entry, runtime: threadStatusRuntimeState("active") }
+      : entry,
+  );
+}
+
 function toThreadListEntryResponseFromLatestSession(
   args: ToThreadListEntryResponseFromLatestSessionArgs,
 ): ThreadListEntry {

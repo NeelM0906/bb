@@ -44,9 +44,6 @@ import {
 import { requireThreadStoragePath } from "../../services/threads/thread-storage.js";
 import { toThreadQueuedMessage } from "../../services/threads/thread-queued-messages.js";
 import {
-  buildThreadConversationOutline,
-  buildThreadTimelineWithProfile,
-  buildTimelineTurnSummaryDetails,
   THREAD_TIMELINE_DEFAULT_SEGMENT_LIMIT,
   THREAD_TIMELINE_SEGMENT_LIMIT_MAX,
   type ThreadTimelinePageKind,
@@ -371,12 +368,12 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
   >();
   const CONVERSATION_OUTLINE_CACHE_MAX_ENTRIES = 128;
 
-  get(routes.timeline, (context, query) => {
+  get(routes.timeline, async (context, query) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     const page = parseThreadTimelinePage(query);
     const includeNestedRows = query.includeNestedRows === "true";
     const summaryOnly = query.summaryOnly === "true";
-    const maxSeq = getLatestThreadSequence(deps.db, { threadId: thread.id });
+    let maxSeq = getLatestThreadSequence(deps.db, { threadId: thread.id });
     const providerDisplayName = resolveThreadProviderDisplayName(
       deps,
       thread.providerId,
@@ -399,30 +396,44 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
       summaryOnly,
       includeProviderUnhandledOperations,
     };
-    const full = timelineCache.getOrBuild(
-      buildThreadTimelineCacheKey({ ...keyArgs, maxSeq }),
-      () => {
-        const { profile, response } = buildThreadTimelineWithProfile(
-          deps.db,
-          thread,
-          {
+    const cacheKey = buildThreadTimelineCacheKey({ ...keyArgs, maxSeq });
+    let full = timelineCache.get(cacheKey);
+    if (full === undefined) {
+      const snapshot = await deps.dbReadWorker.timelineSnapshot(
+        {
+          kind: "timeline",
+          threadId: thread.id,
+          options: {
             eventBudget,
             includeProviderUnhandledOperations,
             includeNestedRows,
             maxInlineOutputChars: DEFAULT_MAX_INLINE_OUTPUT_CHARS,
-            maxSeq,
             page,
             providerDisplayName,
             summaryOnly,
           },
+        },
+        { signal: context.req.raw.signal },
+      );
+      if (snapshot.kind !== "timeline") {
+        throw new Error(
+          "Database read worker returned a non-timeline snapshot",
         );
-        slowTimelineBuildLogger.log({ profile, threadId: thread.id });
-        return truncateTimelineResponseOutputs(
-          response,
-          DEFAULT_MAX_INLINE_OUTPUT_CHARS,
-        );
-      },
-    );
+      }
+      slowTimelineBuildLogger.log({
+        profile: snapshot.profile,
+        threadId: thread.id,
+      });
+      full = truncateTimelineResponseOutputs(
+        snapshot.response,
+        DEFAULT_MAX_INLINE_OUTPUT_CHARS,
+      );
+      maxSeq = snapshot.response.maxSeq;
+      timelineCache.set(
+        buildThreadTimelineCacheKey({ ...keyArgs, maxSeq }),
+        full,
+      );
+    }
 
     // Delta: when the client tells us the revision it currently holds and our
     // last-sent snapshot still matches it exactly, return only the changed rows.
@@ -447,7 +458,7 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
     );
   });
 
-  get(routes.conversationOutline, (context) => {
+  get(routes.conversationOutline, async (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     const maxSeq = getLatestThreadSequence(deps.db, { threadId: thread.id });
     const cacheKey = `${thread.id}:${maxSeq}`;
@@ -458,14 +469,24 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
       conversationOutlineCache.set(cacheKey, cached);
       return context.json(cached);
     }
-    const response = buildThreadConversationOutline(deps.db, thread, {
-      maxSeq,
-      providerDisplayName: resolveThreadProviderDisplayName(
-        deps,
-        thread.providerId,
-      ),
-    });
-    conversationOutlineCache.set(cacheKey, response);
+    const snapshot = await deps.dbReadWorker.timelineSnapshot(
+      {
+        kind: "conversationOutline",
+        providerDisplayName: resolveThreadProviderDisplayName(
+          deps,
+          thread.providerId,
+        ),
+        threadId: thread.id,
+      },
+      { signal: context.req.raw.signal },
+    );
+    if (snapshot.kind !== "conversationOutline") {
+      throw new Error(
+        "Database read worker returned a non-conversation-outline snapshot",
+      );
+    }
+    const response = snapshot.response;
+    conversationOutlineCache.set(`${thread.id}:${response.maxSeq}`, response);
     while (
       conversationOutlineCache.size > CONVERSATION_OUTLINE_CACHE_MAX_ENTRIES
     ) {
@@ -478,23 +499,32 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
     return context.json(response);
   });
 
-  get(routes.timelineTurnSummaryDetails, (context, query) => {
+  get(routes.timelineTurnSummaryDetails, async (context, query) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     const includeProviderUnhandledOperations =
       deps.config.isDevelopment ||
       getAppSettings(deps.db).showUnhandledProviderEvents;
-    return context.json(
-      buildTimelineTurnSummaryDetails(deps.db, thread, {
+    const snapshot = await deps.dbReadWorker.timelineSnapshot(
+      {
+        kind: "turnSummaryDetails",
         includeProviderUnhandledOperations,
         providerDisplayName: resolveThreadProviderDisplayName(
           deps,
           thread.providerId,
         ),
+        threadId: thread.id,
         turnId: query.turnId,
         sourceSeqStart: parseInteger(query.sourceSeqStart, "sourceSeqStart"),
         sourceSeqEnd: parseInteger(query.sourceSeqEnd, "sourceSeqEnd"),
-      }),
+      },
+      { signal: context.req.raw.signal },
     );
+    if (snapshot.kind !== "turnSummaryDetails") {
+      throw new Error(
+        "Database read worker returned a non-turn-summary-details snapshot",
+      );
+    }
+    return context.json(snapshot.response);
   });
 
   get(routes.output, (context) => {
