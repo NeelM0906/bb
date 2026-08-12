@@ -229,13 +229,26 @@ describe("PluginDetail official catalog lifecycle", () => {
       </MemoryRouter>
     );
 
+    // The in-app browser is a thread-panel surface, so even with the in-app
+    // link preference ON, this Tools-route action must open externally.
+    window.localStorage.setItem("bb.openLinksInAppBrowser", "true");
+    const openSpy = vi
+      .spyOn(window, "open")
+      .mockImplementation(() => null);
+
     render(detail(directPlugin));
     fireEvent.pointerDown(
       screen.getByRole("button", { name: "GitHub actions" }),
     );
-    expect(
+    fireEvent.click(
       await screen.findByRole("menuitem", { name: "Submit to gallery" }),
-    ).toBeTruthy();
+    );
+    expect(openSpy).toHaveBeenCalledWith(
+      "https://docs.google.com/forms/d/e/1FAIpQLScRTABhHwCjuZWYn0lJJd0aZT2cYvGk2KaZ2GF-1GsXoLMLSQ/viewform",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    window.localStorage.removeItem("bb.openLinksInAppBrowser");
     cleanup();
 
     render(detail(GITHUB_PLUGIN));

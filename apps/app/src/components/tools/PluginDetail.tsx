@@ -45,7 +45,7 @@ import { ProvenancePill } from "@/components/tools/ProvenancePill";
 import { isOfficialProvenance } from "@/components/plugin/plugin-provenance";
 import { PLUGIN_SUBMISSION_FORM_URL } from "@/components/plugin/plugin-submission-form";
 import { appToast } from "@/components/ui/app-toast";
-import { useOpenUrlByPreference } from "@/lib/url-open-routing";
+import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 import {
   usePluginSource,
   type PluginCatalogSearchEntry,
@@ -280,7 +280,6 @@ export function PluginDetail({
   const sourceQuery = usePluginSource(plugin?.id ?? "", {
     enabled: plugin !== null && pluginHasUpdateSurfaces(plugin),
   });
-  const openUrl = useOpenUrlByPreference();
   if (isLoading) {
     return (
       <ResourceListState
@@ -350,14 +349,17 @@ export function PluginDetail({
       : []),
     // An ownership action like Edit: you submit your own plugin, so it only
     // renders on user-provenance plugins — official ones are already in the
-    // gallery. The intake form is the whole submission UI for now.
+    // gallery. The intake form is the whole submission UI for now, and it
+    // opens in the external browser like every other Tools-route link: the
+    // in-app browser is a thread-panel surface, so UrlOpenRoutingProvider is
+    // never mounted here and the preference cannot apply.
     ...(isOfficialProvenance(plugin.provenance)
       ? []
       : [
           {
             label: "Submit to gallery",
             icon: "Github" as const,
-            onSelect: () => openUrl(PLUGIN_SUBMISSION_FORM_URL),
+            onSelect: () => openUrlInExternalBrowser(PLUGIN_SUBMISSION_FORM_URL),
           },
         ]),
     {
