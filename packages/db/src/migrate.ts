@@ -575,6 +575,79 @@ function applyMigrationStatements(
   apply();
 }
 
+function replayMissingCanonicalTailAfterLatestAppliedCanonicalMigration(
+  db: DbConnection,
+  migrationsFolder: string,
+): void {
+  if (!tableExists(db, "__drizzle_migrations")) {
+    return;
+  }
+
+  const expectedMigrations = readExpectedAppliedMigrations(migrationsFolder);
+  for (let index = 1; index < expectedMigrations.length; index += 1) {
+    if (
+      expectedMigrations[index - 1].createdAt >=
+      expectedMigrations[index].createdAt
+    ) {
+      throw new Error(
+        "Canonical migration journal timestamps must be unique and strictly increasing.",
+      );
+    }
+  }
+
+  const appliedMigrations = db.$client
+    .prepare<[], AppliedMigrationIdentityRow>(
+      "SELECT hash, created_at AS createdAt FROM __drizzle_migrations",
+    )
+    .all();
+  const hasAppliedCanonicalMigration = (migration: ExpectedAppliedMigration) =>
+    hasAppliedMigrationHash(migration, appliedMigrations);
+
+  if (
+    expectedMigrations.some((migration) =>
+      appliedMigrations.some(
+        (appliedMigration) =>
+          appliedMigration.createdAt === migration.createdAt &&
+          appliedMigration.hash !== migration.hash,
+      ),
+    )
+  ) {
+    return;
+  }
+
+  let latestAppliedCanonicalMigrationIndex = -1;
+  for (let index = 0; index < expectedMigrations.length; index += 1) {
+    if (hasAppliedCanonicalMigration(expectedMigrations[index])) {
+      latestAppliedCanonicalMigrationIndex = index;
+    }
+  }
+  if (latestAppliedCanonicalMigrationIndex === -1) {
+    return;
+  }
+
+  const firstMissingCanonicalMigrationIndex = expectedMigrations.findIndex(
+    (migration) => !hasAppliedCanonicalMigration(migration),
+  );
+  if (firstMissingCanonicalMigrationIndex === -1) {
+    return;
+  }
+
+  const missingCanonicalTail = expectedMigrations.slice(
+    firstMissingCanonicalMigrationIndex,
+  );
+  if (
+    firstMissingCanonicalMigrationIndex <=
+      latestAppliedCanonicalMigrationIndex ||
+    missingCanonicalTail.some(hasAppliedCanonicalMigration)
+  ) {
+    return;
+  }
+
+  for (const migration of missingCanonicalTail) {
+    applyMigrationStatements(db, migration);
+  }
+}
+
 function hasPublishedTimestampFallback(
   expectedMigration: ExpectedAppliedMigration,
   appliedCreatedAts: Set<number>,
@@ -1504,6 +1577,10 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
     }
     applyReorderedCleanupMigrations(db, migrationsFolder);
     applyQueuedMessageGroupingSchema(db);
+    replayMissingCanonicalTailAfterLatestAppliedCanonicalMigration(
+      db,
+      migrationsFolder,
+    );
   } finally {
     sqlite.pragma("foreign_keys = ON");
   }
