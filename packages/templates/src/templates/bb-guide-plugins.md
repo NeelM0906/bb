@@ -137,6 +137,8 @@ added/updated/unchanged counts.
 
   bb plugin search <query>       Search BB's official plugins (bundled with
                                  the app)
+  bb plugin submit               Print the intake form link for submitting a
+                                 plugin to BB's gallery
   bb plugin install <entry>      Install a bundled official plugin by name
                                  (github, docs, memory, tasks,
                                  t3sidebar), a local

@@ -617,6 +617,10 @@ them by mixing ink into canvas), the `--primary` accent, the secondary text tier
   - `bb plugin search <query> [--json]` — search the official plugins by id,
     name, description, or category; status shows installed / compatible /
     requires newer bb.
+  - `bb plugin submit [--json]` — print the link to BB's plugin gallery intake
+    form (a public GitHub repo is required; submission happens in the browser,
+    and there is no status to poll afterwards). Give the link to the user —
+    the form asks for details only its author knows, including their email.
 - Commands:
   - `bb plugin install <src>` — official plugin name (github, docs, memory,
     tasks), local path, `builtin:<name>`,

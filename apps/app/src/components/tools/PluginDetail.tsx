@@ -10,6 +10,7 @@ import {
   ResourceOverflowMenu,
   type ResourceOverflowMenuItem,
 } from "@bb/shared-ui/resource-list";
+import { PLUGIN_SUBMISSION_FORM_URL } from "@bb/domain";
 import { Switch } from "@bb/shared-ui/switch";
 import {
   Tooltip,
@@ -43,7 +44,7 @@ import {
 import { PluginBannerBar } from "@/components/tools/plugin-detail-banner";
 import { ProvenancePill } from "@/components/tools/ProvenancePill";
 import { isOfficialProvenance } from "@/components/plugin/plugin-provenance";
-import { PLUGIN_SUBMISSION_FORM_URL } from "@/components/plugin/plugin-submission-form";
+
 import { appToast } from "@/components/ui/app-toast";
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 import {
