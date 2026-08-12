@@ -624,17 +624,6 @@ function parsePorcelainPathToken(
   return parseUnquotedPorcelainPathToken(rawPath, startIndex);
 }
 
-/**
- * Decodes a git C-style quoted path token (the `"..."` form git uses for paths
- * with special characters, e.g. in `diff --git` headers or `--name-status`
- * without `-z`). The token must include its surrounding double quotes. Octal and
- * single-character escape sequences are decoded back to their raw bytes and the
- * result is interpreted as UTF-8 — matching the porcelain path decoder.
- */
-export function decodeGitQuotedPath(quotedToken: string): string {
-  return parseQuotedPorcelainPathToken(quotedToken, 0).value;
-}
-
 function parsePorcelainPath(rawPath: string): string {
   const sourcePath = parsePorcelainPathToken(rawPath, 0);
   if (

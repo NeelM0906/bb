@@ -200,12 +200,3 @@ export function getPullRequestAttentionDisplay(
   return ATTENTION_DISPLAY[pullRequest.attention];
 }
 
-export function getPullRequestSignalDisplays(
-  pullRequest: ThreadPullRequest,
-): readonly PullRequestDisplay[] {
-  return [
-    getPullRequestChecksDisplay(pullRequest),
-    getPullRequestReviewDisplay(pullRequest),
-    getPullRequestMergeabilityDisplay(pullRequest),
-  ];
-}

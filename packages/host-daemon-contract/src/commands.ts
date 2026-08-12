@@ -2133,13 +2133,6 @@ function hostDaemonCommandDescriptorsForTransport<
   );
 }
 
-function hostDaemonCommandDescriptorsForRetryableOnlineRpc(): HostDaemonRetryableOnlineRpcCommandDescriptor[] {
-  return hostDaemonCommandDescriptorsForTransport("onlineRpc").filter(
-    (descriptor): descriptor is HostDaemonRetryableOnlineRpcCommandDescriptor =>
-      descriptor.retryable,
-  );
-}
-
 function hostDaemonCommandTypesForTransport<
   const Transport extends HostDaemonCommandTransport,
 >(transport: Transport): HostDaemonCommandTypeForTransport<Transport>[] {
@@ -2161,19 +2154,6 @@ function hostDaemonCommandSchemaForTransport<
       HostDaemonSchemaForTransport<Transport>,
       HostDaemonSchemaForTransport<Transport>,
       ...HostDaemonSchemaForTransport<Transport>[],
-    ],
-  );
-}
-
-function hostDaemonRetryableOnlineRpcCommandUnionSchema(): z.ZodType<HostDaemonRetryableOnlineRpcCommand> {
-  const schemas = hostDaemonCommandDescriptorsForRetryableOnlineRpc().map(
-    (descriptor) => descriptor.schema,
-  );
-  return z.union(
-    schemas as [
-      HostDaemonRetryableOnlineRpcCommandSchema,
-      HostDaemonRetryableOnlineRpcCommandSchema,
-      ...HostDaemonRetryableOnlineRpcCommandSchema[],
     ],
   );
 }
@@ -2236,8 +2216,6 @@ export const hostDaemonCommandSchema =
   hostDaemonCommandSchemaForTransport("settled");
 export const hostDaemonOnlineRpcCommandSchema =
   hostDaemonCommandSchemaForTransport("onlineRpc");
-export const hostDaemonRetryableOnlineRpcCommandSchema =
-  hostDaemonRetryableOnlineRpcCommandUnionSchema();
 export const hostDaemonRpcCommandSchema = z.union([
   hostDaemonOnlineRpcCommandSchema,
   hostDaemonCommandSchema,

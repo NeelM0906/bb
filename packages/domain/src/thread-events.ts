@@ -79,9 +79,6 @@ export const threadProvisioningReasonValues = [
   "tell-after-missing-environment-attachment",
   "resume-missing-provider-thread",
 ] as const;
-export const threadProvisioningReasonSchema = z.enum(
-  threadProvisioningReasonValues,
-);
 
 export const threadEnvironmentStartReasonValues = [
   ...threadProvisioningReasonValues,
@@ -319,11 +316,6 @@ export const systemLegacyUserMessageEventDataSchema = z.object({
 export type SystemLegacyUserMessageEventData = z.infer<
   typeof systemLegacyUserMessageEventDataSchema
 >;
-
-export const turnLifecycleEventDataSchema = z.object({
-  turnId: z.string().optional(),
-  input: z.array(promptInputSchema).optional(),
-});
 
 export const systemProviderTurnWatchdogEventDataSchema = z.object({
   reason: z.literal("provider-turn-idle"),
