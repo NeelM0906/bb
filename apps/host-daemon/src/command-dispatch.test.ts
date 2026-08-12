@@ -14,6 +14,7 @@ import {
   dispatchOnlineRpcCommand,
 } from "./command-dispatch.js";
 import type { CommandOf } from "./command-dispatch-support.js";
+import { HostAdmissionController } from "./host-admission-controller.js";
 import { RuntimeManager } from "./runtime-manager.js";
 
 const WORKSPACE_PATH = "/tmp/bb-command-dispatch-test";
@@ -316,6 +317,81 @@ async function runSuccessfulClaudeCodeUpdateVerification(args: {
   );
   return { events, getProviderCliStatusForProvider, result };
 }
+
+describe("dispatchOnlineRpcCommand", () => {
+  it("reserves, reconciles, and releases host admission through RPC dispatch", async () => {
+    const manager = new RuntimeManager({
+      createRuntime,
+      provisionWorkspace: async () => createWorkspace(),
+    });
+    const hostAdmissionController = new HostAdmissionController({
+      hostId: "host-1",
+      limit: 1,
+      listProviderProcessDiagnostics: () => [],
+      reapIdleProviderSessions: vi.fn(async () => ({ reapedSessions: [] })),
+      randomUUID: () => "token-1",
+    });
+    const options = {
+      dataDir: "/tmp/bb-data",
+      eventSink: {
+        emit: vi.fn(),
+        flush: vi.fn(async () => undefined),
+      },
+      fetchProjectAttachment: async () => {
+        throw new Error("Unexpected project attachment fetch");
+      },
+      hostAdmissionController,
+      runtimeManager: manager,
+      threadStorageRootPath: "/tmp/bb-thread-storage",
+    };
+
+    const reserved = await dispatchOnlineRpcCommand(
+      {
+        type: "host.admission.reserve",
+        hostId: "host-1",
+        requestId: "creq_23456789ab",
+        threadId: "thread-1",
+        reason: "interactive",
+      },
+      options,
+    );
+    expect(reserved).toEqual({
+      outcome: "reserved",
+      reservation: {
+        generation: 1,
+        hostId: "host-1",
+        reason: "interactive",
+        token: "token-1",
+      },
+    });
+    if (reserved.outcome !== "reserved") {
+      throw new Error("Expected host admission reservation");
+    }
+    await expect(
+      dispatchOnlineRpcCommand({ type: "host.admission.reconcile" }, options),
+    ).resolves.toEqual({
+      reservations: [
+        {
+          requestIds: ["creq_23456789ab"],
+          reservation: reserved.reservation,
+          threadId: "thread-1",
+        },
+      ],
+    });
+    await expect(
+      dispatchOnlineRpcCommand(
+        {
+          type: "host.admission.release",
+          reservation: reserved.reservation,
+        },
+        options,
+      ),
+    ).resolves.toEqual({ released: true });
+    await expect(
+      dispatchOnlineRpcCommand({ type: "host.admission.reconcile" }, options),
+    ).resolves.toEqual({ reservations: [] });
+  });
+});
 
 describe("dispatchCommand", () => {
   it("flushes buffered events before reporting thread.stop success", async () => {

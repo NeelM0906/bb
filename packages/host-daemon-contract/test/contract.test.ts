@@ -171,6 +171,30 @@ const WORKSPACE_DIFF_AVAILABLE_RESULT: JsonObject = {
 };
 
 const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
+  "host.admission.reserve": {
+    outcome: "reserved",
+    reservation: {
+      token: "reservation-token",
+      generation: 1,
+      hostId: "host-1",
+      reason: "interactive",
+    },
+  },
+  "host.admission.release": { released: true },
+  "host.admission.reconcile": {
+    reservations: [
+      {
+        requestIds: [CLIENT_REQUEST_ID],
+        reservation: {
+          token: "reservation-token",
+          generation: 1,
+          hostId: "host-1",
+          reason: "interactive",
+        },
+        threadId: "thread-1",
+      },
+    ],
+  },
   "connect-tunnel.ensure-identity": {
     label: "sawyer-air",
     baseDomain: "getbb.app",
@@ -1056,10 +1080,9 @@ describe("host-daemon local schemas", () => {
 });
 
 describe("host-daemon command schemas", () => {
-  // Version 107 adds required pre-start turn state to provider-exit snapshots,
-  // allowing the daemon to settle accepted work when a provider exits before
-  // turn/started. Older daemons cannot preserve this lifecycle invariant.
-  it("uses protocol version 107 for provider exit reconciliation", () => {
+  // Version 107 coordinates provider-exit reconciliation and host admission.
+  // Older daemons cannot preserve either lifecycle invariant.
+  it("uses protocol version 107 for lifecycle and admission reconciliation", () => {
     expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(107);
   });
 

@@ -356,7 +356,10 @@ afterEach(async () => {
 
 async function createAppFixture(
   args: CreateFetchRecorderArgs = {},
-  options: { closeMachineAuthProxy?: () => Promise<void> } = {},
+  options: {
+    closeMachineAuthProxy?: () => Promise<void>;
+    hostAdmissionLimit?: number;
+  } = {},
 ): Promise<HostDaemonAppFixture> {
   const dataDir = await makeTempDir("bb-host-daemon-app-test-");
   const fetchRecorder = createFetchRecorder(args);
@@ -379,6 +382,9 @@ async function createAppFixture(
     },
     fetchFn: fetchRecorder.fetchFn,
     createWebSocket: createOpeningWebSocket(),
+    ...(options.hostAdmissionLimit === undefined
+      ? {}
+      : { hostAdmissionLimit: options.hostAdmissionLimit }),
     ...(options.closeMachineAuthProxy
       ? { closeMachineAuthProxy: options.closeMachineAuthProxy }
       : {}),
@@ -393,6 +399,51 @@ async function createAppFixture(
 }
 
 describe("createHostDaemonApp", () => {
+  it("constructs one host-wide admission controller with the configured limit", async () => {
+    const { app } = await createAppFixture({}, { hostAdmissionLimit: 1 });
+    try {
+      const first = await app.router.handleOnlineRpcRequest({
+        type: "host-rpc.request",
+        requestId: "admission-first",
+        command: {
+          type: "host.admission.reserve",
+          hostId: "host-app-test",
+          requestId: "creq_23456789ab",
+          threadId: "thread-1",
+          reason: "interactive",
+        },
+      });
+      const second = await app.router.handleOnlineRpcRequest({
+        type: "host-rpc.request",
+        requestId: "admission-second",
+        command: {
+          type: "host.admission.reserve",
+          hostId: "host-app-test",
+          requestId: "creq_23456789ac",
+          threadId: "thread-2",
+          reason: "automation",
+        },
+      });
+
+      expect(first).toMatchObject({
+        ok: true,
+        result: { outcome: "reserved" },
+      });
+      expect(second).toEqual({
+        type: "host-rpc.response",
+        requestId: "admission-second",
+        commandType: "host.admission.reserve",
+        ok: true,
+        result: {
+          outcome: "unavailable",
+          reason: "Host work limit reached (1/1); waiting for a slot",
+        },
+      });
+    } finally {
+      await app.daemon.shutdown("test");
+    }
+  });
+
   it("closes the machine authentication proxy during daemon shutdown", async () => {
     const closeMachineAuthProxy = vi.fn(async () => undefined);
     const { app } = await createAppFixture({}, { closeMachineAuthProxy });

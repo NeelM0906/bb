@@ -17,6 +17,7 @@ import {
   type CommandOf,
   type CommandDispatchOptions,
 } from "./command-dispatch-support.js";
+import type { HostAdmissionController } from "./host-admission-controller.js";
 import {
   cancelEnvironmentProvision,
   provisionEnvironment,
@@ -127,6 +128,15 @@ function getCaffeinateManager(
   options: CommandDispatchOptions,
 ): CaffeinateManager {
   return options.caffeinateManager ?? defaultCaffeinateManager;
+}
+
+function getHostAdmissionController(
+  options: CommandDispatchOptions,
+): HostAdmissionController {
+  if (!options.hostAdmissionController) {
+    throw new Error("Host admission controller is unavailable");
+  }
+  return options.hostAdmissionController;
 }
 
 function handleProviderCliInstallEventLine(
@@ -599,6 +609,13 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
   "host.pick_folder": pickHostFolder,
   "host.caffeinate": async (command, options) =>
     getCaffeinateManager(options).setEnabled(command.enabled),
+  "host.admission.reserve": (command, options) =>
+    getHostAdmissionController(options).reserve(command),
+  "host.admission.release": async (command, options) =>
+    getHostAdmissionController(options).release(command.reservation),
+  "host.admission.reconcile": async (_command, options) => ({
+    reservations: getHostAdmissionController(options).listReservations(),
+  }),
   "host.list_commands": listHostCommands,
   "host.list_skills": listHostSkills,
   "host.delete_skill": deleteHostSkill,
