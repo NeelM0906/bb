@@ -16,7 +16,6 @@ export const experimentKeys = [
   "claudeCodeMockCliTraffic",
   "editMessages",
   "newOnboarding",
-  "toolsHub",
 ] as const;
 export const experimentKeySchema = z.enum(experimentKeys);
 export type ExperimentKey = z.infer<typeof experimentKeySchema>;

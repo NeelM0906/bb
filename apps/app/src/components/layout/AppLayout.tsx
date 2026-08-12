@@ -21,7 +21,6 @@ import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadT
 import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
 import { SettingsSidebar } from "@/components/settings/SettingsSidebar";
 import { ToolsSidebar } from "@/components/tools/ToolsSidebar";
-import { ToolsHubExperimentProvider } from "@/components/tools/tools-experiment-context";
 import {
   resolveAutomationBreadcrumbs,
   resolveToolsBreadcrumbs,
@@ -95,7 +94,6 @@ import { applyThreadOpenToLayout } from "@/views/thread-detail/splitThreadNaviga
 import { useThreadSplitsEnabled } from "@/hooks/useThreadSplitsEnabled";
 import { useSplitWorkspaceActive } from "@/hooks/useSplitWorkspaceActive";
 import { useAppSettingsRouteMemory } from "@/hooks/useAppSettingsRouteMemory";
-import { useSystemConfig } from "@/hooks/queries/system-queries";
 
 const SIDEBAR_WIDTH_KEY = "bb.sidebar.width";
 const SIDEBAR_OPEN_KEY = "bb.sidebar.open";
@@ -513,10 +511,7 @@ export function AppLayout({ children }: AppLayoutProps) {
   // Global settings routes swap the app sidebar for the settings sidebar.
   const isGlobalSettingsView =
     matchPath(`${SETTINGS_ROUTE_PATH}/*`, location.pathname) !== null;
-  const systemConfigQuery = useSystemConfig();
-  const toolsHubEnabled = systemConfigQuery.data?.experiments.toolsHub === true;
-  const isGlobalToolsView =
-    toolsHubEnabled && isToolsRoutePath(location.pathname);
+  const isGlobalToolsView = isToolsRoutePath(location.pathname);
   const pluginPanelMatch = matchPath(
     PLUGIN_PANEL_ROUTE_PATH,
     location.pathname,
@@ -620,17 +615,11 @@ export function AppLayout({ children }: AppLayoutProps) {
     : threadId
       ? `Thread ${threadId.slice(0, 8)}`
       : "Thread";
-  // Gated with the rest of the Tools surface: ROOT_ROUTE_ALIASES maps /skills
-  // into Tools crumbs, so a gate-off user following an old link would otherwise
-  // see Tools chrome for the whole config fetch before ToolsExperimentGate
-  // redirects them away.
-  const toolsBreadcrumbs = toolsHubEnabled
-    ? resolveToolsBreadcrumbs(
-        location.pathname,
-        location.search,
-        resourceRouteLabel,
-      )
-    : null;
+  const toolsBreadcrumbs = resolveToolsBreadcrumbs(
+    location.pathname,
+    location.search,
+    resourceRouteLabel,
+  );
   const automationBreadcrumbs = resolveAutomationBreadcrumbs(
     location.pathname,
     resourceRouteLabel,
@@ -825,81 +814,79 @@ export function AppLayout({ children }: AppLayoutProps) {
   }, [documentTitle]);
 
   return (
-    <ToolsHubExperimentProvider enabled={toolsHubEnabled}>
-      <ProjectActionsProvider>
-        <ThreadTitleMentionResourcesProvider {...titleMentionResources}>
-          <ThreadActionsProvider>
-            <IframeDragGuardOverlay active={isSidebarResizing} />
-            <SidebarStateBridge
-              providerRef={providerRef}
-              style={sidebarProviderStyle}
-            >
-              {isGlobalSettingsView ? (
-                <SettingsSidebar
-                  onResizeMouseDown={handleResizeMouseDown}
-                  isResizing={isSidebarResizing}
-                  showTopReserve={true}
-                  appRoutePath={appRoutePath}
-                />
-              ) : isGlobalToolsView ? (
-                <ToolsSidebar
-                  onResizeMouseDown={handleResizeMouseDown}
-                  isResizing={isSidebarResizing}
-                  showTopReserve={true}
-                  appRoutePath={toolsBackRoutePath}
-                />
-              ) : (
-                <AppSidebar
-                  onResizeMouseDown={handleResizeMouseDown}
-                  isResizing={isSidebarResizing}
-                  showTopReserve={true}
-                  settingsRoutePath={settingsRoutePath}
-                  toolsRoutePath={toolsHubEnabled ? toolsRoutePath : undefined}
-                />
-              )}
-              <SidebarInset>
-                <div
-                  ref={contentShellRef}
-                  data-testid="app-layout-content-shell"
-                  className="relative flex h-full min-h-0 min-w-0 w-full flex-col pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
-                >
-                  {showHeader ? (
-                    <AppHeader
-                      usesDesktopChrome={usesDesktopChrome}
-                      usesProjectChromeStyle={
-                        isRootView || isArchivedView || isSettingsView
-                      }
-                      isSettingsView={isSettingsView}
-                      projectId={projectId}
-                      project={project}
-                      pluginPanel={pluginPanel}
-                      pluginPanelSubPath={pluginPanelMatch?.params["*"] ?? ""}
-                      meta={meta}
-                    />
-                  ) : null}
-                  <main className="flex min-h-0 flex-1 flex-col p-4 md:p-5">
-                    {children}
-                  </main>
-                </div>
-              </SidebarInset>
-              <SidebarTriggerOverlay
-                reserveMacosTrafficLights={reserveMacosTrafficLights}
-                usesDesktopChrome={usesDesktopChrome}
+    <ProjectActionsProvider>
+      <ThreadTitleMentionResourcesProvider {...titleMentionResources}>
+        <ThreadActionsProvider>
+          <IframeDragGuardOverlay active={isSidebarResizing} />
+          <SidebarStateBridge
+            providerRef={providerRef}
+            style={sidebarProviderStyle}
+          >
+            {isGlobalSettingsView ? (
+              <SettingsSidebar
+                onResizeMouseDown={handleResizeMouseDown}
+                isResizing={isSidebarResizing}
+                showTopReserve={true}
+                appRoutePath={appRoutePath}
               />
-            </SidebarStateBridge>
-            <ProjectPathDialog
-              target={quickCreateProject.projectPathDialog.target}
-              pending={quickCreateProject.isCreating}
-              platform={quickCreateProject.platform}
-              hostId={quickCreateProject.hostId}
-              hostName={quickCreateProject.hostName}
-              hosts={quickCreateProject.hosts}
-              onOpenChange={quickCreateProject.projectPathDialog.onOpenChange}
-              onSubmit={quickCreateProject.submitProjectPath}
+            ) : isGlobalToolsView ? (
+              <ToolsSidebar
+                onResizeMouseDown={handleResizeMouseDown}
+                isResizing={isSidebarResizing}
+                showTopReserve={true}
+                appRoutePath={toolsBackRoutePath}
+              />
+            ) : (
+              <AppSidebar
+                onResizeMouseDown={handleResizeMouseDown}
+                isResizing={isSidebarResizing}
+                showTopReserve={true}
+                settingsRoutePath={settingsRoutePath}
+                toolsRoutePath={toolsRoutePath}
+              />
+            )}
+            <SidebarInset>
+              <div
+                ref={contentShellRef}
+                data-testid="app-layout-content-shell"
+                className="relative flex h-full min-h-0 min-w-0 w-full flex-col pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
+              >
+                {showHeader ? (
+                  <AppHeader
+                    usesDesktopChrome={usesDesktopChrome}
+                    usesProjectChromeStyle={
+                      isRootView || isArchivedView || isSettingsView
+                    }
+                    isSettingsView={isSettingsView}
+                    projectId={projectId}
+                    project={project}
+                    pluginPanel={pluginPanel}
+                    pluginPanelSubPath={pluginPanelMatch?.params["*"] ?? ""}
+                    meta={meta}
+                  />
+                ) : null}
+                <main className="flex min-h-0 flex-1 flex-col p-4 md:p-5">
+                  {children}
+                </main>
+              </div>
+            </SidebarInset>
+            <SidebarTriggerOverlay
+              reserveMacosTrafficLights={reserveMacosTrafficLights}
+              usesDesktopChrome={usesDesktopChrome}
             />
-          </ThreadActionsProvider>
-        </ThreadTitleMentionResourcesProvider>
-      </ProjectActionsProvider>
-    </ToolsHubExperimentProvider>
+          </SidebarStateBridge>
+          <ProjectPathDialog
+            target={quickCreateProject.projectPathDialog.target}
+            pending={quickCreateProject.isCreating}
+            platform={quickCreateProject.platform}
+            hostId={quickCreateProject.hostId}
+            hostName={quickCreateProject.hostName}
+            hosts={quickCreateProject.hosts}
+            onOpenChange={quickCreateProject.projectPathDialog.onOpenChange}
+            onSubmit={quickCreateProject.submitProjectPath}
+          />
+        </ThreadActionsProvider>
+      </ThreadTitleMentionResourcesProvider>
+    </ProjectActionsProvider>
   );
 }

@@ -22,12 +22,15 @@ import {
  * scopes plus that project's `.bb/skills`). The top-level Skills page passes the
  * personal project so it surfaces the user's global skill set.
  */
-export function useProjectSkills(projectId: string) {
+export function useProjectSkills(
+  projectId: string,
+  options?: { enabled?: boolean },
+) {
   return useQuery({
     queryKey: projectSkillsQueryKey(projectId),
     queryFn: ({ signal }) =>
       sdk.skills.list({ projectId, environmentId: null, signal }),
-    enabled: projectId.length > 0,
+    enabled: projectId.length > 0 && (options?.enabled ?? true),
     // Skills are on-disk files mutated out-of-band — agents write SKILL.md, and
     // users edit them in their own editor (the detail view's "Open in editor").
     // Always re-read from disk on mount/focus so the list never shows a stale set.

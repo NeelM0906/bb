@@ -97,10 +97,8 @@ message agents, or inspect projects, providers, and environments.
   inspect or change these server-backed values from agents. Pass
   `bb settings usage --machine <id-or-name>` to read provider limits from a
   specific connected machine instead of the primary machine.
-- The default-off `toolsHub` experiment exposes the unified Skills, Plugins,
-  and Automations management UI. Change it with
-  `bb settings experiment toolsHub <true|false>`. It does not load or unload
-  tools.
+- Extensions provides the unified Skills and Plugins management UI, while
+  Automations stays in the Plugins section beside threads.
 - The default-off `newOnboarding` experiment exposes the first-run agent and
   project setup guide. Change it with
   `bb settings experiment newOnboarding <true|false>`. Use
@@ -735,7 +733,7 @@ them by mixing ink into canvas), the `--primary` accent, the secondary text tier
   - `bb plugin run <id> [args...]` — explicit form of a plugin's CLI command.
   - `bb plugin new <name> [--app]` — scaffold a plugin (`--app` adds a frontend
     entry plus a typecheck-only `tsconfig.json`; scaffold sets
-    `engines.bbPluginSdk` to `^0.4.1`); `bb plugin build [path]` —
+    `engines.bbPluginSdk` to `^0.5.0`); `bb plugin build [path]` —
     compile the plugin into `dist/`: the backend bundle (`server.js` +
     `server.meta.json` stamped with SDK/identity metadata; preferred by
     git/npm installs over source) and, when `bb.app` is declared, `app.js` +
