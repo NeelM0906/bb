@@ -94,7 +94,7 @@ const AGENT_PATH_START = AGENT_BODY.indexOf(AGENT_PATH_TOKEN);
 const OVERFLOWING_ONE_LINE_AGENT_BODY =
   "TEST RESULT refines the diagnosis — RULE OUT eviction. A fire-and-forget direct POST with no wait parameter and no client-held stream should still render the complete report after expansion.";
 const RAW_THREAD_ID = "thr_dcwivn5n8w";
-const RAW_THREAD_BODY = `Continue in ${RAW_THREAD_ID}; keep \`${RAW_THREAD_ID}\` literal.\nMore details.`;
+const RAW_THREAD_BODY = `Continue in ${RAW_THREAD_ID}; exact code reference \`${RAW_THREAD_ID}\`.\nMore details.`;
 
 function threadListEntry(
   overrides: Partial<ThreadListEntry> = {},
@@ -295,29 +295,39 @@ describe("GeneratedConversationMessage markdown body", () => {
     expect(screen.getByText("src/app.ts")).toBeTruthy();
   });
 
-  it("renders a known raw thread id as a linked pill while leaving inline code literal when collapsed and expanded", () => {
+  it("renders prose and exact inline-code raw ids as linked pills when collapsed and expanded", () => {
     const { container } = renderAgentMessage(RAW_THREAD_BODY);
     const toggle = screen.getByRole("button", {
       name: /Message from Worker/u,
     });
 
-    const collapsedLink = screen.getByRole("link", {
+    const collapsedLinks = screen.getAllByRole("link", {
       name: "Raw agent mention target",
     });
-    expect(collapsedLink.getAttribute("href")).toBe(
-      `/projects/proj_target/threads/${RAW_THREAD_ID}`,
-    );
-    expect(container.querySelector("code")?.textContent).toBe(RAW_THREAD_ID);
+    expect(collapsedLinks).toHaveLength(2);
+    expect(
+      collapsedLinks.every(
+        (link) =>
+          link.getAttribute("href") ===
+          `/projects/proj_target/threads/${RAW_THREAD_ID}`,
+      ),
+    ).toBe(true);
+    expect(container.querySelector("code")).toBeNull();
 
     fireEvent.click(toggle);
 
-    const expandedLink = screen.getByRole("link", {
+    const expandedLinks = screen.getAllByRole("link", {
       name: "Raw agent mention target",
     });
-    expect(expandedLink.getAttribute("href")).toBe(
-      `/projects/proj_target/threads/${RAW_THREAD_ID}`,
-    );
-    expect(container.querySelector("code")?.textContent).toBe(RAW_THREAD_ID);
+    expect(expandedLinks).toHaveLength(2);
+    expect(
+      expandedLinks.every(
+        (link) =>
+          link.getAttribute("href") ===
+          `/projects/proj_target/threads/${RAW_THREAD_ID}`,
+      ),
+    ).toBe(true);
+    expect(container.querySelector("code")).toBeNull();
   });
 
   it("bounds a long single-line preview and reveals the complete body after expansion", () => {

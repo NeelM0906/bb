@@ -117,10 +117,12 @@ export interface MarkdownPreviewProps {
   linkRouting?: MarkdownLinkRouting;
   /**
    * When supplied, serialized `@thread:<id>` tokens and exact raw persisted
-   * thread ids in markdown prose render as canonical thread-mention pills.
-   * Raw ids remain text unless the live thread lookup or `mentions` resolves
-   * them. Raw-id pills always use the resolved thread resource's project route;
-   * `resolveLinkHref` continues to route serialized and offset-based mentions.
+   * thread ids in markdown prose render as canonical thread-mention pills. An
+   * inline-code span also renders as a pill when the entire span is one exact
+   * raw id; mixed inline code and fenced code remain literal. Raw ids remain
+   * text unless the live thread lookup or `mentions` resolves them. Raw-id pills
+   * always use the resolved thread resource's project route; `resolveLinkHref`
+   * continues to route serialized and offset-based mentions.
    */
   threadMentions?: MarkdownThreadMentions;
   /**

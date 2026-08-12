@@ -276,6 +276,50 @@ describe("ConversationMessageContent long user messages", () => {
 });
 
 describe("ConversationMessageContent user thread mentions", () => {
+  it("renders an exact raw thread id inline-code span as a linked mention pill", () => {
+    const mentionedThread = threadListEntry({
+      id: "thr_dcwivn5n8w",
+      projectId: "proj_personal",
+      title: "Inline user mention target",
+    });
+
+    const { container } = render(
+      <MemoryRouter>
+        <RouteNavigationProvider>
+          <ThreadTitleMentionResourcesProvider
+            sectionNamesById={new Map()}
+            projectNamesById={new Map()}
+            threadById={new Map([[mentionedThread.id, mentionedThread]])}
+          >
+            <ConversationMessageContent
+              role="user"
+              attachments={null}
+              childOrigin={null}
+              initiator="user"
+              mentions={[]}
+              senderThreadId={null}
+              senderThreadTitle={null}
+              senderIsPluginSideChat={false}
+              systemMessageKind="unlabeled"
+              systemMessageSubject={null}
+              text="Use `thr_dcwivn5n8w` for the follow-up."
+              turnRequest={{
+                isGrouped: false,
+                kind: "message",
+                status: "accepted",
+              }}
+            />
+          </ThreadTitleMentionResourcesProvider>
+        </RouteNavigationProvider>
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("link", { name: "Inline user mention target" }),
+    ).not.toBeNull();
+    expect(container.querySelector("code")).toBeNull();
+  });
+
   it("renders a raw thread id in message text as a linked mention pill", () => {
     const mentionedThread = threadListEntry({
       id: "thr_dcwivn5n8w",

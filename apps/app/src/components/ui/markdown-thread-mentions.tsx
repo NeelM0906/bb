@@ -1,10 +1,11 @@
 import type { ComponentType } from "react";
-import type { Nodes, Parent, PhrasingContent, Text } from "mdast";
+import type { InlineCode, Nodes, Parent, PhrasingContent, Text } from "mdast";
 // Side-effect import: augments mdast's `Data` with `hName`/`hProperties` so a
 // plain `text` node can carry the custom element instructions below.
 import type {} from "mdast-util-to-hast";
 import { visit } from "unist-util-visit";
 import {
+  isRawThreadId,
   RAW_THREAD_ID_PATTERN_SOURCE,
   type PromptTextMention,
 } from "@bb/domain";
@@ -39,11 +40,16 @@ const THREAD_MENTION_HAST_NAME = "bb-thread-mention";
 // `data-thread-id` DOM attribute that the component reads back.
 const THREAD_MENTION_THREAD_ID_PROPERTY = "dataThreadId";
 const RAW_THREAD_ID_PROPERTY = "dataRawThreadId";
+const RAW_THREAD_INLINE_CODE_PROPERTY = "dataRawThreadInlineCode";
 
 // Builds a real mdast `text` node that, via `data.hName`, renders as the custom
 // element rather than its (empty) text value. `mdast-util-to-hast` honours
 // `data.hName`/`data.hProperties` for any node.
-function threadMentionNode(threadId: string, rawThreadId = false): Text {
+function threadMentionNode(
+  threadId: string,
+  rawThreadId = false,
+  rawThreadInlineCode = false,
+): Text {
   return {
     type: "text",
     value: "",
@@ -52,6 +58,9 @@ function threadMentionNode(threadId: string, rawThreadId = false): Text {
       hProperties: {
         [THREAD_MENTION_THREAD_ID_PROPERTY]: threadId,
         ...(rawThreadId ? { [RAW_THREAD_ID_PROPERTY]: threadId } : {}),
+        ...(rawThreadInlineCode
+          ? { [RAW_THREAD_INLINE_CODE_PROPERTY]: "true" }
+          : {}),
       },
     },
   };
@@ -223,16 +232,37 @@ function isDirectiveMentionEndBoundary(parent: Parent, index: number): boolean {
 
 /**
  * Remark plugin that rewrites serialized thread mentions and raw persisted
- * thread ids inside text nodes into custom inline nodes the `components` map
- * renders as the canonical thread-mention pill. Markdown code nodes are not
- * text nodes, so inline and fenced code remain literal. When `remark-directive`
- * is active, its parser splits `@thread:<id>` into an `@thread` text suffix plus
- * a `:<id>` text directive; the second pass rejoins that exact pair before the
- * directive renderer sees it.
+ * thread ids into custom inline nodes the `components` map renders as the
+ * canonical thread-mention pill. An inline-code node is eligible only when its
+ * complete value is one exact raw thread id; mixed inline code, fenced code,
+ * and inline code used as an authored Markdown link label remain literal. When
+ * `remark-directive` is active, its parser splits `@thread:<id>` into an
+ * `@thread` text suffix plus a `:<id>` text directive; the second pass rejoins
+ * that exact pair before the directive renderer sees it.
  */
 export function remarkThreadMentions() {
   return (tree: Nodes): void => {
     const authoredMarkdownLinkNodes = collectAuthoredMarkdownLinkNodes(tree);
+    visit(
+      tree,
+      "inlineCode",
+      (node: InlineCode, index, parent: Parent | undefined) => {
+        if (
+          parent === undefined ||
+          index === undefined ||
+          authoredMarkdownLinkNodes.has(node) ||
+          !isRawThreadId(node.value)
+        ) {
+          return;
+        }
+        parent.children.splice(
+          index,
+          1,
+          threadMentionNode(node.value, true, true),
+        );
+        return index + 1;
+      },
+    );
     visit(tree, "text", (node: Text, index, parent: Parent | undefined) => {
       if (
         parent === undefined ||
@@ -300,6 +330,7 @@ interface BuildThreadMentionComponentArgs {
 
 interface ThreadMentionElementProps {
   "data-raw-thread-id"?: string;
+  "data-raw-thread-inline-code"?: string;
   "data-thread-id"?: string;
 }
 
@@ -335,10 +366,22 @@ export function buildThreadMentionComponent({
   mentions,
   resolveSegmentLinkHref,
 }: BuildThreadMentionComponentArgs): ComponentType<ThreadMentionElementProps> {
-  function RawThreadMentionPillWithQuery({ threadId }: { threadId: string }) {
+  function RawThreadMentionPillWithQuery({
+    inlineCode,
+    threadId,
+  }: {
+    inlineCode: boolean;
+    threadId: string;
+  }) {
     const resource = useRawThreadMentionResource(threadId);
     if (resource === null) {
-      return threadId;
+      return inlineCode ? (
+        <code className="rounded bg-muted/70 px-1.5 py-0.5 font-mono text-xs">
+          {threadId}
+        </code>
+      ) : (
+        threadId
+      );
     }
     return <PromptMentionPill resource={resource} serializedText={threadId} />;
   }
@@ -367,7 +410,12 @@ export function buildThreadMentionComponent({
     // the authoritative thread lookup so its pill routes through the target
     // thread's project rather than the project owning the current timeline.
     if (rawThreadId !== undefined) {
-      return <RawThreadMentionPillWithQuery threadId={threadId} />;
+      return (
+        <RawThreadMentionPillWithQuery
+          inlineCode={props["data-raw-thread-inline-code"] !== undefined}
+          threadId={threadId}
+        />
+      );
     }
     const persistedResource = mentions.find(
       (mention) =>

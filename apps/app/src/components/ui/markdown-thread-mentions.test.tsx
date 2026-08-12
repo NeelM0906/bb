@@ -217,7 +217,48 @@ describe("MarkdownPreview thread mentions", () => {
     expect(container.textContent).toBe(content);
   });
 
-  it("leaves raw thread ids inside inline and fenced code untouched", () => {
+  it("renders an exact raw-id inline-code span as a linked pill", () => {
+    const { container } = renderMarkdown(
+      <MarkdownPreview
+        content="`thr_dcwivn5n8w`"
+        threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+      />,
+      [
+        threadResponse({
+          id: "thr_dcwivn5n8w",
+          projectId: "proj_target",
+          title: "Inline code target",
+          titleFallback: "Inline code target",
+        }),
+      ],
+    );
+
+    const pill = screen.getByRole("link", { name: "Inline code target" });
+    expect(pill.getAttribute("href")).toBe(
+      "/projects/proj_target/threads/thr_dcwivn5n8w",
+    );
+    expect(container.querySelector("code")).toBeNull();
+    expect(sdk.threads.resolveMentions).not.toHaveBeenCalled();
+  });
+
+  it("leaves an unresolvable exact raw-id inline-code span as code", async () => {
+    const { container } = renderMarkdown(
+      <MarkdownPreview
+        content="`thr_2222222222`"
+        threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+      />,
+      [],
+    );
+
+    await waitFor(() => {
+      expect(sdk.threads.resolveMentions).toHaveBeenCalledTimes(1);
+    });
+
+    expect(container.querySelector("code")?.textContent).toBe("thr_2222222222");
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("leaves mixed inline code and fenced code untouched", () => {
     const { container } = renderMarkdown(
       <MarkdownPreview
         content={[
