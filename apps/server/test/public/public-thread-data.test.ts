@@ -597,6 +597,79 @@ describe("public thread data routes", () => {
     });
   });
 
+  it("keeps assistant prose on both sides of a command in the conversation outline", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness);
+
+      const seedTurnEvent = (sequence: number, data: object) => {
+        seedEvent(harness.deps, {
+          threadId: thread.id,
+          environmentId: environment.id,
+          providerThreadId: "provider-thread-1",
+          scope: turnScope("turn-1"),
+          sequence,
+          type: "item/completed",
+          data,
+        });
+      };
+
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId: "provider-thread-1",
+        scope: turnScope("turn-1"),
+        sequence: 1,
+        type: "turn/started",
+        data: {},
+      });
+      seedTurnEvent(2, {
+        item: {
+          type: "agentMessage",
+          id: "assistant-1",
+          text: "First assistant update.",
+        },
+      });
+      seedTurnEvent(3, {
+        item: {
+          type: "toolCall",
+          id: "command-1",
+          tool: "exec_command",
+          arguments: { cmd: "pnpm test" },
+          status: "completed",
+        },
+      });
+      seedTurnEvent(4, {
+        item: {
+          type: "agentMessage",
+          id: "assistant-2",
+          text: "Second assistant update.",
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId: "provider-thread-1",
+        scope: turnScope("turn-1"),
+        sequence: 5,
+        type: "turn/completed",
+        data: { status: "completed" },
+      });
+
+      const response = await harness.app.request(
+        `/api/v1/threads/${thread.id}/conversation-outline`,
+      );
+      expect(response.status).toBe(200);
+      const outline = threadConversationOutlineResponseSchema.parse(
+        await readJson(response),
+      );
+
+      expect(outline.items.map((item) => item.preview)).toEqual([
+        "First assistant update.",
+        "Second assistant update.",
+      ]);
+    });
+  });
+
   it("returns an empty conversation outline for a thread with no events", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedThreadFixture(harness);

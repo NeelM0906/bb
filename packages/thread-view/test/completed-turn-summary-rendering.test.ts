@@ -64,6 +64,49 @@ function requireOnlyTurnRow(rows: readonly TimelineRow[]): TimelineTurnRow {
 }
 
 describe("completed turn summary rendering", () => {
+  it("keeps assistant prose on both sides of command work visible", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const timeline = renderCompletedTimeline({
+      events: [
+        event.turnStarted(),
+        event.assistantCompleted({
+          itemId: "assistant-1",
+          text: "First assistant update.",
+        }),
+        event.commandCompleted({
+          itemId: "command-1",
+          command: "pnpm test",
+        }),
+        event.assistantCompleted({
+          itemId: "assistant-2",
+          text: "Second assistant update.",
+        }),
+        event.turnCompleted(),
+      ],
+    });
+
+    expect(rowSignatures(timeline.rows)).toEqual([
+      "conversation:assistant",
+      "turn:3-3",
+      "conversation:assistant",
+    ]);
+    expect(topLevelWorkRows(timeline.rows)).toHaveLength(0);
+    expect(turnRows(timeline.rows).map((row) => row.summaryCount)).toEqual([
+      1,
+    ]);
+    expect(
+      timeline.rows
+        .filter(
+          (row): row is Extract<TimelineRow, { kind: "conversation" }> =>
+            row.kind === "conversation",
+        )
+        .map((row) => row.text),
+    ).toEqual(["First assistant update.", "Second assistant update."]);
+    expect(
+      turnRows(timeline.rows).map((row) => rowSignatures(row.children ?? [])),
+    ).toEqual([["work:command"]]);
+  });
+
   it("emits a summary row for a completed final turn after accepted user input", () => {
     const event = createTimelineEventFactory({ threadId: "thread-1" });
     const request = event.clientTurnRequested({

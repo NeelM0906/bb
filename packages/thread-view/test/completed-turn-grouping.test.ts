@@ -130,7 +130,7 @@ describe("groupCompletedTurnMessages", () => {
     expect(groups.trailingMessages).toEqual([]);
   });
 
-  it("uses one summary group when no messages are ungroupable", () => {
+  it("keeps consecutive non-empty assistant prose messages outside summaries", () => {
     const messages = [
       assistantMessage({ id: "assistant-1", seq: 1 }),
       assistantMessage({ id: "assistant-2", seq: 2 }),
@@ -139,18 +139,11 @@ describe("groupCompletedTurnMessages", () => {
       completedTurn(messages, undefined),
     );
 
-    expect(groups.summaryItems).toMatchObject([
-      {
-        kind: "summary",
-        startedAt: 1,
-        completedAt: 2,
-        segmentIndex: null,
-        summaryCount: 2,
-      },
+    expect(groups.summaryItems).toEqual([
+      { kind: "ungrouped-message", message: messages[0] },
+      { kind: "ungrouped-message", message: messages[1] },
     ]);
-    expect(summarySourceMessageIds(groups)).toEqual([
-      ["assistant-1", "assistant-2"],
-    ]);
+    expect(summarySourceMessageIds(groups)).toEqual([]);
   });
 
   it("preserves the last assistant message before an ungroupable user message", () => {
@@ -210,17 +203,19 @@ describe("groupCompletedTurnMessages", () => {
     );
     const groups = groupCompletedTurnMessages(turn);
 
-    expect(groups.summaryItems).toMatchObject([
-      {
+    expect(groups.summaryItems).toEqual([
+      { kind: "ungrouped-message", message: turn.messages?.[0] },
+      expect.objectContaining({
         kind: "summary",
         startedAt: 1,
         completedAt: 4,
-        segmentIndex: null,
-        summaryCount: 4,
-      },
+        segmentIndex: 0,
+        summaryCount: 2,
+      }),
+      { kind: "ungrouped-message", message: turn.messages?.[3] },
     ]);
     expect(summarySourceMessageIds(groups)).toEqual([
-      ["assistant-before", "agent-steer", "system-steer", "assistant-after"],
+      ["agent-steer", "system-steer"],
     ]);
   });
 
@@ -235,32 +230,12 @@ describe("groupCompletedTurnMessages", () => {
     );
     const groups = groupCompletedTurnMessages(turn);
 
-    expect(groups.summaryItems).toMatchObject([
-      {
-        kind: "summary",
-        startedAt: 1,
-        completedAt: null,
-        segmentIndex: 0,
-        summaryCount: 1,
-      },
-      {
-        kind: "ungrouped-message",
-        message: {
-          id: "legacy-user-message",
-        },
-      },
-      {
-        kind: "summary",
-        startedAt: 3,
-        completedAt: null,
-        segmentIndex: 1,
-        summaryCount: 1,
-      },
+    expect(groups.summaryItems).toEqual([
+      { kind: "ungrouped-message", message: turn.messages?.[0] },
+      { kind: "ungrouped-message", message: turn.messages?.[1] },
+      { kind: "ungrouped-message", message: turn.messages?.[2] },
     ]);
-    expect(summarySourceMessageIds(groups)).toEqual([
-      ["assistant-before"],
-      ["assistant-after"],
-    ]);
+    expect(summarySourceMessageIds(groups)).toEqual([]);
   });
 
   it("slices terminal and trailing messages out of the summary groups", () => {
@@ -271,12 +246,9 @@ describe("groupCompletedTurnMessages", () => {
       completedTurn([before, terminal, trailing], terminal),
     );
 
-    expect(summarySourceMessageIds(groups)).toEqual([["before"]]);
-    expect(groups.summaryItems).toMatchObject([
-      {
-        kind: "summary",
-        sourceMessages: [{ id: "before" }],
-      },
+    expect(summarySourceMessageIds(groups)).toEqual([]);
+    expect(groups.summaryItems).toEqual([
+      { kind: "ungrouped-message", message: before },
     ]);
     expect(groups.terminalMessages.map((message) => message.id)).toEqual([
       "terminal",

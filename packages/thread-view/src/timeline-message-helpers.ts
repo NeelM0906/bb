@@ -23,7 +23,9 @@ export function isTimelineUngroupableMessage(
     return !isTimelineSummaryGroupableSteerMessage(message);
   }
   if (message.kind === "assistant-text") {
-    return message.isLegacyUserMessage === true;
+    return (
+      message.isLegacyUserMessage === true || message.text.trim().length > 0
+    );
   }
   return message.kind === "debug/raw-event";
 }
