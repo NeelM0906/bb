@@ -473,6 +473,7 @@ const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
           status: "completed",
           conclusion: "success",
           url: null,
+          startedAt: "2026-06-16T12:25:00Z",
         },
       ],
       reviewDecision: "APPROVED",
@@ -1055,10 +1056,12 @@ describe("host-daemon local schemas", () => {
 });
 
 describe("host-daemon command schemas", () => {
-  // Version 101 builds on Codex inference deadlines in version 100 with
-  // provider-native history checkpointing and ownership-leased staged rewinds.
-  it("uses protocol version 101 for leased staged thread rewind cleanup", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(101);
+  // Version 104 makes terminal.close idempotent in the daemon. An enrolled
+  // daemon on an older build silently ignores a close for a terminal missing
+  // from its in-memory map, leaving the server row running and the panel tab
+  // impossible to close, so enrolled machines must update for the new behavior.
+  it("uses protocol version 104 for idempotent terminal closes", () => {
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(104);
   });
 
   it("binds Plan cancellation to a required turn id and typed result", () => {

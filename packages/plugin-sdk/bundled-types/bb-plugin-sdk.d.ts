@@ -6021,6 +6021,7 @@ declare const hostDaemonCommandRegistry: {
                     stale: "stale";
                 }>>;
                 url: z$1.ZodNullable<z$1.ZodString>;
+                startedAt: z$1.ZodNullable<z$1.ZodString>;
             }, z$1.core.$strict>>;
             reviewDecision: z$1.ZodNullable<z$1.ZodEnum<{
                 APPROVED: "APPROVED";
