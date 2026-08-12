@@ -163,4 +163,3 @@ export function applyThreadPaneActionToLayout(
     maximizedPaneId: pane.paneId,
   };
 }
-

@@ -199,4 +199,3 @@ export function getPullRequestAttentionDisplay(
 ): PullRequestDisplay {
   return ATTENTION_DISPLAY[pullRequest.attention];
 }
-

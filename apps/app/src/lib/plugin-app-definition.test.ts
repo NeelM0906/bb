@@ -749,4 +749,3 @@ describe("collectPluginAppRegistrations", () => {
     });
   });
 });
-

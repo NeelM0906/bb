@@ -1135,10 +1135,6 @@ export function skillContentQueryKey(
   return [SKILL_CONTENT_QUERY_KEY, projectId, skillId, path] as const;
 }
 
-export function skillContentQueryKeyPrefix(projectId: string, skillId: string) {
-  return [SKILL_CONTENT_QUERY_KEY, projectId, skillId] as const;
-}
-
 export function skillFilesQueryKey(projectId: string, skillId: string) {
   return [SKILL_FILES_QUERY_KEY, projectId, skillId] as const;
 }
