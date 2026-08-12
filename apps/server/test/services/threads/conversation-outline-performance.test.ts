@@ -142,7 +142,14 @@ describe("thread conversation outline performance", () => {
 
     const outline = buildThreadConversationOutline(db, thread, { maxSeq: 4 });
 
-    expect(outline.items).toEqual([]);
+    expect(outline.items).toEqual([
+      {
+        attachmentSummary: null,
+        id: expect.any(String),
+        preview: "Failed answer collapsed behind the turn summary",
+        role: "assistant",
+      },
+    ]);
     db.$client.close();
   });
 });

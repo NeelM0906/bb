@@ -91,9 +91,7 @@ describe("completed turn summary rendering", () => {
       "conversation:assistant",
     ]);
     expect(topLevelWorkRows(timeline.rows)).toHaveLength(0);
-    expect(turnRows(timeline.rows).map((row) => row.summaryCount)).toEqual([
-      1,
-    ]);
+    expect(turnRows(timeline.rows).map((row) => row.summaryCount)).toEqual([1]);
     expect(
       timeline.rows
         .filter(
@@ -734,5 +732,47 @@ describe("completed turn summary rendering", () => {
       "conversation:assistant",
     ]);
     expect(turnRows(timeline.rows)).toHaveLength(0);
+  });
+
+  it("does not synthesize work summaries from whitespace-only assistant text", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const timeline = renderCompletedTimeline({
+      events: [
+        event.turnStarted(),
+        event.assistantCompleted({
+          itemId: "assistant-blank",
+          text: "   ",
+        }),
+        event.assistantCompleted({
+          itemId: "assistant-final",
+          text: "Done.",
+        }),
+        event.turnCompleted(),
+      ],
+    });
+
+    expect(rowSignatures(timeline.rows)).toEqual(["conversation:assistant"]);
+    expect(turnRows(timeline.rows)).toHaveLength(0);
+    expect(timeline.rows[0]).toMatchObject({
+      kind: "conversation",
+      role: "assistant",
+      text: "Done.",
+    });
+  });
+
+  it("does not render terminal whitespace-only assistant text", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const timeline = renderCompletedTimeline({
+      events: [
+        event.turnStarted(),
+        event.assistantCompleted({
+          itemId: "assistant-blank",
+          text: "   ",
+        }),
+        event.turnCompleted(),
+      ],
+    });
+
+    expect(timeline.rows).toEqual([]);
   });
 });

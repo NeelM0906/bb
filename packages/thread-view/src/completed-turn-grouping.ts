@@ -7,6 +7,7 @@ import { getMessageStartedAt } from "./format-helpers.js";
 import {
   findLastTerminalTimelineMessage,
   isSingletonContextCompaction,
+  isTimelineIgnoredBlankAssistantMessage,
   isTimelineUngroupableMessage,
 } from "./timeline-message-helpers.js";
 
@@ -168,9 +169,7 @@ function groupCompletedTurnSummaryMessages(
   let segmentIndex = 0;
   let externalBoundaryIndex = 0;
 
-  function appendSummaryGroup(
-    sourceMessages: EventProjectionMessage[],
-  ): void {
+  function appendSummaryGroup(sourceMessages: EventProjectionMessage[]): void {
     if (sourceMessages.length === 0) {
       return;
     }
@@ -214,7 +213,9 @@ function groupCompletedTurnSummaryMessages(
     });
   }
 
-  function flushExternalBoundariesBefore(message: EventProjectionMessage): void {
+  function flushExternalBoundariesBefore(
+    message: EventProjectionMessage,
+  ): void {
     while (
       externalBoundaryIndex < externalBoundarySeqs.length &&
       (externalBoundarySeqs[externalBoundaryIndex] ?? 0) <
@@ -251,9 +252,16 @@ function groupCompletedTurnSummaryMessages(
 export function groupCompletedTurnMessages(
   turn: EventProjectionTurn,
 ): CompletedTurnMessageGroups {
-  const messages = turn.messages ?? [];
+  const messages = (turn.messages ?? []).filter(
+    (message) => !isTimelineIgnoredBlankAssistantMessage(message),
+  );
+  const terminalMessage =
+    turn.terminalMessage &&
+    !isTimelineIgnoredBlankAssistantMessage(turn.terminalMessage)
+      ? turn.terminalMessage
+      : undefined;
   const { summaryMessages, terminalMessages, trailingMessages } =
-    splitCompletedTurnMessages(messages, turn.terminalMessage);
+    splitCompletedTurnMessages(messages, terminalMessage);
   return {
     summaryItems: unwrapSingletonCompactionGroups(
       groupCompletedTurnSummaryMessages(turn, summaryMessages),
