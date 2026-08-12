@@ -147,6 +147,48 @@ describe("ConversationMessageContent assistant thread mentions", () => {
 });
 
 describe("ConversationMessageContent long user messages", () => {
+  const rawThreadId = "thr_dcwivn5n8w";
+  const mentionedThread = threadListEntry({
+    id: rawThreadId,
+    projectId: "proj_target",
+    title: "Should stay code",
+  });
+
+  function renderLongUserMessage(text: string) {
+    const { wrapper } = createQueryClientTestHarness();
+    return render(
+      <MemoryRouter>
+        <RouteNavigationProvider>
+          <ThreadTitleMentionResourcesProvider
+            sectionNamesById={new Map()}
+            projectNamesById={new Map()}
+            threadById={new Map([[mentionedThread.id, mentionedThread]])}
+          >
+            <ConversationMessageContent
+              role="user"
+              attachments={null}
+              childOrigin={null}
+              initiator="user"
+              mentions={[]}
+              senderThreadId={null}
+              senderThreadTitle={null}
+              senderIsPluginSideChat={false}
+              systemMessageKind="unlabeled"
+              systemMessageSubject={null}
+              text={text}
+              turnRequest={{
+                isGrouped: false,
+                kind: "message",
+                status: "accepted",
+              }}
+            />
+          </ThreadTitleMentionResourcesProvider>
+        </RouteNavigationProvider>
+      </MemoryRouter>,
+      { wrapper },
+    );
+  }
+
   it("renders the complete message after expanding a capped preview", () => {
     const hiddenTail = "FULL_MESSAGE_TAIL";
     const text = `${"a".repeat(USER_MESSAGE_CHAR_CAP)}\n\n${hiddenTail}`;
@@ -187,6 +229,50 @@ describe("ConversationMessageContent long user messages", () => {
 
     expect(screen.queryByText(hiddenTail)).toBeNull();
   });
+
+  it("does not manufacture a pill when an inline-code span crosses the collapsed cap", () => {
+    const text = `\`${rawThreadId} ${"x".repeat(USER_MESSAGE_CHAR_CAP)}\` tail`;
+    const { container } = renderLongUserMessage(text);
+
+    expect(screen.queryByRole("link", { name: "Should stay code" })).toBeNull();
+    expect(container.querySelector("code")?.textContent).toContain(rawThreadId);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+
+    expect(screen.queryByRole("link", { name: "Should stay code" })).toBeNull();
+    expect(container.querySelector("code")?.textContent).toContain(rawThreadId);
+  });
+
+  it("preserves unmatched backticks in short and fully expanded messages", () => {
+    const shortView = renderLongUserMessage("hello `world");
+
+    expect(shortView.container.querySelector("code")).toBeNull();
+    expect(shortView.container.textContent).toContain("hello `world");
+    shortView.unmount();
+
+    const longText = `hello \`world ${"tail ".repeat(USER_MESSAGE_CHAR_CAP)}`;
+    const longView = renderLongUserMessage(longText);
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+
+    expect(longView.container.querySelector("code")).toBeNull();
+    expect(longView.container.textContent).toContain("hello `world");
+  });
+
+  it("does not manufacture a pill when a path suffix falls beyond the collapsed cap", () => {
+    const prefix = `${"a".repeat(
+      USER_MESSAGE_CHAR_CAP - rawThreadId.length - 1,
+    )} `;
+    const text = `${prefix}${rawThreadId}/path`;
+    const { container } = renderLongUserMessage(text);
+
+    expect(screen.queryByRole("link", { name: "Should stay code" })).toBeNull();
+    expect(container.textContent).not.toContain(rawThreadId);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+
+    expect(screen.queryByRole("link", { name: "Should stay code" })).toBeNull();
+    expect(container.textContent).toContain(`${rawThreadId}/path`);
+  });
 });
 
 describe("ConversationMessageContent user thread mentions", () => {
@@ -218,7 +304,11 @@ describe("ConversationMessageContent user thread mentions", () => {
               systemMessageKind="unlabeled"
               systemMessageSubject={null}
               text="Continue in thr_dcwivn5n8w when this is ready."
-              turnRequest={{ kind: "message", status: "accepted" }}
+              turnRequest={{
+                isGrouped: false,
+                kind: "message",
+                status: "accepted",
+              }}
             />
           </ThreadTitleMentionResourcesProvider>
         </RouteNavigationProvider>

@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode, Ref } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ThreadDetailHeader } from "./ThreadDetailHeader";
 import { PaneContext, type PaneContextValue } from "./PaneContext";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
 import { makeThreadListEntry } from "@/test/fixtures/thread-list-entries";
+import { sdk } from "@/lib/sdk";
 
 vi.mock("@/components/layout/AppPageHeader", () => ({
   HEADER_ICON_BUTTON_CLASS: "header-icon-button",
@@ -312,10 +313,18 @@ describe("ThreadDetailHeader", () => {
   );
 
   it("leaves raw-id path, extension, and overlong continuations literal in titles", () => {
+    const resolveMentions = vi
+      .spyOn(sdk.threads, "resolveMentions")
+      .mockResolvedValue([]);
     const title = [
       "thr_dcwivn5n8w.md",
       "thr_dcwivn5n8w/path",
       "thr_dcwivn5n8w2",
+      "/tmp/thr_dcwivn5n8w",
+      "docs/thr_dcwivn5n8w",
+      "C:\\tmp\\thr_dcwivn5n8w",
+      "docs\\thr_dcwivn5n8w",
+      "thr_dcwivn5n8w\\logs",
     ].join(" ");
     const mentionedThread = makeThreadListEntry({
       id: "thr_dcwivn5n8w",
@@ -344,6 +353,36 @@ describe("ThreadDetailHeader", () => {
     );
 
     expect(container.textContent).toContain(title);
+    expect(container.querySelector('[data-prompt-mention="true"]')).toBeNull();
+    expect(resolveMentions).not.toHaveBeenCalled();
+  });
+
+  it("leaves an unresolvable raw thread id literal in a title", async () => {
+    const resolveMentions = vi
+      .spyOn(sdk.threads, "resolveMentions")
+      .mockResolvedValue([]);
+    const { container } = render(
+      <ThreadTitleMentionResourcesProvider
+        sectionNamesById={new Map()}
+        projectNamesById={new Map()}
+        threadById={new Map()}
+      >
+        <PaneContext.Provider value={PANE_CONTEXT}>
+          <ThreadDetailHeader
+            actionsMenu={null}
+            childPillLabel={null}
+            isSecondaryPanelOpen={false}
+            onOpenThreadGitAction={vi.fn()}
+            onToggleSecondaryPanel={vi.fn()}
+            threadHeaderGitActions={[]}
+            threadTitle="Unknown thr_2222222222"
+          />
+        </PaneContext.Provider>
+      </ThreadTitleMentionResourcesProvider>,
+    );
+
+    await waitFor(() => expect(resolveMentions).toHaveBeenCalledTimes(1));
+    expect(container.textContent).toContain("thr_2222222222");
     expect(container.querySelector('[data-prompt-mention="true"]')).toBeNull();
   });
 

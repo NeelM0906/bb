@@ -1,12 +1,29 @@
-import { createContext, useContext, useMemo, type ReactNode } from "react";
-import type { PromptMentionResource, ThreadListEntry } from "@bb/domain";
-import { PromptMentionPill } from "@/components/thread/timeline/ConversationMessageMentions";
-import { useThread } from "@/hooks/queries/thread-queries";
-import { getThreadDisplayTitle } from "@/lib/thread-title";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   isRawThreadId,
   RAW_THREAD_ID_PATTERN_SOURCE,
-} from "@/lib/raw-thread-id";
+  type PromptMentionResource,
+  type ThreadListEntry,
+} from "@bb/domain";
+import { QueryClientContext } from "@tanstack/react-query";
+import {
+  THREAD_MENTION_RESOLVE_MAX_IDS,
+  type ThreadResponse,
+} from "@bb/server-contract";
+import { PromptMentionPill } from "@/components/thread/timeline/ConversationMessageMentions";
+import { useThread } from "@/hooks/queries/thread-queries";
+import { threadQueryKey } from "@/hooks/queries/query-keys";
+import { sdk } from "@/lib/sdk";
+import { getThreadDisplayTitle } from "@/lib/thread-title";
 
 export interface ThreadTitleMentionResources {
   sectionNamesById: ReadonlyMap<string, string>;
@@ -22,6 +39,184 @@ const EMPTY_TITLE_MENTION_RESOURCES: ThreadTitleMentionResources = {
 
 const ThreadTitleMentionResourcesContext =
   createContext<ThreadTitleMentionResources>(EMPTY_TITLE_MENTION_RESOURCES);
+
+interface RawThreadMentionResolverContextValue {
+  register: (threadId: string) => void;
+  resourceById: ReadonlyMap<string, PromptMentionResource>;
+}
+
+const EMPTY_RAW_THREAD_MENTION_RESOLVER: RawThreadMentionResolverContextValue =
+  {
+    register: () => {},
+    resourceById: new Map(),
+  };
+
+const RawThreadMentionResolverContext =
+  createContext<RawThreadMentionResolverContextValue>(
+    EMPTY_RAW_THREAD_MENTION_RESOLVER,
+  );
+
+function RawThreadMentionResolverProvider({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  const scheduledOrResolvedIdsRef = useRef(new Set<string>());
+  const pendingIdsRef = useRef(new Set<string>());
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushPendingRef = useRef<() => void>(() => {});
+  const activeControllersRef = useRef(new Set<AbortController>());
+  const [resourceById, setResourceById] = useState<
+    ReadonlyMap<string, PromptMentionResource>
+  >(new Map());
+
+  flushPendingRef.current = () => {
+    const threadIds = [...pendingIdsRef.current].slice(
+      0,
+      THREAD_MENTION_RESOLVE_MAX_IDS,
+    );
+    for (const threadId of threadIds) {
+      pendingIdsRef.current.delete(threadId);
+    }
+    flushTimerRef.current = null;
+    if (threadIds.length === 0) return;
+
+    const controller = new AbortController();
+    activeControllersRef.current.add(controller);
+    void sdk.threads
+      .resolveMentions({ threadIds, signal: controller.signal })
+      .then((resolutions) => {
+        if (controller.signal.aborted) return;
+        setResourceById((current) => {
+          const next = new Map(current);
+          for (const resolution of resolutions) {
+            next.set(resolution.threadId, {
+              kind: "thread",
+              threadId: resolution.threadId,
+              projectId: resolution.projectId,
+              label: resolution.label,
+            });
+          }
+          return next;
+        });
+      })
+      .catch(() => {
+        for (const threadId of threadIds) {
+          scheduledOrResolvedIdsRef.current.delete(threadId);
+        }
+      })
+      .finally(() => {
+        activeControllersRef.current.delete(controller);
+        if (pendingIdsRef.current.size > 0 && flushTimerRef.current === null) {
+          flushTimerRef.current = setTimeout(
+            () => flushPendingRef.current(),
+            25,
+          );
+        }
+      });
+  };
+
+  const register = useCallback((threadId: string): void => {
+    if (scheduledOrResolvedIdsRef.current.has(threadId)) {
+      return;
+    }
+
+    scheduledOrResolvedIdsRef.current.add(threadId);
+    pendingIdsRef.current.add(threadId);
+    if (flushTimerRef.current !== null) {
+      clearTimeout(flushTimerRef.current);
+    }
+    flushTimerRef.current = setTimeout(() => flushPendingRef.current(), 25);
+  }, []);
+
+  const value = useMemo(
+    () => ({ register, resourceById }),
+    [register, resourceById],
+  );
+
+  useEffect(
+    () => () => {
+      if (flushTimerRef.current !== null) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+      pendingIdsRef.current.clear();
+      scheduledOrResolvedIdsRef.current.clear();
+      for (const controller of activeControllersRef.current) {
+        controller.abort();
+      }
+      activeControllersRef.current.clear();
+    },
+    [],
+  );
+
+  return (
+    <RawThreadMentionResolverContext.Provider value={value}>
+      {children}
+    </RawThreadMentionResolverContext.Provider>
+  );
+}
+
+interface RawThreadMentionBatchContextValue {
+  register: (threadId: string) => void;
+  resourceById: ReadonlyMap<string, PromptMentionResource>;
+}
+
+const EMPTY_RAW_THREAD_MENTION_BATCH: RawThreadMentionBatchContextValue = {
+  register: () => {},
+  resourceById: new Map(),
+};
+
+const RawThreadMentionBatchContext =
+  createContext<RawThreadMentionBatchContextValue>(
+    EMPTY_RAW_THREAD_MENTION_BATCH,
+  );
+
+function RawThreadMentionBatchScope({ children }: { children: ReactNode }) {
+  const resolver = useContext(RawThreadMentionResolverContext);
+  const acceptedIdsRef = useRef(new Set<string>());
+  const register = useCallback(
+    (threadId: string) => {
+      if (acceptedIdsRef.current.has(threadId)) return;
+      if (acceptedIdsRef.current.size >= THREAD_MENTION_RESOLVE_MAX_IDS) return;
+      acceptedIdsRef.current.add(threadId);
+      resolver.register(threadId);
+    },
+    [resolver],
+  );
+  const value = useMemo(
+    () => ({ register, resourceById: resolver.resourceById }),
+    [register, resolver.resourceById],
+  );
+  useEffect(
+    () => () => {
+      acceptedIdsRef.current.clear();
+    },
+    [],
+  );
+  return (
+    <RawThreadMentionBatchContext.Provider value={value}>
+      {children}
+    </RawThreadMentionBatchContext.Provider>
+  );
+}
+
+/** Caps one title/message at 32 unique lookups and reuses the nearest resolver. */
+export function RawThreadMentionBatchProvider({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  const resolver = useContext(RawThreadMentionResolverContext);
+  if (resolver === EMPTY_RAW_THREAD_MENTION_RESOLVER) {
+    return (
+      <RawThreadMentionResolverProvider>
+        <RawThreadMentionBatchScope>{children}</RawThreadMentionBatchScope>
+      </RawThreadMentionResolverProvider>
+    );
+  }
+  return <RawThreadMentionBatchScope>{children}</RawThreadMentionBatchScope>;
+}
 
 const TITLE_MENTION_PATTERN = new RegExp(
   `@(?:thread:[A-Za-z0-9_-]+|project:[A-Za-z0-9_-]+|(?:section|folder):[A-Za-z0-9_-]+|(?:thread-storage:)?(?:(?:[\\p{L}\\p{N}._-]+\\/)+(?:[\\p{L}\\p{N}._-]*\\.[\\p{L}\\p{N}_-]+)?|[\\p{L}\\p{N}._-]*\\.[\\p{L}\\p{N}_-]+))|${RAW_THREAD_ID_PATTERN_SOURCE}`,
@@ -41,21 +236,36 @@ export function ThreadTitleMentionResourcesProvider({
   projectNamesById,
   threadById,
 }: ThreadTitleMentionResourcesProviderProps) {
+  const resolver = useContext(RawThreadMentionResolverContext);
   const value = useMemo(
     () => ({ sectionNamesById, projectNamesById, threadById }),
     [sectionNamesById, projectNamesById, threadById],
   );
 
-  return (
+  const content = (
     <ThreadTitleMentionResourcesContext.Provider value={value}>
       {children}
     </ThreadTitleMentionResourcesContext.Provider>
+  );
+  return resolver === EMPTY_RAW_THREAD_MENTION_RESOLVER ? (
+    <RawThreadMentionResolverProvider>
+      {content}
+    </RawThreadMentionResolverProvider>
+  ) : (
+    content
   );
 }
 
 function isMentionBoundary(text: string, index: number): boolean {
   const previous = text[index - 1];
   return previous === undefined || !/[\p{L}\p{N}_.+-]/u.test(previous);
+}
+
+function isRawThreadIdBoundary(text: string, index: number): boolean {
+  const previous = text[index - 1];
+  return (
+    previous !== "/" && previous !== "\\" && isMentionBoundary(text, index)
+  );
 }
 
 function isMentionEndBoundary(text: string, index: number): boolean {
@@ -66,6 +276,10 @@ function isMentionEndBoundary(text: string, index: number): boolean {
     return afterPeriod === undefined || /[\s,;:!?)}\]"'’”]/u.test(afterPeriod);
   }
   return !/[\p{L}\p{N}_.+\/-]/u.test(next);
+}
+
+function isRawThreadIdEndBoundary(text: string, index: number): boolean {
+  return text[index] !== "\\" && isMentionEndBoundary(text, index);
 }
 
 function hasUnsupportedPathContinuation(text: string, index: number): boolean {
@@ -183,8 +397,12 @@ function threadTitleTextSegments(
     const matchEnd = match.index + token.length;
     const rawThreadId = isRawThreadId(token) ? token : null;
     if (
-      !isMentionBoundary(title, match.index) ||
-      !isMentionEndBoundary(title, matchEnd) ||
+      !(rawThreadId === null
+        ? isMentionBoundary(title, match.index)
+        : isRawThreadIdBoundary(title, match.index)) ||
+      !(rawThreadId === null
+        ? isMentionEndBoundary(title, matchEnd)
+        : isRawThreadIdEndBoundary(title, matchEnd)) ||
       (rawThreadId === null &&
         isPathMentionToken(token) &&
         hasUnsupportedPathContinuation(title, matchEnd))
@@ -288,8 +506,37 @@ export function useThreadMentionResource(
   }, [sidebarResource, threadId, threadQuery.data]);
 }
 
+/** Resolves a raw thread id from sidebar metadata or the enclosing batch. */
+export function useRawThreadMentionResource(
+  threadId: string,
+): PromptMentionResource | null {
+  const sidebarResource = useSidebarThreadMentionResource(threadId);
+  const queryClient = useContext(QueryClientContext);
+  const batch = useContext(RawThreadMentionBatchContext);
+  const cachedThread = queryClient?.getQueryData<ThreadResponse>(
+    threadQueryKey(threadId),
+  );
+  useEffect(() => {
+    if (sidebarResource === null && cachedThread === undefined) {
+      batch.register(threadId);
+    }
+  }, [batch, cachedThread, sidebarResource, threadId]);
+  if (sidebarResource !== null) {
+    return sidebarResource;
+  }
+  if (cachedThread !== undefined) {
+    return {
+      kind: "thread",
+      threadId,
+      projectId: cachedThread.projectId,
+      label: getThreadDisplayTitle(cachedThread),
+    };
+  }
+  return batch.resourceById.get(threadId) ?? null;
+}
+
 function RawThreadTitleMention({ threadId }: { threadId: string }) {
-  const resource = useThreadMentionResource(threadId);
+  const resource = useRawThreadMentionResource(threadId);
   if (resource === null) {
     return threadId;
   }
@@ -302,8 +549,7 @@ function RawThreadTitleMention({ threadId }: { threadId: string }) {
   );
 }
 
-/** Renders serialized prompt mentions persisted in thread title fallbacks. */
-export function ThreadTitleMentions({ title }: { title: string }) {
+function ThreadTitleMentionsContent({ title }: { title: string }) {
   const resources = useContext(ThreadTitleMentionResourcesContext);
   return threadTitleTextSegments(title, resources).map((segment, index) =>
     segment.rawThreadId !== null ? (
@@ -322,5 +568,14 @@ export function ThreadTitleMentions({ title }: { title: string }) {
         />
       </span>
     ),
+  );
+}
+
+/** Renders serialized prompt mentions persisted in thread title fallbacks. */
+export function ThreadTitleMentions({ title }: { title: string }) {
+  return (
+    <RawThreadMentionBatchProvider>
+      <ThreadTitleMentionsContent title={title} />
+    </RawThreadMentionBatchProvider>
   );
 }

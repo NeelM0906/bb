@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from "react";
+import { StrictMode, type ReactNode } from "react";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -8,6 +8,10 @@ import type { PromptTextMention } from "@bb/domain";
 import type { ThreadResponse } from "@bb/server-contract";
 import type { TimelineTitleLink } from "@bb/thread-view";
 import { RouteNavigationProvider } from "@/components/ui/app-route-anchor";
+import {
+  ThreadTitleMentionResourcesProvider,
+  ThreadTitleMentions,
+} from "@/components/thread/ThreadTitleMentions";
 import {
   type MarkdownMessageDirectives,
   type MessageDirectiveRegistry,
@@ -17,6 +21,7 @@ import { threadQueryKey } from "@/hooks/queries/query-keys";
 import { sdk } from "@/lib/sdk";
 import { setPreferredTheme } from "@/hooks/useTheme";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { makeThreadListEntry } from "@/test/fixtures/thread-list-entries";
 
 vi.mock("@/lib/sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/sdk")>();
@@ -27,6 +32,7 @@ vi.mock("@/lib/sdk", async (importOriginal) => {
       threads: {
         ...actual.sdk.threads,
         get: vi.fn(() => Promise.reject(new Error("Thread not found"))),
+        resolveMentions: vi.fn(async () => []),
       },
     },
   };
@@ -95,8 +101,30 @@ function renderMarkdown(
   for (const thread of cachedThreads) {
     queryClient.setQueryData(threadQueryKey(thread.id), thread);
   }
+  const threadById = new Map(
+    cachedThreads.map((thread) => [
+      thread.id,
+      makeThreadListEntry({
+        id: thread.id,
+        projectId: thread.projectId,
+        title: thread.title,
+        titleFallback: thread.titleFallback,
+      }),
+    ]),
+  );
   return {
-    ...render(markdownTree(node), { wrapper }),
+    ...render(
+      markdownTree(
+        <ThreadTitleMentionResourcesProvider
+          sectionNamesById={new Map()}
+          projectNamesById={new Map()}
+          threadById={threadById}
+        >
+          {node}
+        </ThreadTitleMentionResourcesProvider>,
+      ),
+      { wrapper },
+    ),
     queryClient,
   };
 }
@@ -144,7 +172,7 @@ afterEach(() => {
 
 describe("MarkdownPreview thread mentions", () => {
   it("leaves an unresolvable raw thread id as text", async () => {
-    const { container, queryClient } = renderMarkdown(
+    const { container } = renderMarkdown(
       <MarkdownPreview
         content="Continue in thr_2222222222 when this is ready."
         threadMentions={{ mentions: [], preserveSoftBreaks: true }}
@@ -153,14 +181,40 @@ describe("MarkdownPreview thread mentions", () => {
     );
 
     await waitFor(() => {
-      expect(
-        queryClient.getQueryState(threadQueryKey("thr_2222222222"))?.status,
-      ).toBe("error");
+      expect(sdk.threads.resolveMentions).toHaveBeenCalledTimes(1);
     });
 
     expect(container.textContent).toContain("thr_2222222222");
     expect(container.querySelector('[data-prompt-mention="true"]')).toBeNull();
     expect(screen.queryByRole("link")).toBeNull();
+    expect(sdk.threads.get).not.toHaveBeenCalled();
+  });
+
+  it("resolves many unknown raw ids in one bounded request", async () => {
+    const alphabet = "23456789abcdefghijkmnpqrstuvwxyz";
+    const threadIds = Array.from({ length: 40 }, (_, index) => {
+      const high = alphabet[Math.floor(index / alphabet.length)] ?? "2";
+      const low = alphabet[index % alphabet.length] ?? "2";
+      return `thr_22222222${high}${low}`;
+    });
+    const content = [...threadIds, threadIds[0]].join(" ");
+    const { container } = renderMarkdown(
+      <MarkdownPreview
+        content={content}
+        threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+      />,
+      [],
+    );
+
+    await waitFor(() => {
+      expect(sdk.threads.resolveMentions).toHaveBeenCalledTimes(1);
+    });
+    const request = vi.mocked(sdk.threads.resolveMentions).mock.calls[0]?.[0];
+    expect(request?.threadIds).toEqual(threadIds.slice(0, 32));
+    expect(new Set(request?.threadIds).size).toBe(32);
+    expect(sdk.threads.get).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-prompt-mention="true"]')).toBeNull();
+    expect(container.textContent).toBe(content);
   });
 
   it("leaves raw thread ids inside inline and fenced code untouched", () => {
@@ -204,6 +258,11 @@ describe("MarkdownPreview thread mentions", () => {
       "prefixthr_dcwivn5n8w",
       "thr_dcwivn5n8w.md",
       "thr_dcwivn5n8w/path",
+      "/tmp/thr_dcwivn5n8w",
+      "docs/thr_dcwivn5n8w",
+      "C:\\tmp\\thr_dcwivn5n8w",
+      "docs\\thr_dcwivn5n8w",
+      "thr_dcwivn5n8w\\logs",
     ].join(" ");
     const { container } = renderMarkdown(
       <MarkdownPreview
@@ -216,6 +275,22 @@ describe("MarkdownPreview thread mentions", () => {
     expect(container.querySelector('[data-prompt-mention="true"]')).toBeNull();
     expect(screen.queryByRole("link")).toBeNull();
     expect(sdk.threads.get).not.toHaveBeenCalled();
+    expect(sdk.threads.resolveMentions).not.toHaveBeenCalled();
+  });
+
+  it("preserves the existing serialized mention behavior before a backslash", () => {
+    const { container } = renderMarkdown(
+      <MarkdownPreview
+        content="@thread:thr_child\\logs"
+        threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+      />,
+    );
+
+    expect(
+      screen.getByRole("link", { name: "Rebuild comments" }),
+    ).not.toBeNull();
+    expect(container.textContent).toContain("Rebuild comments\\logs");
+    expect(sdk.threads.resolveMentions).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -272,6 +347,172 @@ describe("MarkdownPreview thread mentions", () => {
         .getByRole("link", { name: "Cross-project raw target" })
         .getAttribute("href"),
     ).toBe("/projects/proj_target/threads/thr_dcwivn5n8w");
+  });
+
+  it("routes a batch-resolved raw id through the queried thread project", async () => {
+    vi.mocked(sdk.threads.resolveMentions).mockResolvedValueOnce([
+      {
+        threadId: "thr_dcwivn5n8w",
+        projectId: "proj_target",
+        label: "Queried cross-project target",
+      },
+    ]);
+    renderMarkdown(
+      <MarkdownPreview
+        content="Continue in thr_dcwivn5n8w."
+        threadMentions={{
+          mentions: [],
+          preserveSoftBreaks: true,
+          resolveLinkHref: resolveThreadLink,
+        }}
+      />,
+      [],
+    );
+
+    const pill = await screen.findByRole("link", {
+      name: "Queried cross-project target",
+    });
+    expect(pill.getAttribute("href")).toBe(
+      "/projects/proj_target/threads/thr_dcwivn5n8w",
+    );
+    expect(sdk.threads.resolveMentions).toHaveBeenCalledTimes(1);
+    expect(sdk.threads.resolveMentions).toHaveBeenCalledWith(
+      expect.objectContaining({ threadIds: ["thr_dcwivn5n8w"] }),
+    );
+    expect(sdk.threads.get).not.toHaveBeenCalled();
+  });
+
+  it("resolves raw ids introduced by a later streamed render without requesting earlier ids again", async () => {
+    const firstId = "thr_2222222222";
+    const secondId = "thr_2222222223";
+    vi.mocked(sdk.threads.resolveMentions)
+      .mockResolvedValueOnce([
+        {
+          threadId: firstId,
+          projectId: "proj_target",
+          label: "First streamed target",
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          threadId: secondId,
+          projectId: "proj_target",
+          label: "Later streamed target",
+        },
+      ]);
+    const { wrapper } = createQueryClientTestHarness();
+    const renderTree = (content: string) =>
+      markdownTree(
+        <ThreadTitleMentionResourcesProvider
+          sectionNamesById={new Map()}
+          projectNamesById={new Map()}
+          threadById={new Map()}
+        >
+          <MarkdownPreview
+            content={content}
+            threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+          />
+        </ThreadTitleMentionResourcesProvider>,
+      );
+    const view = render(renderTree(`First ${firstId}`), { wrapper });
+
+    expect(
+      await screen.findByRole("link", { name: "First streamed target" }),
+    ).not.toBeNull();
+    view.rerender(renderTree(`First ${firstId}; later ${secondId}`));
+
+    expect(
+      await screen.findByRole("link", { name: "Later streamed target" }),
+    ).not.toBeNull();
+    expect(sdk.threads.resolveMentions).toHaveBeenCalledTimes(2);
+    expect(
+      vi.mocked(sdk.threads.resolveMentions).mock.calls[0]?.[0].threadIds,
+    ).toEqual([firstId]);
+    expect(
+      vi.mocked(sdk.threads.resolveMentions).mock.calls[1]?.[0].threadIds,
+    ).toEqual([secondId]);
+  });
+
+  it("reschedules an uncached raw-id batch after the StrictMode effect cycle", async () => {
+    const threadId = "thr_2222222222";
+    vi.mocked(sdk.threads.resolveMentions).mockResolvedValueOnce([
+      {
+        threadId,
+        projectId: "proj_target",
+        label: "Strict mode target",
+      },
+    ]);
+    const { wrapper } = createQueryClientTestHarness();
+    render(
+      <StrictMode>
+        {markdownTree(
+          <ThreadTitleMentionResourcesProvider
+            sectionNamesById={new Map()}
+            projectNamesById={new Map()}
+            threadById={new Map()}
+          >
+            <MarkdownPreview
+              content={`Continue in ${threadId}`}
+              threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+            />
+          </ThreadTitleMentionResourcesProvider>,
+        )}
+      </StrictMode>,
+      { wrapper },
+    );
+
+    expect(
+      await screen.findByRole("link", { name: "Strict mode target" }),
+    ).not.toBeNull();
+    expect(sdk.threads.resolveMentions).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares one raw-id resolution across sibling messages and a title", async () => {
+    const threadId = "thr_2222222222";
+    vi.mocked(sdk.threads.resolveMentions).mockResolvedValueOnce([
+      {
+        threadId,
+        projectId: "proj_target",
+        label: "Shared mention target",
+      },
+    ]);
+    const { wrapper } = createQueryClientTestHarness();
+    const tree = markdownTree(
+      <ThreadTitleMentionResourcesProvider
+        sectionNamesById={new Map()}
+        projectNamesById={new Map()}
+        threadById={new Map()}
+      >
+        <ThreadTitleMentionResourcesProvider
+          sectionNamesById={new Map()}
+          projectNamesById={new Map()}
+          threadById={new Map()}
+        >
+          <ThreadTitleMentions title={`Title ${threadId}`} />
+        </ThreadTitleMentionResourcesProvider>
+        <MarkdownPreview
+          content={`Message one ${threadId}`}
+          threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+        />
+        <MarkdownPreview
+          content={`Message two ${threadId}`}
+          threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+        />
+      </ThreadTitleMentionResourcesProvider>,
+    );
+    const view = render(tree, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Shared mention target")).toHaveLength(3);
+    });
+    expect(
+      screen.getAllByRole("link", { name: "Shared mention target" }),
+    ).toHaveLength(2);
+    expect(sdk.threads.resolveMentions).toHaveBeenCalledTimes(1);
+
+    view.rerender(tree);
+    await act(async () => Promise.resolve());
+    expect(sdk.threads.resolveMentions).toHaveBeenCalledTimes(1);
   });
 
   it("resolves and links a thread absent from sidebar resources through the authoritative thread query", () => {
@@ -456,8 +697,82 @@ describe("MarkdownPreview thread mentions", () => {
     expect(pill.querySelector("a")).toBeNull();
   });
 
+  it("lifts a raw id out of a mixed authored Markdown link label", () => {
+    renderMarkdown(
+      <MarkdownPreview
+        content="[Open thr_dcwivn5n8w details](https://example.com)"
+        threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+      />,
+      [
+        threadResponse({
+          id: "thr_dcwivn5n8w",
+          projectId: "proj_target",
+          title: "Mixed-label target",
+          titleFallback: "Mixed-label target",
+        }),
+      ],
+    );
+
+    const pill = screen.getByRole("link", { name: "Mixed-label target" });
+    expect(pill.getAttribute("href")).toBe(
+      "/projects/proj_target/threads/thr_dcwivn5n8w",
+    );
+    expect(
+      screen.getByRole("link", { name: "Open" }).getAttribute("href"),
+    ).toBe("https://example.com");
+    expect(
+      screen.getByRole("link", { name: "details" }).getAttribute("href"),
+    ).toBe("https://example.com");
+    expect(pill.querySelector("a")).toBeNull();
+  });
+
+  it("replaces a formatted raw-id Markdown link label without nesting links", () => {
+    renderMarkdown(
+      <MarkdownPreview
+        content="[**thr_dcwivn5n8w**](https://example.com)"
+        threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+      />,
+      [
+        threadResponse({
+          id: "thr_dcwivn5n8w",
+          projectId: "proj_target",
+          title: "Formatted-label target",
+          titleFallback: "Formatted-label target",
+        }),
+      ],
+    );
+
+    const pill = screen.getByRole("link", { name: "Formatted-label target" });
+    expect(pill.getAttribute("href")).toBe(
+      "/projects/proj_target/threads/thr_dcwivn5n8w",
+    );
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+    expect(pill.querySelector("a")).toBeNull();
+  });
+
+  it("keeps a raw id in an authored code-span link label untouched", () => {
+    renderMarkdown(
+      <MarkdownPreview
+        content="[`thr_dcwivn5n8w`](https://example.com)"
+        threadMentions={{ mentions: [], preserveSoftBreaks: true }}
+      />,
+      [
+        threadResponse({
+          id: "thr_dcwivn5n8w",
+          title: "Code-label target",
+          titleFallback: "Code-label target",
+        }),
+      ],
+    );
+
+    const link = screen.getByRole("link", { name: "thr_dcwivn5n8w" });
+    expect(link.getAttribute("href")).toBe("https://example.com");
+    expect(link.querySelector("code")).not.toBeNull();
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+  });
+
   it("preserves an unresolvable raw-id Markdown link", async () => {
-    const { queryClient } = renderMarkdown(
+    renderMarkdown(
       <MarkdownPreview
         content="[thr_2222222222](https://example.com)"
         threadMentions={{ mentions: [], preserveSoftBreaks: true }}
@@ -466,9 +781,7 @@ describe("MarkdownPreview thread mentions", () => {
     );
 
     await waitFor(() => {
-      expect(
-        queryClient.getQueryState(threadQueryKey("thr_2222222222"))?.status,
-      ).toBe("error");
+      expect(sdk.threads.resolveMentions).toHaveBeenCalledTimes(1);
     });
 
     const link = screen.getByRole("link", { name: "thr_2222222222" });

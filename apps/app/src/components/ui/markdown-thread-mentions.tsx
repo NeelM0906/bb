@@ -4,18 +4,21 @@ import type { Nodes, Parent, PhrasingContent, Text } from "mdast";
 // plain `text` node can carry the custom element instructions below.
 import type {} from "mdast-util-to-hast";
 import { visit } from "unist-util-visit";
-import type { PromptTextMention } from "@bb/domain";
+import {
+  RAW_THREAD_ID_PATTERN_SOURCE,
+  type PromptTextMention,
+} from "@bb/domain";
 import type { TimelineTitleLink } from "@bb/thread-view";
 import {
   PromptMentionPill,
   resolveThreadMentionResource,
 } from "@/components/thread/timeline/ConversationMessageMentions.js";
 import {
+  useRawThreadMentionResource,
   useSidebarThreadMentionResource,
   useThreadMentionResource,
 } from "@/components/thread/ThreadTitleMentions.js";
 import type { TimelineTitleLinkResolver } from "@/components/thread/timeline/TimelineTitleView.js";
-import { RAW_THREAD_ID_PATTERN_SOURCE } from "@/lib/raw-thread-id.js";
 
 // Matches both the serialized generated-message token (`@thread:<id>`) and a
 // raw persisted thread id. Raw ids deliberately use the exact db alphabet and
@@ -24,6 +27,7 @@ const THREAD_MENTION_PATTERN = new RegExp(
   `@thread:([A-Za-z0-9_-]+)|(${RAW_THREAD_ID_PATTERN_SOURCE})`,
   "gu",
 );
+const RAW_THREAD_ID_PATTERN = new RegExp(RAW_THREAD_ID_PATTERN_SOURCE, "gu");
 const THREAD_MENTION_PREFIX = "@thread";
 const THREAD_MENTION_ID_PATTERN = /^[A-Za-z0-9_-]+$/u;
 
@@ -68,8 +72,12 @@ function splitTextNodeOnMentions(node: Text): PhrasingContent[] {
     const matchEnd = match.index + match[0].length;
     if (
       threadId === undefined ||
-      !isMentionBoundary(value, match.index) ||
-      !isMentionEndBoundary(value, matchEnd)
+      !(rawThreadId === undefined
+        ? isMentionBoundary(value, match.index)
+        : isRawThreadIdBoundary(value, match.index)) ||
+      !(rawThreadId === undefined
+        ? isMentionEndBoundary(value, matchEnd)
+        : isRawThreadIdEndBoundary(value, matchEnd))
     ) {
       continue;
     }
@@ -148,6 +156,13 @@ function isMentionBoundary(text: string, index: number): boolean {
   return previous === undefined || !/[\p{L}\p{N}_.+-]/u.test(previous);
 }
 
+function isRawThreadIdBoundary(text: string, index: number): boolean {
+  const previous = text[index - 1];
+  return (
+    previous !== "/" && previous !== "\\" && isMentionBoundary(text, index)
+  );
+}
+
 function isMentionEndBoundary(text: string, index: number): boolean {
   const next = text[index];
   if (next === undefined) return true;
@@ -156,6 +171,49 @@ function isMentionEndBoundary(text: string, index: number): boolean {
     return afterPeriod === undefined || /[\s,;:!?)}\]"'’”]/u.test(afterPeriod);
   }
   return !/[\p{L}\p{N}_.+\/-]/u.test(next);
+}
+
+function isRawThreadIdEndBoundary(text: string, index: number): boolean {
+  return text[index] !== "\\" && isMentionEndBoundary(text, index);
+}
+
+export interface RawThreadIdTextSegment {
+  rawThreadId: string | null;
+  text: string;
+}
+
+/** Splits prose-only text using the same exact raw-id boundaries as Markdown. */
+export function splitRawThreadIdsInText(
+  text: string,
+): RawThreadIdTextSegment[] {
+  RAW_THREAD_ID_PATTERN.lastIndex = 0;
+  const segments: RawThreadIdTextSegment[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = RAW_THREAD_ID_PATTERN.exec(text)) !== null) {
+    const matchEnd = match.index + match[0].length;
+    if (
+      !isRawThreadIdBoundary(text, match.index) ||
+      !isRawThreadIdEndBoundary(text, matchEnd)
+    ) {
+      continue;
+    }
+    if (match.index > cursor) {
+      segments.push({
+        rawThreadId: null,
+        text: text.slice(cursor, match.index),
+      });
+    }
+    segments.push({ rawThreadId: match[0], text: match[0] });
+    cursor = matchEnd;
+  }
+  if (segments.length === 0) {
+    return [{ rawThreadId: null, text }];
+  }
+  if (cursor < text.length) {
+    segments.push({ rawThreadId: null, text: text.slice(cursor) });
+  }
+  return segments;
 }
 
 function isDirectiveMentionEndBoundary(parent: Parent, index: number): boolean {
@@ -278,7 +336,7 @@ export function buildThreadMentionComponent({
   resolveSegmentLinkHref,
 }: BuildThreadMentionComponentArgs): ComponentType<ThreadMentionElementProps> {
   function RawThreadMentionPillWithQuery({ threadId }: { threadId: string }) {
-    const resource = useThreadMentionResource(threadId);
+    const resource = useRawThreadMentionResource(threadId);
     if (resource === null) {
       return threadId;
     }

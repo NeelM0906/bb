@@ -1,4 +1,7 @@
 import {
+  Children,
+  cloneElement,
+  isValidElement,
   memo,
   useLayoutEffect,
   useContext,
@@ -8,6 +11,8 @@ import {
   type ComponentPropsWithoutRef,
   type Dispatch,
   type MouseEvent as ReactMouseEvent,
+  type ReactElement,
+  type ReactNode,
   type SetStateAction,
 } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
@@ -63,6 +68,7 @@ import {
 import {
   buildThreadMentionComponent,
   remarkThreadMentions,
+  splitRawThreadIdsInText,
 } from "./markdown-thread-mentions.js";
 import {
   buildPromptMentionComponent,
@@ -88,17 +94,25 @@ import {
   useRewriteLocalhostLinksPreference,
 } from "@/lib/localhost-link-rewrite-preference";
 import { resolveRouteHref } from "@/lib/route-paths";
-import { isRawThreadId } from "@/lib/raw-thread-id";
 import { cn } from "@bb/shared-ui/lib/utils";
 import remarkDirective from "remark-directive";
 import { PromptMentionPill } from "@/components/thread/timeline/ConversationMessageMentions.js";
-import { useThreadMentionResource } from "@/components/thread/ThreadTitleMentions.js";
+import {
+  RawThreadMentionBatchProvider,
+  useRawThreadMentionResource,
+} from "@/components/thread/ThreadTitleMentions.js";
 
 export interface MarkdownPreviewProps {
   allowHtml?: boolean;
   className?: string;
   content: string;
   expandedImageAlt?: string;
+  /**
+   * Controls whether Markdown image nodes mount browser image subresources.
+   * Use `"alt-text"` for untrusted generated previews that should retain a
+   * readable placeholder without issuing a request to the image URL.
+   */
+  imagePolicy?: MarkdownImagePolicy;
   imageLightboxTitle?: string;
   linkRouting?: MarkdownLinkRouting;
   /**
@@ -132,6 +146,8 @@ export interface MarkdownPreviewProps {
   urlTransform?: UrlTransform;
 }
 
+export type MarkdownImagePolicy = "alt-text" | "render";
+
 export interface MarkdownThreadMentions {
   mentions: readonly PromptTextMention[];
   preserveSoftBreaks: boolean;
@@ -149,6 +165,7 @@ interface IsMarkdownAppRouteHrefArgs {
 }
 
 interface BuildMarkdownComponentsArgs {
+  imagePolicy: MarkdownImagePolicy;
   linkRouting?: MarkdownLinkRouting;
   preferredTheme: Theme;
   rewriteLocalhostLinks: boolean;
@@ -253,6 +270,7 @@ type MarkdownBlockquoteProps = ComponentPropsWithoutRef<"blockquote"> &
   ExtraProps;
 type MarkdownCodeProps = ComponentPropsWithoutRef<"code"> & ExtraProps;
 interface MarkdownCodeRendererProps extends MarkdownCodeProps {
+  imagePolicy: MarkdownImagePolicy;
   linkRouting?: MarkdownLinkRouting;
   preferredTheme: Theme;
   rewriteLocalhostLinks: boolean;
@@ -434,6 +452,7 @@ const areMarkdownPreviewPropsEqual: MarkdownPreviewPropsEqual = (
   previous.content === next.content &&
   (previous.expandedImageAlt ?? "Expanded image") ===
     (next.expandedImageAlt ?? "Expanded image") &&
+  (previous.imagePolicy ?? "render") === (next.imagePolicy ?? "render") &&
   (previous.imageLightboxTitle ?? "Expanded image preview") ===
     (next.imageLightboxTitle ?? "Expanded image preview") &&
   previous.urlTransform === next.urlTransform &&
@@ -704,6 +723,7 @@ function renderMarkdownLocalFileContextMenuItem(
 function MarkdownCode({
   className: codeClassName,
   children,
+  imagePolicy,
   linkRouting,
   node: _node,
   preferredTheme,
@@ -724,7 +744,7 @@ function MarkdownCode({
     [isBlock, language, codeText],
   );
   if (isBlock) {
-    if (language === "mermaid") {
+    if (language === "mermaid" && imagePolicy === "render") {
       return (
         <MarkdownMermaidDiagram
           preferredTheme={preferredTheme}
@@ -1001,6 +1021,7 @@ function resolveMarkdownSourceMedia({
 }
 
 function buildMarkdownComponents({
+  imagePolicy,
   linkRouting,
   preferredTheme,
   rewriteLocalhostLinks,
@@ -1013,7 +1034,7 @@ function buildMarkdownComponents({
     threadId,
     ...anchorProps
   }: Omit<MarkdownAnchorProps, "children"> & { threadId: string }) {
-    const resource = useThreadMentionResource(threadId);
+    const resource = useRawThreadMentionResource(threadId);
     if (resource === null) {
       return (
         <MarkdownAnchor
@@ -1028,14 +1049,75 @@ function buildMarkdownComponents({
     return <PromptMentionPill resource={resource} serializedText={threadId} />;
   }
 
+  function labelContainsRawThreadId(node: ReactNode): boolean {
+    if (typeof node === "string") {
+      return splitRawThreadIdsInText(node).some(
+        (segment) => segment.rawThreadId !== null,
+      );
+    }
+    if (!isValidElement(node)) {
+      return Children.toArray(node).some(labelContainsRawThreadId);
+    }
+    if (node.type === "code" || node.type === MarkdownCodeRenderer) {
+      return false;
+    }
+    return labelContainsRawThreadId(
+      (node.props as { children?: ReactNode }).children,
+    );
+  }
+
+  function renderLiftedMarkdownLinkLabel(
+    node: ReactNode,
+    anchorProps: Omit<MarkdownAnchorProps, "children">,
+  ): ReactNode {
+    if (typeof node === "string") {
+      return splitRawThreadIdsInText(node).map((segment, index) =>
+        segment.rawThreadId === null ? (
+          <MarkdownAnchor
+            key={`text:${index}`}
+            {...anchorProps}
+            linkRouting={linkRouting}
+            rewriteLocalhostLinks={rewriteLocalhostLinks}
+          >
+            {segment.text}
+          </MarkdownAnchor>
+        ) : (
+          <RawThreadIdMarkdownLink
+            key={`${segment.rawThreadId}:${index}`}
+            {...anchorProps}
+            threadId={segment.rawThreadId}
+          />
+        ),
+      );
+    }
+    if (!isValidElement(node)) {
+      return Children.map(node, (child) =>
+        renderLiftedMarkdownLinkLabel(child, anchorProps),
+      );
+    }
+    if (node.type === "code" || node.type === MarkdownCodeRenderer) {
+      return (
+        <MarkdownAnchor
+          {...anchorProps}
+          linkRouting={linkRouting}
+          rewriteLocalhostLinks={rewriteLocalhostLinks}
+        >
+          {node}
+        </MarkdownAnchor>
+      );
+    }
+    const element = node as ReactElement<{ children?: ReactNode }>;
+    return cloneElement(
+      element,
+      undefined,
+      renderLiftedMarkdownLinkLabel(element.props.children, anchorProps),
+    );
+  }
+
   function MarkdownLink(props: MarkdownAnchorProps) {
     const { children, ...anchorProps } = props;
-    if (
-      threadMentions !== undefined &&
-      typeof children === "string" &&
-      isRawThreadId(children)
-    ) {
-      return <RawThreadIdMarkdownLink threadId={children} {...anchorProps} />;
+    if (threadMentions !== undefined && labelContainsRawThreadId(children)) {
+      return <>{renderLiftedMarkdownLinkLabel(children, anchorProps)}</>;
     }
     return (
       <MarkdownAnchor
@@ -1052,6 +1134,7 @@ function buildMarkdownComponents({
     return (
       <MarkdownCode
         {...props}
+        imagePolicy={imagePolicy}
         linkRouting={linkRouting}
         preferredTheme={preferredTheme}
         rewriteLocalhostLinks={rewriteLocalhostLinks}
@@ -1066,6 +1149,13 @@ function buildMarkdownComponents({
     node: _node,
     ...imageAttributes
   }: MarkdownImageProps) {
+    if (imagePolicy === "alt-text") {
+      return (
+        <span data-markdown-image-fallback="">
+          [Image: {typeof alt === "string" && alt.length > 0 ? alt : "image"}]
+        </span>
+      );
+    }
     return renderMarkdownImage({
       alt,
       imageAttributes,
@@ -1079,6 +1169,9 @@ function buildMarkdownComponents({
     node: _node,
     ...sourceProps
   }: MarkdownSourceProps) {
+    if (imagePolicy === "alt-text") {
+      return null;
+    }
     return (
       <source
         {...sourceProps}
@@ -1251,6 +1344,7 @@ function MarkdownPreviewComponent({
   className,
   content,
   expandedImageAlt = "Expanded image",
+  imagePolicy = "render",
   imageLightboxTitle = "Expanded image preview",
   linkRouting,
   threadMentions,
@@ -1326,6 +1420,7 @@ function MarkdownPreviewComponent({
   const markdownComponents = useMemo(
     () =>
       buildMarkdownComponents({
+        imagePolicy,
         linkRouting,
         preferredTheme,
         rewriteLocalhostLinks,
@@ -1344,6 +1439,7 @@ function MarkdownPreviewComponent({
       }),
     [
       linkRouting,
+      imagePolicy,
       preferredTheme,
       rewriteLocalhostLinks,
       threadMentions,
@@ -1410,6 +1506,19 @@ function MarkdownPreviewComponent({
     [localFileRouting, localImageRouting, urlTransform],
   );
 
+  const renderedMarkdown = (
+    <ReactMarkdown
+      rehypePlugins={
+        allowHtml ? MARKDOWN_HTML_REHYPE_PLUGINS : MARKDOWN_MATH_REHYPE_PLUGINS
+      }
+      remarkPlugins={remarkPlugins}
+      components={markdownComponents}
+      urlTransform={resolvedUrlTransform}
+    >
+      {body}
+    </ReactMarkdown>
+  );
+
   return (
     <>
       <div
@@ -1422,18 +1531,13 @@ function MarkdownPreviewComponent({
         {frontmatter !== null ? (
           <MarkdownFrontmatter source={frontmatter} />
         ) : null}
-        <ReactMarkdown
-          rehypePlugins={
-            allowHtml
-              ? MARKDOWN_HTML_REHYPE_PLUGINS
-              : MARKDOWN_MATH_REHYPE_PLUGINS
-          }
-          remarkPlugins={remarkPlugins}
-          components={markdownComponents}
-          urlTransform={resolvedUrlTransform}
-        >
-          {body}
-        </ReactMarkdown>
+        {threadMentions === undefined ? (
+          renderedMarkdown
+        ) : (
+          <RawThreadMentionBatchProvider>
+            {renderedMarkdown}
+          </RawThreadMentionBatchProvider>
+        )}
       </div>
 
       <ImageLightbox
