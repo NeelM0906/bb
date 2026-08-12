@@ -1558,7 +1558,7 @@ rl.on("line", (line) => {
     await runtime.shutdown();
   });
 
-  it("removes the cached provider and retries when startup skill configuration fails", async () => {
+  it("waits for a failed startup's inherited pipe to finalize before retrying", async () => {
     const attemptsPath = join(tmpDir, "startup-config-attempts.txt");
     const logPath = join(tmpDir, "startup-config-log.txt");
     const startupConfigScript = join(tmpDir, "startup-config-failure.cjs");
@@ -1573,7 +1573,7 @@ rl.on("line", (line) => {
         : 0;
       const attempt = previousAttempts + 1;
       fs.writeFileSync(attemptsPath, String(attempt));
-      fs.appendFileSync(logPath, "spawn:" + attempt + "\\n");
+      fs.appendFileSync(logPath, "spawn:" + attempt + ":" + Date.now() + "\\n");
       setInterval(() => {}, 1000);
       const rl = readline.createInterface({ input: process.stdin });
       rl.on("line", (line) => {
@@ -1585,6 +1585,11 @@ rl.on("line", (line) => {
         if (msg.method === "skills/configure") {
           fs.appendFileSync(logPath, "configure:" + attempt + "\\n");
           if (attempt === 1) {
+            const { spawn } = require("node:child_process");
+            const pipeHolder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 1500)"], {
+              stdio: ["ignore", "inherit", "ignore"],
+            });
+            pipeHolder.unref();
             process.stdout.write(JSON.stringify({
               jsonrpc: "2.0",
               id: msg.id,
@@ -1610,6 +1615,10 @@ rl.on("line", (line) => {
             params: { threadId, providerThreadId }
           }) + "\\n");
         }
+      });
+      process.on("SIGTERM", () => {
+        fs.appendFileSync(logPath, "exit:" + attempt + ":" + Date.now() + "\\n");
+        process.exit(0);
       });`,
     );
     const baseAdapter = createFakeAdapter(scriptPath);
@@ -1658,13 +1667,19 @@ rl.on("line", (line) => {
       });
 
       expect(runtime.listRunningProviders()).toContain("codex");
-      expect(readFileSync(logPath, "utf8").trim().split("\n")).toEqual([
-        "spawn:1",
+      const logLines = readFileSync(logPath, "utf8").trim().split("\n");
+      expect(logLines).toHaveLength(6);
+      expect(logLines[0]).toMatch(/^spawn:1:\d+$/);
+      expect(logLines.slice(1)).toEqual([
         "configure:1",
-        "spawn:2",
+        expect.stringMatching(/^exit:1:\d+$/),
+        expect.stringMatching(/^spawn:2:\d+$/),
         "configure:2",
         "thread-start:2:t2",
       ]);
+      const firstExitAt = Number(logLines[2]?.split(":")[2]);
+      const retrySpawnAt = Number(logLines[3]?.split(":")[2]);
+      expect(retrySpawnAt - firstExitAt).toBeGreaterThanOrEqual(900);
     } finally {
       await runtime.shutdown();
     }

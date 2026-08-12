@@ -523,6 +523,7 @@ export class RuntimeProviderProcessManager {
     await this.terminateProviderProcess({
       providerProcess: args.providerProcess,
     });
+    await args.providerProcess.exitFinalized;
   }
 
   private async terminateProviderProcess(
