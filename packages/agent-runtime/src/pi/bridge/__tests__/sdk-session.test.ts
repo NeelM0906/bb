@@ -330,6 +330,18 @@ describe("PiSdkSession", () => {
     );
   });
 
+  it("disposes the created session when extension binding rejects", async () => {
+    const bindingError = new Error("Pi extension binding failed");
+    mockBindExtensions.mockRejectedValueOnce(bindingError);
+    const session = new PiSdkSession({ cwd: "/tmp/project" }, vi.fn(), vi.fn());
+
+    await expect(session.start()).rejects.toBe(bindingError);
+
+    expect(mockDispose).toHaveBeenCalledOnce();
+    await session.closeGracefully(1_000);
+    expect(mockDispose).toHaveBeenCalledOnce();
+  });
+
   it("reports a broken configured extension before the thread starts", async () => {
     mockCreateAgentSessionServices.mockRejectedValueOnce(
       new Error("Failed to load Pi extension broken.ts: syntax error"),
@@ -1016,5 +1028,49 @@ describe("PiSdkSession", () => {
 
     expect(mockDispose).toHaveBeenCalledTimes(1);
     expect(session.getIsProcessing()).toBe(false);
+  });
+
+  it("waits for concurrent graceful closes to finish the same shutdown", async () => {
+    let resolveAbort: (() => void) | undefined;
+    let resolveShutdown: (() => void) | undefined;
+    mockHasExtensionHandlers.mockReturnValue(true);
+    mockAbort.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveAbort = resolve;
+        }),
+    );
+    mockExtensionEmit.mockImplementation(
+      () =>
+        new Promise<undefined>((resolve) => {
+          resolveShutdown = () => resolve(undefined);
+        }),
+    );
+    const session = new PiSdkSession({ cwd: "/tmp/project" }, vi.fn(), vi.fn());
+
+    await session.start();
+    const firstClose = session.closeGracefully(1_000);
+    await flushAsyncWork();
+    let secondCloseSettled = false;
+    const secondClose = session.closeGracefully(1_000).then(() => {
+      secondCloseSettled = true;
+    });
+    await flushAsyncWork();
+
+    expect(secondCloseSettled).toBe(false);
+    if (!resolveAbort) {
+      throw new Error("Expected Pi abort promise to be pending");
+    }
+    resolveAbort();
+    await flushAsyncWork();
+
+    expect(secondCloseSettled).toBe(false);
+    if (!resolveShutdown) {
+      throw new Error("Expected extension shutdown to be pending");
+    }
+    resolveShutdown();
+    await Promise.all([firstClose, secondClose]);
+
+    expect(mockDispose).toHaveBeenCalledOnce();
   });
 });

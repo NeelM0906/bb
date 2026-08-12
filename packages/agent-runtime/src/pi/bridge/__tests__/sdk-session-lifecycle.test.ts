@@ -7,6 +7,10 @@ import { PiSdkSession } from "../sdk-session.js";
 
 const testRoots: string[] = [];
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 async function readLifecycle(markerPath: string): Promise<string[]> {
   try {
     return (await readFile(markerPath, "utf8")).trim().split("\n");
@@ -15,8 +19,27 @@ async function readLifecycle(markerPath: string): Promise<string[]> {
   }
 }
 
+async function readLazyMcpAdapterStatus(
+  statusPath: string,
+): Promise<{ adapter: string; status: string } | null> {
+  try {
+    const value: unknown = JSON.parse(await readFile(statusPath, "utf8"));
+    if (
+      !isRecord(value) ||
+      typeof value.adapter !== "string" ||
+      typeof value.status !== "string"
+    ) {
+      return null;
+    }
+    return { adapter: value.adapter, status: value.status };
+  } catch {
+    return null;
+  }
+}
+
 async function createLifecycleFixture(): Promise<{
   cwd: string;
+  lazyMcpStatusPath: string;
   markerPath: string;
   modelRuntime: ModelRuntime;
   sessionFilePath: string;
@@ -27,6 +50,7 @@ async function createLifecycleFixture(): Promise<{
   const cwd = join(root, "workspace");
   const extensionDir = join(cwd, ".pi", "extensions");
   const markerPath = join(root, "lifecycle.txt");
+  const lazyMcpStatusPath = join(root, "lazy-mcp-status.txt");
   await mkdir(agentDir, { recursive: true });
   await mkdir(extensionDir, { recursive: true });
   await writeFile(
@@ -35,7 +59,12 @@ async function createLifecycleFixture(): Promise<{
   );
   await writeFile(
     join(cwd, ".pi", "settings.json"),
-    JSON.stringify({ extensions: ["./extensions/lifecycle.ts"] }),
+    JSON.stringify({
+      extensions: [
+        "./extensions/lifecycle.ts",
+        "./extensions/lazy-mcp-adapter.ts",
+      ],
+    }),
   );
   await writeFile(
     join(extensionDir, "lifecycle.ts"),
@@ -46,10 +75,23 @@ export default function lifecycle(pi) {
 }
 `,
   );
+  await writeFile(
+    join(extensionDir, "lazy-mcp-adapter.ts"),
+    `import { writeFileSync } from "node:fs";
+export default function piMcpAdapter(pi) {
+  let status = "uninitialized";
+  pi.on("session_start", () => {
+    status = "ready";
+    writeFileSync(${JSON.stringify(lazyMcpStatusPath)}, JSON.stringify({ adapter: "pi-mcp-adapter", status }), "utf8");
+  });
+}
+`,
+  );
   vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
 
   return {
     cwd,
+    lazyMcpStatusPath,
     markerPath,
     modelRuntime: await ModelRuntime.create({
       authPath: join(agentDir, "auth.json"),
@@ -73,6 +115,19 @@ describe("PiSdkSession extension lifecycle", () => {
 
     await session.start();
     expect(await readLifecycle(fixture.markerPath)).toEqual(["session_start"]);
+    await session.closeGracefully(1_000);
+  });
+
+  it("reports lazy pi-mcp-adapter status from session_start without prompting", async () => {
+    const fixture = await createLifecycleFixture();
+    const session = new PiSdkSession(fixture, vi.fn(), vi.fn());
+
+    expect(await readLazyMcpAdapterStatus(fixture.lazyMcpStatusPath)).toBeNull();
+    await session.start();
+    expect(await readLazyMcpAdapterStatus(fixture.lazyMcpStatusPath)).toEqual({
+      adapter: "pi-mcp-adapter",
+      status: "ready",
+    });
     await session.closeGracefully(1_000);
   });
 

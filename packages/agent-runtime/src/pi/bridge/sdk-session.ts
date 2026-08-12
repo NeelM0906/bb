@@ -188,6 +188,7 @@ export class PiSdkSession {
   private autoRetryInProgress = false;
   private disposingSession: AgentSession | undefined;
   private sessionDisposalPromise: Promise<void> | undefined;
+  private sessionClosePromise: Promise<void> | undefined;
   private terminalSteerSettlementTimeout:
     | ReturnType<typeof setTimeout>
     | undefined;
@@ -277,16 +278,21 @@ export class PiSdkSession {
     });
     this.session = session;
 
-    await session.bindExtensions({ mode: "rpc" });
-    this.ensureCustomToolsActive();
+    try {
+      await session.bindExtensions({ mode: "rpc" });
+      this.ensureCustomToolsActive();
 
-    // Subscribe to session events
-    this.unsubscribe = session.subscribe((event: AgentSessionEvent) => {
-      this.trackProcessingState(event);
-      this.observeSteerConsumption(event);
-      this.observeTerminalSteerSettlement(event);
-      this.onEvent(event);
-    });
+      // Subscribe to session events
+      this.unsubscribe = session.subscribe((event: AgentSessionEvent) => {
+        this.trackProcessingState(event);
+        this.observeSteerConsumption(event);
+        this.observeTerminalSteerSettlement(event);
+        this.onEvent(event);
+      });
+    } catch (error) {
+      await this.disposeSession(session).catch(() => undefined);
+      throw error;
+    }
   }
 
   async prompt(text: string, images?: ImageContent[]): Promise<void> {
@@ -375,6 +381,11 @@ export class PiSdkSession {
   }
 
   async closeGracefully(timeoutMs: number): Promise<void> {
+    if (this.sessionClosePromise) {
+      await this.sessionClosePromise;
+      return;
+    }
+
     const session = this.session;
     this.rejectPendingSteerConsumptions(
       "Pi SDK session closed before steer consumed",
@@ -387,12 +398,27 @@ export class PiSdkSession {
 
     this.session = undefined;
 
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    const abortCompleted = session.abort().catch(() => undefined);
-    const timeoutReached = new Promise<void>((resolve) => {
-      timeout = setTimeout(resolve, timeoutMs);
-    });
+    const closePromise = this.closeSessionGracefully(session, timeoutMs);
+    this.sessionClosePromise = closePromise;
     try {
+      await closePromise;
+    } finally {
+      if (this.sessionClosePromise === closePromise) {
+        this.sessionClosePromise = undefined;
+      }
+    }
+  }
+
+  private async closeSessionGracefully(
+    session: AgentSession,
+    timeoutMs: number,
+  ): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const abortCompleted = session.abort().catch(() => undefined);
+      const timeoutReached = new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, timeoutMs);
+      });
       await Promise.race([abortCompleted, timeoutReached]);
     } finally {
       if (timeout) {
