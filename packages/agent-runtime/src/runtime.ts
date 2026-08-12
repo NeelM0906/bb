@@ -1,5 +1,6 @@
 import path from "node:path";
 import { z } from "zod";
+import { isAcpProviderId } from "@bb/agent-providers";
 import {
   normalizeProviderThreadNameEvent,
   toProviderExternalThreadName,
@@ -120,6 +121,11 @@ interface ReapIdleProviderSessionCandidate {
   threadId: string;
   runtimeConfig: ThreadRuntimeConfig;
 }
+
+const acpStaleSteerResultSchema = z.object({
+  activeTurnId: z.null(),
+  status: z.literal("stale"),
+});
 
 interface FindReapableIdleProviderSessionArgs {
   idleForMs: number;
@@ -295,6 +301,7 @@ function createAgentRuntimeInternal(
       options.bridgeNodeExecutablePath ?? process.execPath,
     captureThreadExitState: (threadId) => ({
       activeTurnId: turnState.getActiveTurnId(threadId),
+      pendingTurnStart: pendingTurnStartThreadIds.has(threadId),
       providerThreadId:
         threadIdentityRegistry.getProviderThreadId(threadId) ?? null,
       threadId,
@@ -1890,7 +1897,7 @@ function createAgentRuntimeInternal(
             plan: proc.adapter.buildCommandPlan(adapterCommand),
             providerId: pid,
           });
-          await sendCommand({
+          const result = await sendCommand({
             proc,
             message: cmd,
             resultSchema: ignoredJsonRpcResultSchema,
@@ -1900,6 +1907,15 @@ function createAgentRuntimeInternal(
               threadId,
             },
           });
+          const staleAcpSteerResult = isAcpProviderId(pid)
+            ? acpStaleSteerResultSchema.safeParse(result)
+            : null;
+          if (staleAcpSteerResult?.success) {
+            if (turnState.getActiveTurnId(threadId) === expectedTurnId) {
+              turnState.clearThread(threadId);
+            }
+            return staleAcpSteerResult.data;
+          }
           emitAcceptedCommandEvents({
             command: adapterCommand,
             proc,

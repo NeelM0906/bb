@@ -70,6 +70,7 @@ describe("createAgentRuntime process lifecycle", () => {
       bridgeBundleDir: undefined,
       captureThreadExitState: (threadId) => ({
         activeTurnId: null,
+        pendingTurnStart: false,
         providerThreadId:
           identityRegistry.getProviderThreadId(threadId) ?? null,
         threadId,
@@ -1604,6 +1605,7 @@ rl.on("line", (line) => {
   });
 
   it("rejects pending sendRequest when provider dies mid-turn", async () => {
+    const exitInfo = vi.fn<NonNullable<AgentRuntimeOptions["onProcessExit"]>>();
     const crashDuringTurnScript = join(tmpDir, "crash-during-turn.cjs");
     writeFileSync(
       crashDuringTurnScript,
@@ -1635,6 +1637,7 @@ rl.on("line", (line) => {
         contentItems: [{ type: "inputText", text: "ok" }],
         success: true,
       }),
+      onProcessExit: exitInfo,
       adapterFactory: () => createFakeAdapter(crashDuringTurnScript),
     });
 
@@ -1655,6 +1658,16 @@ rl.on("line", (line) => {
         options: fullRuntimeOptions,
       }),
     ).rejects.toThrow(/exited unexpectedly/i);
+    expect(exitInfo).toHaveBeenCalledOnce();
+    expect(exitInfo.mock.calls[0]?.[0].threads).toEqual([
+      {
+        activeTurnId: null,
+        pendingTurnStart: true,
+        providerThreadId: "prov-mid",
+        threadId: "t1",
+      },
+    ]);
+    expect(runtime.getLiveThreadIds()).toEqual([]);
     await runtime.shutdown();
   });
 

@@ -1617,7 +1617,7 @@ describe("acp bridge", () => {
     expect(notifications("acp/turn/completed")).toHaveLength(1);
   });
 
-  it("rejects steers when no turn is active", async () => {
+  it("classifies steers as stale when no turn is active", async () => {
     const { providerThreadId } = await startThread();
     const steerId = sendRequest("turn/steer", {
       threadId: providerThreadId,
@@ -1625,7 +1625,40 @@ describe("acp bridge", () => {
       input: [{ type: "text", text: "late", mentions: [] }],
     });
     const response = await waitForResponse(steerId);
-    expect(response.error?.message).toMatch(/No active turn/);
+    expect(response).toMatchObject({
+      result: { activeTurnId: null, status: "stale" },
+    });
+    expect(response.error).toBeUndefined();
+  });
+
+  it("classifies steers as stale when the ACP session is gone", async () => {
+    const steerId = sendRequest("turn/steer", {
+      threadId: "missing-provider-session",
+      expectedTurnId: "turn-1",
+      input: [{ type: "text", text: "late", mentions: [] }],
+    });
+
+    await expect(waitForResponse(steerId)).resolves.toMatchObject({
+      result: { activeTurnId: null, status: "stale" },
+    });
+  });
+
+  it("settles an ACP prompt failure exactly once", async () => {
+    const { providerThreadId } = await startThread({
+      envVars: { FAKE_ACP_PROMPT_ERROR: "1" },
+    });
+    const turnId = sendRequest("turn/start", {
+      threadId: providerThreadId,
+      input: [{ type: "text", text: "fail once", mentions: [] }],
+    });
+    await waitForResponse(turnId);
+    await waitFor(
+      () => (notifications("error").length === 1 ? true : undefined),
+      "prompt failure notification",
+    );
+
+    expect(notifications("error")).toHaveLength(1);
+    expect(notifications("acp/turn/completed")).toHaveLength(0);
   });
 
   it("cancels the active turn on thread/stop", async () => {

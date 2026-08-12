@@ -1056,12 +1056,11 @@ describe("host-daemon local schemas", () => {
 });
 
 describe("host-daemon command schemas", () => {
-  // Version 106 preserves an unknown Claude Code release channel when doctor
-  // cannot report it and recovers native update actions for standard installs.
-  // Older daemons can verify stable against latest or hide the managed update,
-  // so enrolled machines must update for the corrected status behavior.
-  it("uses protocol version 106 for Claude Code status fixes", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(106);
+  // Version 107 adds required pre-start turn state to provider-exit snapshots,
+  // allowing the daemon to settle accepted work when a provider exits before
+  // turn/started. Older daemons cannot preserve this lifecycle invariant.
+  it("uses protocol version 107 for provider exit reconciliation", () => {
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(107);
   });
 
   it("binds Plan cancellation to a required turn id and typed result", () => {

@@ -808,6 +808,7 @@ describe("createHostDaemonApp", () => {
           {
             threadId: "thr_provider_exit_log",
             activeTurnId: null,
+            pendingTurnStart: false,
             providerThreadId: null,
           },
         ],
@@ -866,6 +867,7 @@ describe("createHostDaemonApp", () => {
           {
             threadId: request.threadId,
             activeTurnId: request.turnId,
+            pendingTurnStart: false,
             providerThreadId: request.providerThreadId,
           },
         ],
