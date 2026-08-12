@@ -245,16 +245,22 @@ interface FakeAgentRuntime extends AgentRuntime {
   endActiveTurn: (threadId: string) => void;
   setActiveTurn: (threadId: string, turnId: string) => void;
   setOpenBackgroundWork: (hasOpenWork: boolean) => void;
+  setPendingTurnStart: (threadId: string, hasPending: boolean) => void;
 }
 
 function createFakeRuntime() {
   const activeTurnsByThreadId = new Map<string, string>();
   let openBackgroundWork = false;
+  const pendingTurnStartThreadIds = new Set<string>();
   return {
     ensureProvider: vi.fn(async (_args: EnsureProviderArgs) => undefined),
     startThread: vi.fn(async (_args: StartThreadArgs) => ({
       providerThreadId: "provider-1",
     })),
+    prepareThreadRewind: vi.fn(async () => ({
+      providerThreadId: "provider-rewind-1",
+    })),
+    discardThreadRewind: vi.fn(async () => undefined),
     resumeThread: vi.fn(async (_args: ResumeThreadArgs) => ({
       providerThreadId: "provider-1",
     })),
@@ -280,7 +286,12 @@ function createFakeRuntime() {
       async () => ({ reapedSessions: [] }),
     ),
     hasThread: (threadId) => activeTurnsByThreadId.has(threadId),
-    getActiveThreadIds: () => [...activeTurnsByThreadId.keys()],
+    getLiveThreadIds: () => [
+      ...new Set([
+        ...activeTurnsByThreadId.keys(),
+        ...pendingTurnStartThreadIds,
+      ]),
+    ],
     hasOpenBackgroundWork: () => openBackgroundWork,
     shutdown: vi.fn(async () => undefined),
     endActiveTurn: (threadId) => {
@@ -291,6 +302,13 @@ function createFakeRuntime() {
     },
     setOpenBackgroundWork: (hasOpenWork) => {
       openBackgroundWork = hasOpenWork;
+    },
+    setPendingTurnStart: (threadId, hasPending) => {
+      if (hasPending) {
+        pendingTurnStartThreadIds.add(threadId);
+      } else {
+        pendingTurnStartThreadIds.delete(threadId);
+      }
     },
   } satisfies FakeAgentRuntime;
 }
@@ -528,7 +546,7 @@ describe("RuntimeManager", () => {
       environmentId: "env-skills",
       workspacePath: "/tmp/env-1",
     });
-    const release = manager.retainEnvironmentForThreadCommand(
+    const release = await manager.retainEnvironmentForThreadCommand(
       "env-skills",
       "thread-1",
     );
@@ -1387,7 +1405,7 @@ describe("RuntimeManager", () => {
       environmentId: "env-1",
       workspacePath: "/tmp/env-1",
     });
-    const release = manager.retainEnvironmentForThreadCommand(
+    const release = await manager.retainEnvironmentForThreadCommand(
       "env-1",
       "thread-1",
     );
@@ -1402,6 +1420,142 @@ describe("RuntimeManager", () => {
     release();
     await manager.replaceBaseShellEnv({
       PATH: "/newer/bin:/usr/bin",
+    });
+
+    expect(manager.get("env-1")).toBeUndefined();
+    expect(runtime.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for an old-environment thread command before releasing a moved thread", async () => {
+    const oldRuntime = createFakeRuntime();
+    const manager = new RuntimeManager({
+      provisionWorkspace: createProvisionWorkspaceMock("/tmp/env-old"),
+      createRuntime: () => oldRuntime,
+    });
+
+    await manager.ensureEnvironment({
+      environmentId: "env-old",
+      workspacePath: "/tmp/env-old",
+    });
+    oldRuntime.setActiveTurn("thread-1", "turn-old");
+    const release = await manager.retainEnvironmentForThreadCommand(
+      "env-old",
+      "thread-1",
+    );
+    const handoff = manager.releaseThreadFromOtherEnvironments({
+      activeTurn: "interrupt",
+      environmentId: "env-new",
+      threadId: "thread-1",
+    });
+
+    await Promise.resolve();
+    expect(oldRuntime.stopThread).not.toHaveBeenCalled();
+
+    release();
+    await handoff;
+
+    expect(oldRuntime.stopThread).toHaveBeenCalledWith({
+      threadId: "thread-1",
+    });
+  });
+
+  it("releases a moved thread while another environment control waits", async () => {
+    const oldRuntime = createFakeRuntime();
+    const manager = new RuntimeManager({
+      provisionWorkspace: createProvisionWorkspaceMock("/tmp/env-old"),
+      createRuntime: () => oldRuntime,
+    });
+
+    await manager.ensureEnvironment({
+      environmentId: "env-old",
+      workspacePath: "/tmp/env-old",
+    });
+    // A turn command for the new environment holds its retain while a control
+    // command for the old environment waits for that retain. The waiting
+    // command must not hold the thread control lane against it.
+    const release = await manager.retainEnvironmentForThreadCommand(
+      "env-new",
+      "thread-1",
+    );
+    const oldEnvironmentControl = manager.releaseThreadFromOtherEnvironments({
+      activeTurn: "interrupt",
+      environmentId: "env-old",
+      threadId: "thread-1",
+    });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+    const turnHandoff = manager
+      .releaseThreadFromOtherEnvironments({
+        activeTurn: "interrupt",
+        environmentId: "env-new",
+        threadId: "thread-1",
+      })
+      .then(() => {
+        release();
+      });
+
+    await expect(
+      Promise.all([oldEnvironmentControl, turnHandoff]),
+    ).resolves.toBeDefined();
+    // A later turn on the same thread must still acquire the control lane.
+    await expect(
+      manager.retainEnvironmentForThreadCommand("env-new", "thread-1"),
+    ).resolves.toBeInstanceOf(Function);
+  });
+
+  it("keeps an old-environment turn when a control declines to interrupt it", async () => {
+    const oldRuntime = createFakeRuntime();
+    const manager = new RuntimeManager({
+      provisionWorkspace: createProvisionWorkspaceMock("/tmp/env-old"),
+      createRuntime: () => oldRuntime,
+    });
+
+    await manager.ensureEnvironment({
+      environmentId: "env-old",
+      workspacePath: "/tmp/env-old",
+    });
+    oldRuntime.setActiveTurn("thread-1", "turn-old");
+
+    const result = await manager.releaseThreadFromOtherEnvironments({
+      activeTurn: "keep",
+      environmentId: "env-new",
+      threadId: "thread-1",
+    });
+
+    expect(oldRuntime.stopThread).not.toHaveBeenCalled();
+    expect(result.activeTurnEnvironmentIds).toEqual(["env-old"]);
+    expect(result.releasedEnvironmentIds).toEqual([]);
+  });
+
+  it("keeps an environment runtime while an accepted turn awaits its first event", async () => {
+    const provisionWorkspace = createProvisionWorkspaceMock("/tmp/env-1");
+    const runtime = createFakeRuntime();
+    const manager = new RuntimeManager({
+      provisionWorkspace,
+      createRuntime: () => runtime,
+      shellEnv: {
+        PATH: "/tmp/fnm_multishells/first/bin:/usr/bin",
+      },
+    });
+
+    await manager.ensureEnvironment({
+      environmentId: "env-1",
+      workspacePath: "/tmp/env-1",
+    });
+    runtime.setPendingTurnStart("thread-1", true);
+
+    await manager.replaceBaseShellEnv({
+      PATH: "/tmp/fnm_multishells/second/bin:/usr/bin",
+    });
+
+    expect(manager.get("env-1")?.runtime).toBe(runtime);
+    expect(runtime.shutdown).not.toHaveBeenCalled();
+
+    runtime.setPendingTurnStart("thread-1", false);
+    await manager.replaceBaseShellEnv({
+      PATH: "/tmp/fnm_multishells/third/bin:/usr/bin",
     });
 
     expect(manager.get("env-1")).toBeUndefined();
@@ -1558,7 +1712,7 @@ describe("RuntimeManager", () => {
     expect(hostWatcher.watchThreadStorageRoot).not.toHaveBeenCalled();
   });
 
-  it("lists the runtimes' active threads for session reconciliation", async () => {
+  it("lists live threads for session reconciliation before the first turn event", async () => {
     const runtime = createFakeRuntime();
     const manager = new RuntimeManager({
       provisionWorkspace: createProvisionWorkspaceMock("/tmp/env-1"),
@@ -1571,13 +1725,18 @@ describe("RuntimeManager", () => {
     });
 
     runtime.setActiveTurn("thread-1", "turn-1");
+    runtime.setPendingTurnStart("thread-2", true);
     expect(manager.listActiveThreads()).toEqual([
       {
         threadId: "thread-1",
       },
+      {
+        threadId: "thread-2",
+      },
     ]);
 
     runtime.endActiveTurn("thread-1");
+    runtime.setPendingTurnStart("thread-2", false);
     expect(manager.listActiveThreads()).toEqual([]);
   });
 

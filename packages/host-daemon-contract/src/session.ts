@@ -440,6 +440,8 @@ const hostDaemonOnlineRpcResponseSuccessSchema = z.discriminatedUnion(
     onlineRpcResponseSuccessSchemaFor("workspace.diffFiles"),
     onlineRpcResponseSuccessSchemaFor("workspace.diffPatch"),
     onlineRpcResponseSuccessSchemaFor("workspace.pull_request"),
+    commandRpcResponseSuccessSchemaFor("thread.rewind.discard"),
+    commandRpcResponseSuccessSchemaFor("thread.rewind.prepare"),
     commandRpcResponseSuccessSchemaFor("thread.start"),
     commandRpcResponseSuccessSchemaFor("turn.submit"),
     commandRpcResponseSuccessSchemaFor("thread.stop"),
@@ -540,6 +542,11 @@ const hostDaemonTerminalAttachMessageSchema = z
     requestId: terminalRequestIdSchema,
     terminalId: terminalIdSchema,
     sinceSeq: z.number().int().nonnegative(),
+    tailBytes: z
+      .number()
+      .int()
+      .positive()
+      .max(4 * 1024 * 1024),
   })
   .strict();
 
@@ -645,6 +652,7 @@ const hostDaemonTerminalReplayMessageSchema = z
     requestId: terminalRequestIdSchema,
     terminalId: terminalIdSchema,
     chunks: z.array(hostDaemonTerminalOutputChunkSchema),
+    replayStartSeq: z.number().int().nonnegative(),
     nextSeq: z.number().int().nonnegative(),
   })
   .strict();

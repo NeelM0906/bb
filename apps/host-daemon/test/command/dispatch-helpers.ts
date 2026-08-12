@@ -349,6 +349,12 @@ export function createFakeRuntime() {
       }
       return { providerThreadId: `provider-${args.threadId}` };
     },
+    async prepareThreadRewind(args) {
+      return {
+        providerThreadId: `provider-rewind-${args.threadId}-${args.leaseId}`,
+      };
+    },
+    async discardThreadRewind() {},
     async resumeThread(args) {
       state.resumedAcpLaunchSpec = args.acpLaunchSpec;
       state.resumedEnvironmentId = args.environmentId;
@@ -428,7 +434,7 @@ export function createFakeRuntime() {
     hasThread(threadId) {
       return providerSessionsByThreadId.has(threadId);
     },
-    getActiveThreadIds() {
+    getLiveThreadIds() {
       return [...activeTurnsByThreadId.keys()];
     },
     hasOpenBackgroundWork() {
