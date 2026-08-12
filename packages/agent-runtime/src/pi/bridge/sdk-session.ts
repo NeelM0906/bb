@@ -186,6 +186,8 @@ export class PiSdkSession {
   private readonly pendingSteerConsumptions: PendingSteerConsumption[] = [];
   private lastObservedSteeringQueue: string[] = [];
   private autoRetryInProgress = false;
+  private disposingSession: AgentSession | undefined;
+  private sessionDisposalPromise: Promise<void> | undefined;
   private terminalSteerSettlementTimeout:
     | ReturnType<typeof setTimeout>
     | undefined;
@@ -275,6 +277,7 @@ export class PiSdkSession {
     });
     this.session = session;
 
+    await session.bindExtensions({ mode: "rpc" });
     this.ensureCustomToolsActive();
 
     // Subscribe to session events
@@ -365,9 +368,9 @@ export class PiSdkSession {
       "Pi SDK session stopped before steer consumed",
     );
     this.detach();
-    if (this.session) {
-      this.session.dispose();
-      this.session = undefined;
+    const session = this.session;
+    if (session) {
+      void this.disposeSession(session).catch(() => undefined);
     }
   }
 
@@ -378,8 +381,11 @@ export class PiSdkSession {
     );
     this.detach();
     if (!session) {
+      await this.sessionDisposalPromise;
       return;
     }
+
+    this.session = undefined;
 
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const abortCompleted = session.abort().catch(() => undefined);
@@ -392,13 +398,45 @@ export class PiSdkSession {
       if (timeout) {
         clearTimeout(timeout);
       }
-      session.dispose();
-      if (this.session === session) {
-        this.session = undefined;
-      }
+      await this.disposeSession(session);
       this.isProcessing = false;
       this.isCompacting = false;
     }
+  }
+
+  private disposeSession(session: AgentSession): Promise<void> {
+    if (
+      this.disposingSession === session &&
+      this.sessionDisposalPromise !== undefined
+    ) {
+      return this.sessionDisposalPromise;
+    }
+    if (this.session === session) {
+      this.session = undefined;
+    }
+
+    this.disposingSession = session;
+    const disposalPromise = (async () => {
+      try {
+        if (session.hasExtensionHandlers("session_shutdown")) {
+          await session.extensionRunner.emit({
+            type: "session_shutdown",
+            reason: "quit",
+          });
+        }
+      } finally {
+        session.dispose();
+      }
+    })();
+    this.sessionDisposalPromise = disposalPromise;
+    const clearDisposal = () => {
+      if (this.sessionDisposalPromise === disposalPromise) {
+        this.disposingSession = undefined;
+        this.sessionDisposalPromise = undefined;
+      }
+    };
+    void disposalPromise.then(clearDisposal, clearDisposal);
+    return disposalPromise;
   }
 
   private trackProcessingState(event: AgentSessionEvent): void {

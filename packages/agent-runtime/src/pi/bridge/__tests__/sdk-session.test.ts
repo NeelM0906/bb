@@ -57,6 +57,7 @@ interface MockCreateBashToolDefinition {
 
 const {
   mockGetActiveToolNames,
+  mockHasExtensionHandlers,
   mockSetActiveToolsByName,
   mockCreateBashToolDefinition,
   mockDefineTool,
@@ -66,7 +67,9 @@ const {
   mockCreateAgentSession,
   mockSessionState,
   mockSessionEventListeners,
+  mockSubscribe,
   mockAbort,
+  mockBindExtensions,
   mockCompact,
   mockDispose,
   mockPrompt,
@@ -76,6 +79,7 @@ const {
   mockModelRuntime,
   mockGetShellCommandPrefix,
   mockGetShellPath,
+  mockExtensionEmit,
 } = vi.hoisted(() => {
   const mockSessionEventListeners: MockAgentSessionEventListener[] = [];
   const mockSubscribe = vi.fn<MockSubscribe>((listener) => {
@@ -90,11 +94,16 @@ const {
   const mockSessionState = { isStreaming: false };
   const mockPrompt = vi.fn();
   const mockAbort = vi.fn(async () => {});
+  const mockBindExtensions = vi.fn(async () => {});
   const mockCompact = vi.fn(async () => {});
   const mockDispose = vi.fn();
   const mockGetSessionStats = vi.fn();
   const mockGetContextUsage = vi.fn();
   const mockGetActiveToolNames = vi.fn<() => string[]>(() => []);
+  const mockHasExtensionHandlers = vi.fn<(eventType: string) => boolean>(
+    () => false,
+  );
+  const mockExtensionEmit = vi.fn(async () => undefined);
   const mockSetActiveToolsByName = vi.fn<(toolNames: string[]) => void>();
   const mockOpen = vi.fn((path: string) => ({ kind: "open", path }));
   const mockInMemory = vi.fn((cwd?: string) => ({ kind: "in-memory", cwd }));
@@ -124,6 +133,7 @@ const {
   const mockCreateAgentSession = vi.fn(async () => ({
     session: {
       abort: mockAbort,
+      bindExtensions: mockBindExtensions,
       compact: mockCompact,
       subscribe: mockSubscribe,
       prompt: mockPrompt,
@@ -131,6 +141,8 @@ const {
       getSessionStats: mockGetSessionStats,
       getContextUsage: mockGetContextUsage,
       getActiveToolNames: mockGetActiveToolNames,
+      hasExtensionHandlers: mockHasExtensionHandlers,
+      extensionRunner: { emit: mockExtensionEmit },
       setActiveToolsByName: mockSetActiveToolsByName,
       get isStreaming() {
         return mockSessionState.isStreaming;
@@ -170,6 +182,7 @@ const {
 
   return {
     mockGetActiveToolNames,
+    mockHasExtensionHandlers,
     mockSetActiveToolsByName,
     mockCreateBashToolDefinition,
     mockDefineTool,
@@ -179,7 +192,9 @@ const {
     mockCreateAgentSession,
     mockSessionState,
     mockSessionEventListeners,
+    mockSubscribe,
     mockAbort,
+    mockBindExtensions,
     mockCompact,
     mockDispose,
     mockPrompt,
@@ -189,6 +204,7 @@ const {
     mockModelRuntime,
     mockGetShellCommandPrefix,
     mockGetShellPath,
+    mockExtensionEmit,
   };
 });
 
@@ -275,6 +291,8 @@ describe("PiSdkSession", () => {
     mockSessionState.isStreaming = false;
     mockSessionEventListeners.length = 0;
     mockGetActiveToolNames.mockReturnValue([]);
+    mockHasExtensionHandlers.mockReturnValue(false);
+    mockExtensionEmit.mockResolvedValue(undefined);
     mockAbort.mockResolvedValue(undefined);
     mockCompact.mockResolvedValue(undefined);
     mockGetModel.mockImplementation((provider: string, modelId: string) => ({
@@ -296,6 +314,20 @@ describe("PiSdkSession", () => {
       cwd: "/tmp/project",
       resourceLoaderOptions: {},
     });
+  });
+
+  it("binds extensions in RPC mode before tools and event subscriptions", async () => {
+    const session = new PiSdkSession({ cwd: "/tmp/project" }, vi.fn(), vi.fn());
+
+    await session.start();
+
+    expect(mockBindExtensions).toHaveBeenCalledWith({ mode: "rpc" });
+    expect(mockBindExtensions.mock.invocationCallOrder[0]).toBeLessThan(
+      mockGetActiveToolNames.mock.invocationCallOrder[0] ?? Infinity,
+    );
+    expect(mockBindExtensions.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSubscribe.mock.invocationCallOrder[0] ?? Infinity,
+    );
   });
 
   it("reports a broken configured extension before the thread starts", async () => {
