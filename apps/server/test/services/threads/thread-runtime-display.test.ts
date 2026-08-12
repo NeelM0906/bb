@@ -8,6 +8,7 @@ import {
   createEnvironment,
   createProject,
   createThread,
+  createWorkAdmission,
   hostDaemonSessions,
   migrate,
   noopNotifier,
@@ -30,6 +31,7 @@ import type {
 import { DAEMON_ACTIVE_WORK_DISCONNECT_GRACE_MS } from "../../../src/constants.js";
 import {
   resolveThreadRuntimeState,
+  toThreadResponseFromThread,
   toThreadListEntryResponses,
 } from "../../../src/services/threads/thread-runtime-display.js";
 import { NotificationHub } from "../../../src/ws/hub.js";
@@ -216,6 +218,33 @@ function createThreadListEntry(
 }
 
 describe("thread runtime display", () => {
+  it("surfaces durable host-capacity waiting details on the thread response", () => {
+    const { db, hostId, hub } = setup();
+    const { thread } = createThreadWithEnvironment({
+      db,
+      hostId,
+      status: "active",
+    });
+    createWorkAdmission(db, {
+      commandJson: '{"type":"thread.start"}',
+      createdAt: 123,
+      hostId,
+      id: "req-waiting",
+      reason: "queued",
+      threadId: thread.id,
+      waitingReason: "Host capacity limit reached",
+    });
+
+    expect(toThreadResponseFromThread({ db, hub }, { thread })).toMatchObject({
+      admission: {
+        hostId,
+        queuedAt: 123,
+        reason: "queued",
+        waitingReason: "Host capacity limit reached",
+      },
+    });
+  });
+
   it("keeps active threads active while the host daemon websocket is registered", () => {
     const { db, hostId, hub } = setup();
     const now = 1_000;

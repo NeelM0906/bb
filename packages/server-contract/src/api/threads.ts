@@ -27,6 +27,7 @@ import {
   threadWithRuntimeSchema,
 } from "@bb/domain";
 import type { CallerExecutionInputSource } from "@bb/domain";
+import { hostAdmissionReasonSchema } from "@bb/host-daemon-contract";
 import {
   timelineDeltaSchema,
   timelineRowSchema,
@@ -401,12 +402,25 @@ export const threadSearchResponseSchema = z
   .strict();
 export type ThreadSearchResponse = z.infer<typeof threadSearchResponseSchema>;
 
+export const threadAdmissionWaitingStateSchema = z
+  .object({
+    hostId: z.string().min(1),
+    queuedAt: z.number().int().nonnegative(),
+    reason: hostAdmissionReasonSchema,
+    waitingReason: z.string().min(1),
+  })
+  .strict();
+export type ThreadAdmissionWaitingState = z.infer<
+  typeof threadAdmissionWaitingStateSchema
+>;
+
 // canSpawnChild is a server-derived policy flag: true when the thread's
 // hierarchy depth is below MAX_THREAD_HIERARCHY_DEPTH, so a fork/side-chat may
 // be created under it. Computed on the server so clients never recompute the
 // depth cap.
 export const threadResponseSchema = threadWithRuntimeSchema.extend({
   activeBackgroundAgentCount: z.number().int().nonnegative(),
+  admission: threadAdmissionWaitingStateSchema.nullable(),
   canSpawnChild: z.boolean(),
 });
 export type ThreadResponse = z.infer<typeof threadResponseSchema>;

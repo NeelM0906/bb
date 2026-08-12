@@ -303,6 +303,7 @@ async function queueActiveParentSystemMessage(
     eventTypes: ["client/turn/requested"],
   });
   startLiveHostCommand(deps, {
+    admissionReason: "automation",
     command: queued.command,
     hostId: args.environment.hostId,
     timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
@@ -389,6 +390,7 @@ async function queueReadyParentSystemMessage(
     eventTypes: ["client/turn/requested"],
   });
   startLiveHostCommand(deps, {
+    admissionReason: "automation",
     command: command.command,
     hostId: args.environment.hostId,
     timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,

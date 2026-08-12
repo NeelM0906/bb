@@ -47,6 +47,7 @@ import {
 } from "../services/lib/error-log-fields.js";
 import { applyLoggedThreadLifecycleEvent } from "../services/threads/lifecycle-outcome.js";
 import { applyTurnCompletedEvent } from "./turn-completed-events.js";
+import { releaseThreadWorkAdmission } from "../services/threads/work-admission.js";
 import { findPluginAgentTool } from "../services/plugins/plugin-agent-contributions.js";
 import {
   getInactiveSessionLogFields,
@@ -193,7 +194,14 @@ interface QueuedMessageAutoSendFollowUp {
   threadId: string;
 }
 
+interface AdmissionReleaseFollowUp {
+  kind: "admission-release";
+  terminalReason: string;
+  threadId: string;
+}
+
 type EventEffectFollowUp =
+  | AdmissionReleaseFollowUp
   | ParentTurnNotificationFollowUp
   | QueuedMessageAutoSendFollowUp;
 
@@ -452,6 +460,12 @@ async function applyEventEffects(
             kind: "queued-message-auto-send",
             threadId: entry.threadId,
           });
+        } else if (turnCompleted.isRootTurnCompletion) {
+          followUps.push({
+            kind: "admission-release",
+            terminalReason: `turn ${event.status}`,
+            threadId: entry.threadId,
+          });
         }
         continue;
       }
@@ -474,6 +488,11 @@ async function applyEventEffects(
           threadId: entry.threadId,
         });
         if (outcome.applied) {
+          followUps.push({
+            kind: "admission-release",
+            terminalReason: "provider process exited",
+            threadId: entry.threadId,
+          });
           addParentTurnNotificationFollowUp({
             failedParentNotificationThreadIds,
             followUps,
@@ -503,6 +522,9 @@ async function executeEventFollowUpBestEffort(
 ): Promise<void> {
   try {
     switch (followUp.kind) {
+      case "admission-release":
+        await releaseThreadWorkAdmission(deps, followUp);
+        return;
       case "parent-turn-notification":
         await queueChildThreadTurnNotificationBestEffort(deps, {
           childThread: {
@@ -515,6 +537,10 @@ async function executeEventFollowUpBestEffort(
         });
         return;
       case "queued-message-auto-send":
+        await releaseThreadWorkAdmission(deps, {
+          terminalReason: "turn completed",
+          threadId: followUp.threadId,
+        });
         await runQueuedMessageAutoSendForThread(deps, {
           threadId: followUp.threadId,
         });

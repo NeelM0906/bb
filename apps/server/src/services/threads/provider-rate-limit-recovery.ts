@@ -415,6 +415,7 @@ export async function continueThreadAfterProviderRateLimit(
     projectId: args.thread.projectId,
   });
   startLiveHostCommand(deps, {
+    admissionReason: "resumed",
     command: command.command,
     hostId: readyEnvironment.hostId,
     timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,

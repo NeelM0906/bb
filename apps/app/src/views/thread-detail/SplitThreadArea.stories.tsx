@@ -45,6 +45,7 @@ function storyThread(id: string, title: string): ThreadResponse {
       hostReconnectGraceExpiresAt: null,
     },
     activeBackgroundAgentCount: 0,
+    admission: null,
     canSpawnChild: false,
   };
 }

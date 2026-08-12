@@ -247,6 +247,7 @@ describe("resolveThreadPlaceholder", () => {
     const previousThread: ThreadResponse = {
       ...makeThreadWithRuntime({ id: "thread-1" }),
       activeBackgroundAgentCount: 0,
+      admission: null,
       canSpawnChild: false,
     };
 

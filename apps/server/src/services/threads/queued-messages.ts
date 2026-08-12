@@ -421,6 +421,7 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
     },
   );
   startLiveHostCommand(deps, {
+    admissionReason: "queued",
     command,
     hostId: environment.hostId,
     timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,

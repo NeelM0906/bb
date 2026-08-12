@@ -807,6 +807,56 @@ export const queuedThreadMessages = sqliteTable(
   ],
 );
 
+export type WorkAdmissionReason =
+  | "interactive"
+  | "child"
+  | "automation"
+  | "queued"
+  | "resumed";
+export type WorkAdmissionStatus = "waiting" | "running" | "terminal";
+
+export const workAdmissions = sqliteTable(
+  "work_admissions",
+  {
+    id: text("id").primaryKey(),
+    threadId: text("thread_id")
+      .notNull()
+      .references(() => threads.id, { onDelete: "cascade" }),
+    hostId: text("host_id")
+      .notNull()
+      .references(() => hosts.id, { onDelete: "cascade" }),
+    reason: text("reason").$type<WorkAdmissionReason>().notNull(),
+    commandJson: text("command_json").notNull(),
+    status: text("status").$type<WorkAdmissionStatus>().notNull(),
+    waitingReason: text("waiting_reason"),
+    reservationToken: text("reservation_token"),
+    reservationGeneration: integer("reservation_generation"),
+    terminalReason: text("terminal_reason"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("work_admissions_host_status_fifo_idx").on(
+      table.hostId,
+      table.status,
+      table.createdAt,
+      table.id,
+    ),
+    index("work_admissions_thread_status_idx").on(
+      table.threadId,
+      table.status,
+      table.createdAt,
+    ),
+    check(
+      "work_admissions_reservation_shape_check",
+      sql`(
+        (${table.status} = 'running' AND ${table.reservationToken} IS NOT NULL AND ${table.reservationGeneration} IS NOT NULL)
+        OR (${table.status} != 'running')
+      )`,
+    ),
+  ],
+);
+
 export const hostDaemonSessions = sqliteTable(
   "host_daemon_sessions",
   {

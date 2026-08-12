@@ -603,6 +603,12 @@ export async function sendThreadMessage(
       queuedRequest.request.notificationMetadata,
     );
     startLiveHostCommand(deps, {
+      admissionReason:
+        args.trigger === "auto-dispatch"
+          ? "queued"
+          : initiator === "agent"
+            ? "child"
+            : "interactive",
       command: command.command,
       hostId: readyEnvironment.hostId,
       timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
@@ -674,6 +680,12 @@ export async function sendThreadMessage(
     queuedRequest.request.notificationMetadata,
   );
   startLiveHostCommand(deps, {
+    admissionReason:
+      args.trigger === "auto-dispatch"
+        ? "queued"
+        : initiator === "agent"
+          ? "child"
+          : "interactive",
     command,
     hostId: readyEnvironment.hostId,
     timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,

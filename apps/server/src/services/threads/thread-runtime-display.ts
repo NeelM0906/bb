@@ -1,6 +1,7 @@
 import {
   getEnvironment,
   getLatestSessionForHost,
+  getCurrentThreadWorkAdmission,
   getSessionById,
   listActiveBackgroundTaskCountsByThreadIds,
   listLatestGoalEventRowsByThreadIds,
@@ -254,12 +255,22 @@ export function toThreadResponseFromThread(
     ...args,
     environmentHostId: resolveThreadEnvironmentHostId(deps, args.thread),
   });
+  const admission = getCurrentThreadWorkAdmission(deps.db, args.thread.id);
   return {
     ...threadWithRuntime,
     activeBackgroundAgentCount:
       listActiveBackgroundTaskCountsByThreadIds(deps.db, {
         threadIds: [args.thread.id],
       })[0]?.activeBackgroundAgentCount ?? 0,
+    admission:
+      admission?.status === "waiting" && admission.waitingReason !== null
+        ? {
+            hostId: admission.hostId,
+            queuedAt: admission.createdAt,
+            reason: admission.reason,
+            waitingReason: admission.waitingReason,
+          }
+        : null,
     canSpawnChild: canThreadSpawnChild(deps, { thread: args.thread }),
   };
 }
