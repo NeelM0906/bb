@@ -278,6 +278,9 @@ function createFakeRuntime() {
       selectedOnlyModels: [],
     })),
     listRunningProviders: vi.fn((): string[] => []),
+    listProviderProcessDiagnostics: vi.fn<
+      NonNullable<AgentRuntime["listProviderProcessDiagnostics"]>
+    >(() => []),
     getActiveTurnId: (threadId) => activeTurnsByThreadId.get(threadId) ?? null,
     waitForActiveTurn: async (threadId) =>
       activeTurnsByThreadId.get(threadId) ?? null,
@@ -442,6 +445,54 @@ describe("RuntimeManager", () => {
       idleForMs: 1_000,
       nowMs: 5_000,
     });
+  });
+
+  it("reports direct provider ownership with its environment", async () => {
+    const runtime = createFakeRuntime();
+    runtime.listProviderProcessDiagnostics.mockReturnValue([
+      {
+        directPid: 4242,
+        generation: 7,
+        processKey: "fake",
+        providerId: "fake",
+        state: "running",
+        sessions: [
+          {
+            activeTurnId: "turn-1",
+            idleDeadlineMs: null,
+            providerThreadId: "provider-thread-1",
+            threadId: "thread-1",
+          },
+        ],
+      },
+    ]);
+    const manager = new RuntimeManager({
+      provisionWorkspace: createProvisionWorkspaceMock("/tmp/env-1"),
+      createRuntime: () => runtime,
+    });
+    await manager.ensureEnvironment({
+      environmentId: "env-1",
+      workspacePath: "/tmp/env-1",
+    });
+
+    expect(manager.listProviderProcessDiagnostics()).toEqual([
+      {
+        directPid: 4242,
+        environmentId: "env-1",
+        generation: 7,
+        processKey: "fake",
+        providerId: "fake",
+        state: "running",
+        sessions: [
+          {
+            activeTurnId: "turn-1",
+            idleDeadlineMs: null,
+            providerThreadId: "provider-thread-1",
+            threadId: "thread-1",
+          },
+        ],
+      },
+    ]);
   });
 
   it("passes staged injected skill roots to created runtimes", async () => {

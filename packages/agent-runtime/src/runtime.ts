@@ -58,6 +58,7 @@ import type {
   AgentRuntime,
   AgentRuntimeExecutionOptions,
   AgentRuntimeOptions,
+  AgentRuntimeProviderSessionDiagnostic,
   ReapedIdleProviderSession,
   AgentRuntimeSkillRoot,
 } from "./types.js";
@@ -237,6 +238,7 @@ interface RequireProviderRequestPlanArgs {
 const CODEX_PROVIDER_ID = "codex";
 const CODEX_THREAD_PROCESS_KEY_PREFIX = `${CODEX_PROVIDER_ID}\0thread:`;
 const THREAD_CREATION_REQUEST_TIMEOUT_MS = 2 * 60_000;
+const PROVIDER_SESSION_IDLE_REAP_AFTER_MS = 30 * 60 * 1000;
 const CODEX_ACCOUNT_RESTART_PROVIDER_ERROR_CATEGORIES =
   new Set<ProviderErrorCategory>(["rate-limit", "unauthorized"]);
 const CODEX_ACCOUNT_RESTART_PROVIDER_ERROR_TEXT_PATTERN =
@@ -310,6 +312,22 @@ function createAgentRuntimeInternal(
       threadIdentityRegistry.createProviderState({ providerId }),
     env: options.env,
     getNextRequestId: () => nextRequestId++,
+    getProviderSessionDiagnostics: (providerProcess) =>
+      [...providerProcess.identity.threadIds].map(
+        (threadId): AgentRuntimeProviderSessionDiagnostic => ({
+          activeTurnId: turnState.getActiveTurnId(threadId),
+          idleDeadlineMs: (() => {
+            const idleSinceMs =
+              idleProviderSessionSinceMsByThreadId.get(threadId);
+            return idleSinceMs === undefined
+              ? null
+              : idleSinceMs + PROVIDER_SESSION_IDLE_REAP_AFTER_MS;
+          })(),
+          providerThreadId:
+            threadIdentityRegistry.getProviderThreadId(threadId) ?? null,
+          threadId,
+        }),
+      ),
     handleStdoutLine: (args) =>
       handleStdoutLine(args.line, args.providerProcess),
     onProcessExit: options.onProcessExit,
@@ -656,7 +674,7 @@ function createAgentRuntimeInternal(
     }
 
     const runtimeConfig = threadRuntimeConfigs.get(args.threadId);
-    if (runtimeConfig?.providerId !== CODEX_PROVIDER_ID) {
+    if (!runtimeConfig) {
       return null;
     }
 
@@ -2104,6 +2122,10 @@ function createAgentRuntimeInternal(
       return providerProcesses.listRunningProviders();
     },
 
+    listProviderProcessDiagnostics() {
+      return providerProcesses.listProviderProcessDiagnostics();
+    },
+
     getActiveTurnId(threadId) {
       return turnState.getActiveTurnId(threadId);
     },
@@ -2121,7 +2143,11 @@ function createAgentRuntimeInternal(
 
     async reapIdleProviderSessions({ idleForMs, nowMs }) {
       const reapedSessions: ReapedIdleProviderSession[] = [];
-      for (const threadId of [...threadRuntimeConfigs.keys()]) {
+      const candidatesByProcessKey = new Map<
+        string,
+        ReapIdleProviderSessionCandidate[]
+      >();
+      for (const threadId of threadRuntimeConfigs.keys()) {
         const candidate = findReapableIdleProviderSession({
           idleForMs,
           nowMs,
@@ -2130,27 +2156,56 @@ function createAgentRuntimeInternal(
         if (!candidate) {
           continue;
         }
+        const candidates =
+          candidatesByProcessKey.get(candidate.runtimeConfig.processKey) ?? [];
+        candidates.push(candidate);
+        candidatesByProcessKey.set(
+          candidate.runtimeConfig.processKey,
+          candidates,
+        );
+      }
 
+      for (const candidates of candidatesByProcessKey.values()) {
+        const firstCandidate = candidates[0];
+        if (!firstCandidate) {
+          continue;
+        }
         let proc: ProviderProcess;
         try {
           proc = requireProviderProcess({
-            processKey: candidate.runtimeConfig.processKey,
-            providerId: candidate.runtimeConfig.providerId,
+            processKey: firstCandidate.runtimeConfig.processKey,
+            providerId: firstCandidate.runtimeConfig.providerId,
           });
         } catch {
           continue;
         }
-        if (!isThreadScopedCodexProcess(proc)) {
+        const candidatesByThreadId = new Map(
+          candidates.map((candidate) => [candidate.threadId, candidate]),
+        );
+        // A shared provider is a single direct child for multiple provider
+        // sessions. It is reclaimable only if every hosted session reached
+        // the idle deadline; an active sibling keeps the child alive.
+        if (
+          proc.identity.threadIds.size === 0 ||
+          [...proc.identity.threadIds].some(
+            (threadId) => !candidatesByThreadId.has(threadId),
+          )
+        ) {
           continue;
         }
 
-        forgetThreadRuntimeState(proc, candidate.threadId);
-        await shutdownThreadScopedCodexProcessIfIdle(proc);
-        reapedSessions.push({
-          idleForMs: Math.max(0, nowMs - candidate.idleSinceMs),
-          providerId: candidate.runtimeConfig.providerId,
-          providerThreadId: candidate.providerThreadId,
-          threadId: candidate.threadId,
+        for (const candidate of candidates) {
+          forgetThreadRuntimeState(proc, candidate.threadId);
+          reapedSessions.push({
+            idleForMs: Math.max(0, nowMs - candidate.idleSinceMs),
+            providerId: candidate.runtimeConfig.providerId,
+            providerThreadId: candidate.providerThreadId,
+            threadId: candidate.threadId,
+          });
+        }
+        await providerProcesses.shutdownProvider({
+          processKey: proc.processKey,
+          providerId: proc.providerId,
         });
       }
 

@@ -27,6 +27,7 @@ import type { ProviderRuntimeEvent } from "./runtime-json-rpc.js";
 interface CreateProviderProcessManagerArgs {
   adapterProcessEnv?: Record<string, string>;
   env?: Record<string, string>;
+  onStdoutLine?: (line: string) => void;
   onStderr?: NonNullable<AgentRuntimeOptions["onStderr"]>;
   onProcessExit: NonNullable<AgentRuntimeOptions["onProcessExit"]>;
   scriptPath: string;
@@ -79,7 +80,15 @@ describe("createAgentRuntime process lifecycle", () => {
         identityRegistry.createProviderState({ providerId }),
       env: args.env,
       getNextRequestId: () => nextRequestId++,
-      handleStdoutLine: () => undefined,
+      getProviderSessionDiagnostics: (providerProcess) =>
+        [...providerProcess.identity.threadIds].map((threadId) => ({
+          activeTurnId: null,
+          idleDeadlineMs: null,
+          providerThreadId:
+            identityRegistry.getProviderThreadId(threadId) ?? null,
+          threadId,
+        })),
+      handleStdoutLine: ({ line }) => args.onStdoutLine?.(line),
       onProcessExit: args.onProcessExit,
       onProviderIdentityWaitersInterrupted: (providerProcess) =>
         identityRegistry.resolvePendingIdentityWaiters(
@@ -441,8 +450,8 @@ rl.on("line", (line) => {
     const crashScript = join(tmpDir, "large-stderr-provider.cjs");
     writeFileSync(
       crashScript,
-      `process.stderr.write("a".repeat(100_000) + "stderr-tail");
-      process.exit(42);`,
+      `process.exitCode = 42;
+      process.stderr.write("a".repeat(100_000) + "stderr-tail");`,
     );
     const manager = createProviderProcessManager({
       onProcessExit: exitInfo,
@@ -464,6 +473,131 @@ rl.on("line", (line) => {
     expect(Buffer.byteLength(stderrLines[0] ?? "", "utf8")).toBeLessThanOrEqual(
       4_000,
     );
+    await manager.shutdown();
+  });
+
+  it("drains final provider stderr before reporting its exit", async () => {
+    const exitInfo = vi.fn<NonNullable<AgentRuntimeOptions["onProcessExit"]>>();
+    const crashScript = join(tmpDir, "delayed-stderr-provider.cjs");
+    const delayedWriter =
+      'setTimeout(() => process.stderr.write("stderr-after-exit"), 50);';
+    writeFileSync(
+      crashScript,
+      `const { spawn } = require("node:child_process");
+      const writer = spawn(process.execPath, ["-e", ${JSON.stringify(delayedWriter)}], {
+        stdio: ["ignore", "ignore", "inherit"],
+      });
+      writer.unref();
+      process.exit(42);`,
+    );
+    const manager = createProviderProcessManager({
+      onProcessExit: exitInfo,
+      scriptPath: crashScript,
+      workspacePath: tmpDir,
+    });
+
+    await manager.ensureProvider({ processKey: "fake", providerId: "fake" });
+    await waitForRuntimeState({
+      label: "drained provider stderr exit callback",
+      predicate: () => exitInfo.mock.calls.length === 1,
+    });
+
+    expect(exitInfo.mock.calls[0]?.[0].stderr).toBe("stderr-after-exit");
+    await manager.shutdown();
+  });
+
+  it("does not accept late stdout from a finalized provider generation", async () => {
+    const stdoutLines: string[] = [];
+    const crashScript = join(tmpDir, "late-stdout-provider.cjs");
+    const startMarker = join(tmpDir, "late-stdout-provider.started");
+    const delayedWriter =
+      'setTimeout(() => process.stdout.write("late-old-generation\\n"), 1_250);';
+    writeFileSync(
+      crashScript,
+      `const { existsSync, writeFileSync } = require("node:fs");
+      const { spawn } = require("node:child_process");
+      const startMarker = ${JSON.stringify(startMarker)};
+      if (!existsSync(startMarker)) {
+        writeFileSync(startMarker, "started");
+        const writer = spawn(process.execPath, ["-e", ${JSON.stringify(delayedWriter)}], {
+          stdio: ["ignore", "inherit", "ignore"],
+        });
+        writer.unref();
+        process.exit(42);
+      }
+      setInterval(() => {}, 1_000);`,
+    );
+    const manager = createProviderProcessManager({
+      onProcessExit: vi.fn(),
+      onStdoutLine: (line) => stdoutLines.push(line),
+      scriptPath: crashScript,
+      workspacePath: tmpDir,
+    });
+
+    await manager.ensureProvider({ processKey: "fake", providerId: "fake" });
+    await waitForRuntimeState({
+      label: "first provider process exited",
+      predicate: () => !manager.listRunningProviders().includes("fake"),
+    });
+
+    await manager.ensureProvider({ processKey: "fake", providerId: "fake" });
+    const replacement = manager.requireProviderProcess({
+      processKey: "fake",
+      providerId: "fake",
+    });
+    expect(replacement.child.exitCode).toBeNull();
+
+    await new Promise((resolve) => setTimeout(resolve, 1_400));
+    expect(stdoutLines).not.toContain("late-old-generation");
+    await manager.shutdown();
+  });
+
+  it("waits for an exited provider to finalize before replacing it", async () => {
+    const crashScript = join(tmpDir, "replace-after-exit-provider.cjs");
+    const startMarker = join(tmpDir, "replace-after-exit-provider.started");
+    const delayedWriter = "setTimeout(() => {}, 1_500);";
+    writeFileSync(
+      crashScript,
+      `const { existsSync, writeFileSync } = require("node:fs");
+      const { spawn } = require("node:child_process");
+      const startMarker = ${JSON.stringify(startMarker)};
+      if (!existsSync(startMarker)) {
+        writeFileSync(startMarker, "started");
+        const writer = spawn(process.execPath, ["-e", ${JSON.stringify(delayedWriter)}], {
+          stdio: ["ignore", "ignore", "inherit"],
+        });
+        writer.unref();
+        process.exit(42);
+      }
+      setInterval(() => {}, 1_000);`,
+    );
+    const manager = createProviderProcessManager({
+      onProcessExit: vi.fn(),
+      scriptPath: crashScript,
+      workspacePath: tmpDir,
+    });
+
+    await manager.ensureProvider({ processKey: "fake", providerId: "fake" });
+    const exitedProvider = manager.requireProviderProcess({
+      processKey: "fake",
+      providerId: "fake",
+    });
+    await waitForRuntimeState({
+      label: "provider child exit",
+      predicate: () => exitedProvider.child.exitCode !== null,
+    });
+    expect(
+      manager.listProviderProcessDiagnostics()[0],
+    ).toMatchObject({ state: "finalizing" });
+
+    const replacementStartMs = Date.now();
+    await manager.ensureProvider({ processKey: "fake", providerId: "fake" });
+    expect(Date.now() - replacementStartMs).toBeGreaterThanOrEqual(900);
+    const replacement = manager.requireProviderProcess({
+      processKey: "fake",
+      providerId: "fake",
+    });
+    expect(replacement.child.pid).not.toBe(exitedProvider.child.pid);
     await manager.shutdown();
   });
 
@@ -529,6 +663,7 @@ rl.on("line", (line) => {
       providerId: "fake",
     });
     replacementProcess.child.emit("exit", 64, null);
+    replacementProcess.child.emit("close", 64, null);
 
     await waitForRuntimeState({
       label: "unexpected replacement process exit",
@@ -1052,6 +1187,83 @@ rl.on("line", (line) => {
         readLogLines(processLogPath).filter((line) => line.startsWith("exit:")),
       ).toHaveLength(0);
       await runtime.stopThread({ threadId: "t1" });
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("reclaims a shared provider only after every hosted session is idle", async () => {
+    const events: ThreadEvent[] = [];
+    const runtime = createAgentRuntimeWithAdapters({
+      workspacePath: tmpDir,
+      onEvent: (event) => events.push(event),
+      onToolCall: async () => ({
+        contentItems: [{ type: "inputText", text: "ok" }],
+        success: true,
+      }),
+      adapterFactory: () => createFakeAdapter(scriptPath),
+    });
+
+    try {
+      await Promise.all([
+        runtime.startThread({
+          environmentId: "env-1",
+          threadId: "t1",
+          projectId: "p1",
+          providerId: "fake",
+          options: fullRuntimeOptions,
+        }),
+        runtime.startThread({
+          environmentId: "env-1",
+          threadId: "t2",
+          projectId: "p1",
+          providerId: "fake",
+          options: fullRuntimeOptions,
+        }),
+      ]);
+      await runtime.runTurn({
+        clientRequestId: "creq_2222222258",
+        threadId: "t2",
+        input: [promptTextInput({ text: "idle sibling" })],
+        options: fullRuntimeOptions,
+      });
+      await waitForThreadAgentMessageText({
+        events,
+        providerId: "fake",
+        runtime,
+        text: "idle sibling",
+        threadId: "t2",
+      });
+      await runtime.runTurn({
+        clientRequestId: "creq_2222222259",
+        threadId: "t1",
+        input: [promptTextInput({ text: "hold_turn" })],
+        options: fullRuntimeOptions,
+      });
+      expect(
+        await runtime.waitForActiveTurn("t1", { timeoutMs: 1_000 }),
+      ).not.toBeNull();
+
+      expect(
+        await runtime.reapIdleProviderSessions({
+          idleForMs: 0,
+          nowMs: Date.now() + 60_000,
+        }),
+      ).toEqual({ reapedSessions: [] });
+      expect(runtime.hasThread("t2")).toBe(true);
+
+      await runtime.stopThread({ threadId: "t1" });
+      const result = await runtime.reapIdleProviderSessions({
+        idleForMs: 0,
+        nowMs: Date.now() + 60_000,
+      });
+      expect(result.reapedSessions).toHaveLength(1);
+      expect(result.reapedSessions[0]).toMatchObject({
+        providerId: "fake",
+        threadId: "t2",
+      });
+      expect(runtime.hasThread("t2")).toBe(false);
+      expect(runtime.listRunningProviders()).not.toContain("fake");
     } finally {
       await runtime.shutdown();
     }

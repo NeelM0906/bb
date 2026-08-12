@@ -6,6 +6,7 @@ import {
   type AgentRuntimeOptions,
   type AgentRuntimeSkillRoot,
   type AgentRuntimeProcessExitInfo,
+  type AgentRuntimeProviderProcessDiagnostic,
   type ReapedIdleProviderSession,
 } from "@bb/agent-runtime";
 import type { Logger } from "@bb/logger";
@@ -226,6 +227,10 @@ export interface RuntimeManagerReapedIdleProviderSession extends ReapedIdleProvi
 
 export interface RuntimeManagerReapIdleProviderSessionsResult {
   reapedSessions: RuntimeManagerReapedIdleProviderSession[];
+}
+
+export interface RuntimeManagerProviderProcessDiagnostic extends AgentRuntimeProviderProcessDiagnostic {
+  environmentId: string;
 }
 
 /**
@@ -572,6 +577,17 @@ export class RuntimeManager {
     return [...this.entries.keys()].map((environmentId) => ({
       environmentId,
     }));
+  }
+
+  listProviderProcessDiagnostics(): RuntimeManagerProviderProcessDiagnostic[] {
+    return [...this.entries.values()].flatMap((entry) =>
+      (entry.runtime.listProviderProcessDiagnostics?.() ?? []).map(
+        (diagnostic) => ({
+          ...diagnostic,
+          environmentId: entry.environmentId,
+        }),
+      ),
+    );
   }
 
   async reapIdleProviderSessions(

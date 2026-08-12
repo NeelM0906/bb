@@ -1,6 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createInterface } from "node:readline";
+import { createInterface, type Interface } from "node:readline";
 import type { HostDaemonAcpLaunchSpec } from "@bb/host-daemon-contract";
 import {
   sanitizeInheritedChildProcessEnv,
@@ -21,6 +21,8 @@ import type { RuntimeProviderIdentityState } from "./runtime-thread-identity.js"
 import type {
   AgentRuntimeOptions,
   AgentRuntimeProcessExitThreadState,
+  AgentRuntimeProviderProcessDiagnostic,
+  AgentRuntimeProviderSessionDiagnostic,
   AgentRuntimeSkillRoot,
 } from "./types.js";
 
@@ -28,6 +30,8 @@ export interface RuntimeProviderProcess {
   adapter: ProviderAdapter;
   child: ChildProcess;
   expectedShutdownExpectations: number;
+  exitFinalized: Promise<void>;
+  generation: number;
   identity: RuntimeProviderIdentityState;
   interactiveRequestScope: string;
   pending: Map<string | number, PendingJsonRpcRequest>;
@@ -35,6 +39,7 @@ export interface RuntimeProviderProcess {
   providerId: string;
   stderrLineTail: Buffer;
   stderrTail: Buffer;
+  stdout: Interface;
 }
 
 export interface RuntimeProviderProcessLineArgs {
@@ -61,6 +66,9 @@ export interface RuntimeProviderProcessManagerArgs {
   ) => RuntimeProviderIdentityState;
   env: Record<string, string> | undefined;
   getNextRequestId: () => number;
+  getProviderSessionDiagnostics: (
+    providerProcess: RuntimeProviderProcess,
+  ) => AgentRuntimeProviderSessionDiagnostic[];
   handleStdoutLine: (args: RuntimeProviderProcessLineArgs) => void;
   onProcessExit: AgentRuntimeOptions["onProcessExit"];
   onProviderIdentityWaitersInterrupted: (
@@ -122,6 +130,7 @@ interface ProviderProcessExitedErrorArgs {
 }
 
 const PROVIDER_STDERR_TAIL_MAX_BYTES = 4_000;
+const PROVIDER_PROCESS_CLOSE_GRACE_MS = 1_000;
 
 function createAdapterTurnIdPrefix(): string {
   const adapterId = randomUUID().replaceAll("-", "").slice(0, 16);
@@ -143,6 +152,7 @@ export class RuntimeProviderProcessManager {
   private readonly args: RuntimeProviderProcessManagerArgs;
   private readonly processes = new Map<string, RuntimeProviderProcess>();
   private readonly providerStarting = new Map<string, Promise<void>>();
+  private nextProviderGeneration = 1;
   private shuttingDown = false;
 
   constructor(args: RuntimeProviderProcessManagerArgs) {
@@ -156,7 +166,20 @@ export class RuntimeProviderProcessManager {
       return;
     }
 
-    if (this.processes.has(args.processKey)) return;
+    const existingProcess = this.processes.get(args.processKey);
+    if (existingProcess !== undefined) {
+      if (!hasChildProcessExited(existingProcess.child)) return;
+      await existingProcess.exitFinalized;
+
+      // A concurrent caller can replace this process while its final output
+      // drains. Reuse that replacement instead of spawning a second child.
+      const concurrentStart = this.providerStarting.get(args.processKey);
+      if (concurrentStart !== undefined) {
+        await concurrentStart;
+        return;
+      }
+      if (this.processes.has(args.processKey)) return;
+    }
 
     const startPromise = (async () => {
       const adapter = this.getAdapter(args.providerId, args.acpLaunchSpec);
@@ -254,7 +277,6 @@ export class RuntimeProviderProcessManager {
       throw new Error(`Provider "${args.providerId}" is not running`);
     }
     if (hasChildProcessExited(providerProcess.child)) {
-      this.processes.delete(args.processKey);
       throw new Error(
         `Provider "${args.providerId}" has exited (${formatChildProcessExitStatus(providerProcess.child)})`,
       );
@@ -264,13 +286,35 @@ export class RuntimeProviderProcessManager {
 
   listRunningProviders(): string[] {
     return [
-      ...new Set([...this.processes.values()].map((proc) => proc.providerId)),
+      ...new Set(
+        [...this.processes.values()]
+          .filter((proc) => !hasChildProcessExited(proc.child))
+          .map((proc) => proc.providerId),
+      ),
     ];
+  }
+
+  listProviderProcessDiagnostics(): AgentRuntimeProviderProcessDiagnostic[] {
+    return [...this.processes.values()].map((providerProcess) => ({
+      directPid: providerProcess.child.pid ?? null,
+      generation: providerProcess.generation,
+      processKey: providerProcess.processKey,
+      providerId: providerProcess.providerId,
+      sessions: this.args.getProviderSessionDiagnostics(providerProcess),
+      state: hasChildProcessExited(providerProcess.child)
+        ? "finalizing"
+        : "running",
+    }));
   }
 
   async shutdownProvider(args: ShutdownRuntimeProviderArgs): Promise<void> {
     const providerProcess = this.processes.get(args.processKey);
-    if (!providerProcess || hasChildProcessExited(providerProcess.child)) {
+    if (!providerProcess) {
+      return;
+    }
+
+    if (hasChildProcessExited(providerProcess.child)) {
+      await providerProcess.exitFinalized;
       return;
     }
 
@@ -279,28 +323,14 @@ export class RuntimeProviderProcessManager {
       providerProcess,
       timeoutMs: args.timeoutMs,
     });
+    await providerProcess.exitFinalized;
   }
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
-    const shutdownPromises: Promise<void>[] = [];
+    const providerProcesses = [...this.processes.values()];
 
-    for (const [processKey, providerProcess] of this.processes) {
-      shutdownPromises.push(
-        new Promise<void>((resolve) => {
-          const timer = setTimeout(() => {
-            providerProcess.child.kill("SIGKILL");
-            resolve();
-          }, 5000);
-
-          providerProcess.child.on("exit", () => {
-            clearTimeout(timer);
-            resolve();
-          });
-
-          providerProcess.child.kill("SIGTERM");
-        }),
-      );
+    for (const providerProcess of providerProcesses) {
       for (const [, pending] of providerProcess.pending) {
         pending.reject(new Error("Runtime shutting down"));
       }
@@ -310,10 +340,17 @@ export class RuntimeProviderProcessManager {
       for (const threadId of providerProcess.identity.threadIds) {
         this.args.onProviderThreadDetached(threadId, providerProcess);
       }
-      this.processes.delete(processKey);
     }
 
-    await Promise.all(shutdownPromises);
+    await Promise.all(
+      providerProcesses.map(async (providerProcess) => {
+        if (!hasChildProcessExited(providerProcess.child)) {
+          await this.terminateProviderProcess({ providerProcess });
+        }
+        await providerProcess.exitFinalized;
+      }),
+    );
+    this.processes.clear();
   }
 
   private getAdapter(
@@ -354,10 +391,17 @@ export class RuntimeProviderProcessManager {
       env,
     });
 
+    let finalizeExit: () => void = () => undefined;
+    const exitFinalized = new Promise<void>((resolve) => {
+      finalizeExit = resolve;
+    });
+    const stdout = createInterface({ input: child.stdout });
     const providerProcess: RuntimeProviderProcess = {
       child,
       adapter: args.adapter,
       expectedShutdownExpectations: 0,
+      exitFinalized,
+      generation: this.nextProviderGeneration++,
       interactiveRequestScope: randomUUID(),
       identity: this.args.createProviderIdentityState(args.providerId),
       pending: new Map(),
@@ -365,11 +409,14 @@ export class RuntimeProviderProcessManager {
       providerId: args.providerId,
       stderrLineTail: Buffer.alloc(0),
       stderrTail: Buffer.alloc(0),
+      stdout,
     };
 
-    const stdout = createInterface({ input: child.stdout });
     stdout.on("line", (line) => {
-      if (this.shuttingDown) {
+      if (
+        this.shuttingDown ||
+        !this.isCurrentProviderProcess({ providerProcess })
+      ) {
         return;
       }
       this.args.handleStdoutLine({
@@ -379,7 +426,10 @@ export class RuntimeProviderProcessManager {
     });
 
     child.stderr.on("data", (chunk: Buffer) => {
-      if (this.shuttingDown) {
+      if (
+        this.shuttingDown ||
+        !this.isCurrentProviderProcess({ providerProcess })
+      ) {
         return;
       }
       consumeProviderStderrChunk({
@@ -389,7 +439,11 @@ export class RuntimeProviderProcessManager {
       });
     });
     child.stderr.on("end", () => {
-      if (this.shuttingDown || providerProcess.stderrLineTail.length === 0) {
+      if (
+        this.shuttingDown ||
+        !this.isCurrentProviderProcess({ providerProcess }) ||
+        providerProcess.stderrLineTail.length === 0
+      ) {
         return;
       }
       this.args.onStderr?.(decodeStderrLine(providerProcess.stderrLineTail));
@@ -403,13 +457,48 @@ export class RuntimeProviderProcessManager {
         providerProcess,
       });
     });
+    let exitStatus: ProviderProcessExitStatus | null = null;
+    let closeGraceTimer: NodeJS.Timeout | null = null;
+    let exitHandled = false;
+    const handleExit = (status: ProviderProcessExitStatus): void => {
+      if (exitHandled) return;
+      exitHandled = true;
+      if (closeGraceTimer !== null) {
+        clearTimeout(closeGraceTimer);
+      }
+      try {
+        this.handleProviderProcessExit({
+          code: status.code,
+          providerId: args.providerId,
+          providerProcess,
+          signal: status.signal,
+        });
+      } finally {
+        finalizeExit();
+      }
+    };
     child.on("exit", (code, signal) => {
-      this.handleProviderProcessExit({
-        code: code ?? null,
-        providerId: args.providerId,
-        providerProcess,
-        signal: signal ?? null,
-      });
+      const status = { code: code ?? null, signal: signal ?? null };
+      exitStatus = status;
+      // `exit` precedes the final stdout/stderr events. Wait for `close` so
+      // diagnostics and pending requests observe the complete final drain.
+      // A descendant may keep an inherited pipe open, so force the read ends
+      // closed after a bounded grace period.
+      closeGraceTimer = setTimeout(() => {
+        stdout.close();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        handleExit(status);
+      }, PROVIDER_PROCESS_CLOSE_GRACE_MS);
+      closeGraceTimer.unref();
+    });
+    child.on("close", (code, signal) => {
+      handleExit(
+        exitStatus ?? {
+          code: code ?? null,
+          signal: signal ?? null,
+        },
+      );
     });
 
     this.processes.set(args.processKey, providerProcess);
