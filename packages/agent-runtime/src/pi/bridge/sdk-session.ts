@@ -420,17 +420,20 @@ export class PiSdkSession {
         timeout = setTimeout(resolve, timeoutMs);
       });
       await Promise.race([abortCompleted, timeoutReached]);
+      await this.disposeSession(session, timeoutReached);
     } finally {
       if (timeout) {
         clearTimeout(timeout);
       }
-      await this.disposeSession(session);
       this.isProcessing = false;
       this.isCompacting = false;
     }
   }
 
-  private disposeSession(session: AgentSession): Promise<void> {
+  private disposeSession(
+    session: AgentSession,
+    forceAfter?: Promise<void>,
+  ): Promise<void> {
     if (
       this.disposingSession === session &&
       this.sessionDisposalPromise !== undefined
@@ -445,10 +448,13 @@ export class PiSdkSession {
     const disposalPromise = (async () => {
       try {
         if (session.hasExtensionHandlers("session_shutdown")) {
-          await session.extensionRunner.emit({
+          const extensionShutdown = session.extensionRunner.emit({
             type: "session_shutdown",
             reason: "quit",
           });
+          await (forceAfter
+            ? Promise.race([extensionShutdown, forceAfter])
+            : extensionShutdown);
         }
       } finally {
         session.dispose();

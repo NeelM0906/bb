@@ -668,7 +668,8 @@ function createAgentRuntimeInternal(
     if (
       threadHasInFlightOperation(args.threadId) ||
       pendingTurnStartThreadIds.has(args.threadId) ||
-      turnState.getActiveTurnId(args.threadId) !== null
+      turnState.getActiveTurnId(args.threadId) !== null ||
+      backgroundWorkState.hasOpenWorkForThread(args.threadId)
     ) {
       return null;
     }

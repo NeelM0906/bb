@@ -586,9 +586,9 @@ rl.on("line", (line) => {
       label: "provider child exit",
       predicate: () => exitedProvider.child.exitCode !== null,
     });
-    expect(
-      manager.listProviderProcessDiagnostics()[0],
-    ).toMatchObject({ state: "finalizing" });
+    expect(manager.listProviderProcessDiagnostics()[0]).toMatchObject({
+      state: "finalizing",
+    });
 
     const replacementStartMs = Date.now();
     await manager.ensureProvider({ processKey: "fake", providerId: "fake" });
@@ -1187,6 +1187,89 @@ rl.on("line", (line) => {
         readLogLines(processLogPath).filter((line) => line.startsWith("exit:")),
       ).toHaveLength(0);
       await runtime.stopThread({ threadId: "t1" });
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("does not reap a provider session with open background work", async () => {
+    const events: ThreadEvent[] = [];
+    const runtime = createAgentRuntimeWithAdapters({
+      workspacePath: tmpDir,
+      onEvent: (event) => events.push(event),
+      onToolCall: async () => ({
+        contentItems: [{ type: "inputText", text: "ok" }],
+        success: true,
+      }),
+      adapterFactory: () => {
+        const adapter = createFakeAdapter(scriptPath);
+        return {
+          ...adapter,
+          translateEvent(event, context) {
+            const translatedEvents = adapter.translateEvent(event, context);
+            const eventsWithBackgroundWork: ThreadEvent[] = [];
+            for (const translatedEvent of translatedEvents) {
+              if (translatedEvent.type !== "turn/completed") {
+                eventsWithBackgroundWork.push(translatedEvent);
+                continue;
+              }
+              if (!translatedEvent.providerThreadId) {
+                throw new Error("Expected fake provider thread identity");
+              }
+              eventsWithBackgroundWork.push(
+                {
+                  type: "item/started",
+                  threadId: translatedEvent.threadId,
+                  providerThreadId: translatedEvent.providerThreadId,
+                  scope: translatedEvent.scope,
+                  item: {
+                    type: "backgroundTask",
+                    id: "background-task-1",
+                    taskType: "local_workflow",
+                    description: "background task",
+                    status: "pending",
+                    taskStatus: "running",
+                    skipTranscript: false,
+                  },
+                },
+                translatedEvent,
+              );
+            }
+            return eventsWithBackgroundWork;
+          },
+        };
+      },
+    });
+
+    try {
+      await runtime.startThread({
+        environmentId: "env-1",
+        threadId: "t1",
+        projectId: "p1",
+        providerId: "fake",
+        options: fullRuntimeOptions,
+      });
+      await runtime.runTurn({
+        clientRequestId: "creq_2222222260",
+        threadId: "t1",
+        input: [promptTextInput({ text: "start background work" })],
+        options: fullRuntimeOptions,
+      });
+      await waitForThreadAgentMessageText({
+        events,
+        providerId: "fake",
+        runtime,
+        text: "start background work",
+        threadId: "t1",
+      });
+
+      expect(
+        await runtime.reapIdleProviderSessions({
+          idleForMs: 0,
+          nowMs: Date.now() + 60 * 60 * 1000,
+        }),
+      ).toEqual({ reapedSessions: [] });
+      expect(runtime.hasThread("t1")).toBe(true);
     } finally {
       await runtime.shutdown();
     }

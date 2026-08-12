@@ -1073,4 +1073,35 @@ describe("PiSdkSession", () => {
 
     expect(mockDispose).toHaveBeenCalledOnce();
   });
+
+  it("bounds extension shutdown by the graceful-close timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      mockHasExtensionHandlers.mockReturnValue(true);
+      mockExtensionEmit.mockImplementation(() => new Promise(() => {}));
+      const session = new PiSdkSession(
+        { cwd: "/tmp/project" },
+        vi.fn(),
+        vi.fn(),
+      );
+
+      await session.start();
+      const closePromise = session.closeGracefully(1_000);
+      await flushAsyncWork();
+
+      expect(mockExtensionEmit).toHaveBeenCalledWith({
+        type: "session_shutdown",
+        reason: "quit",
+      });
+      expect(mockDispose).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await closePromise;
+
+      expect(mockDispose).toHaveBeenCalledOnce();
+      await expect(session.closeGracefully(1_000)).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
