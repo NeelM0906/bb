@@ -204,6 +204,44 @@ describe("provisionWorkspace", () => {
       ).rejects.toHaveProperty("code", "path_not_found");
     });
 
+    it("canonicalizes an accessible workspace below an execute-only ancestor", async () => {
+      if (process.platform === "win32") {
+        return;
+      }
+      const fixtureRoot = await makeTempDir("bb-provision-search-only-");
+      const restrictedAncestor = path.join(fixtureRoot, "SearchOnlyParent");
+      const workspacePath = path.join(restrictedAncestor, "WorkspaceRoot");
+      await fs.mkdir(workspacePath, { recursive: true });
+      const expectedPath = await fs.realpath(workspacePath);
+      await fs.chmod(restrictedAncestor, 0o111);
+
+      try {
+        let readdirDenied = false;
+        try {
+          await fs.readdir(restrictedAncestor);
+        } catch (error) {
+          readdirDenied =
+            error instanceof Error &&
+            "code" in error &&
+            (error.code === "EACCES" || error.code === "EPERM");
+        }
+        if (!readdirDenied) {
+          // Privileged users and some filesystems do not enforce this fixture.
+          return;
+        }
+
+        const workspace = await provisionWorkspace({
+          workspaceProvisionType: "unmanaged",
+          path: workspacePath,
+        });
+
+        expect(workspace.path).toBe(expectedPath);
+        await expect(fs.stat(workspace.path)).resolves.toBeDefined();
+      } finally {
+        await fs.chmod(restrictedAncestor, 0o700);
+      }
+    });
+
     it("provisions an unmanaged git repo and discovers properties", async () => {
       const repoPath = await initRepo();
       const canonicalRepoPath = await fs.realpath(repoPath);

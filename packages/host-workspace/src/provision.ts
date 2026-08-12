@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import { lstat, mkdir, readdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import type { ProvisioningTranscriptEntry, WorkspaceStatus } from "@bb/domain";
 import type {
   CommitOptions,
@@ -131,6 +133,7 @@ export interface ValidatePersonalWorkspaceTargetPathArgs {
 // ---------------------------------------------------------------------------
 
 const WORKSPACE_BRANCH_GIT_TIMEOUT_MS = 15_000;
+const execFileAsync = promisify(execFile);
 
 export interface HostWorkspace {
   /** Absolute path to the workspace directory */
@@ -393,6 +396,57 @@ async function findStoredDirectoryEntryName(
   );
 }
 
+function hasFilesystemErrorCode(
+  error: unknown,
+  codes: readonly string[],
+): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    codes.includes(error.code)
+  );
+}
+
+async function canonicalizeFromWorkspaceCwd(
+  resolvedPath: string,
+): Promise<string> {
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    [
+      "--eval",
+      'process.stdout.write(require("node:fs").realpathSync.native("."))',
+    ],
+    {
+      cwd: resolvedPath,
+      encoding: "utf8",
+      timeout: WORKSPACE_BRANCH_GIT_TIMEOUT_MS,
+      windowsHide: true,
+    },
+  );
+  if (!path.isAbsolute(stdout)) {
+    throw new WorkspaceError(
+      "canonical_path_unavailable",
+      `Host returned a non-absolute canonical workspace path: ${stdout}`,
+    );
+  }
+
+  const [resolvedStats, canonicalStats] = await Promise.all([
+    lstat(resolvedPath, { bigint: true }),
+    lstat(stdout, { bigint: true }),
+  ]);
+  if (
+    resolvedStats.dev !== canonicalStats.dev ||
+    resolvedStats.ino !== canonicalStats.ino
+  ) {
+    throw new WorkspaceError(
+      "canonical_path_unavailable",
+      `Host canonical workspace path resolved to a different directory: ${stdout}`,
+    );
+  }
+  return stdout;
+}
+
 async function canonicalizeExistingDirectoryPath(
   existingPath: string,
 ): Promise<string> {
@@ -408,17 +462,24 @@ async function canonicalizeExistingDirectoryPath(
       return rootPath;
     }
 
-    let canonicalPath = rootPath;
-    for (const resolvedName of relativePath.split(path.sep)) {
-      const storedName = await findStoredDirectoryEntryName(
-        canonicalPath,
-        resolvedName,
-      );
-      canonicalPath = path.join(canonicalPath, storedName);
+    try {
+      let canonicalPath = rootPath;
+      for (const resolvedName of relativePath.split(path.sep)) {
+        const storedName = await findStoredDirectoryEntryName(
+          canonicalPath,
+          resolvedName,
+        );
+        canonicalPath = path.join(canonicalPath, storedName);
+      }
+      return canonicalPath;
+    } catch (error) {
+      if (hasFilesystemErrorCode(error, ["EACCES", "EPERM"])) {
+        return canonicalizeFromWorkspaceCwd(resolvedPath);
+      }
+      throw error;
     }
-    return canonicalPath;
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+    if (hasFilesystemErrorCode(error, ["ENOENT"])) {
       throw new WorkspaceError(
         "path_not_found",
         `Unmanaged workspace path does not exist: ${existingPath}`,
