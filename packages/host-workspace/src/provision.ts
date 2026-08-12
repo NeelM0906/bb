@@ -1,4 +1,4 @@
-import { mkdir, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, readdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import type { ProvisioningTranscriptEntry, WorkspaceStatus } from "@bb/domain";
 import type {
@@ -350,6 +350,85 @@ function isSamePathOrNestedUnder(
   return relativePath === "" || isRelativeChildPath(relativePath);
 }
 
+function normalizedDirectoryEntryName(name: string): string {
+  return name.normalize("NFC").toLowerCase();
+}
+
+async function findStoredDirectoryEntryName(
+  parentPath: string,
+  resolvedName: string,
+): Promise<string> {
+  const entries = await readdir(parentPath);
+  const exactEntry = entries.find((entry) => entry === resolvedName);
+  if (exactEntry !== undefined) {
+    return exactEntry;
+  }
+
+  const normalizedName = normalizedDirectoryEntryName(resolvedName);
+  const equivalentEntries = entries.filter(
+    (entry) => normalizedDirectoryEntryName(entry) === normalizedName,
+  );
+  if (equivalentEntries.length === 1 && equivalentEntries[0] !== undefined) {
+    return equivalentEntries[0];
+  }
+
+  const resolvedStats = await lstat(path.join(parentPath, resolvedName), {
+    bigint: true,
+  });
+  for (const entry of entries) {
+    const entryStats = await lstat(path.join(parentPath, entry), {
+      bigint: true,
+    });
+    if (
+      entryStats.dev === resolvedStats.dev &&
+      entryStats.ino === resolvedStats.ino
+    ) {
+      return entry;
+    }
+  }
+
+  throw new WorkspaceError(
+    "path_not_found",
+    `Resolved workspace path component no longer exists: ${path.join(parentPath, resolvedName)}`,
+  );
+}
+
+async function canonicalizeExistingDirectoryPath(
+  existingPath: string,
+): Promise<string> {
+  try {
+    const resolvedPath = await realpath(existingPath);
+    const parsedPath = path.parse(resolvedPath);
+    const rootPath =
+      process.platform === "win32"
+        ? parsedPath.root.normalize("NFC").toLowerCase()
+        : parsedPath.root;
+    const relativePath = path.relative(parsedPath.root, resolvedPath);
+    if (relativePath === "") {
+      return rootPath;
+    }
+
+    let canonicalPath = rootPath;
+    for (const resolvedName of relativePath.split(path.sep)) {
+      const storedName = await findStoredDirectoryEntryName(
+        canonicalPath,
+        resolvedName,
+      );
+      canonicalPath = path.join(canonicalPath, storedName);
+    }
+    return canonicalPath;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      throw new WorkspaceError(
+        "path_not_found",
+        `Unmanaged workspace path does not exist: ${existingPath}`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+
 async function hasContainedPersonalGitMetadata(
   targetPath: string,
 ): Promise<boolean> {
@@ -688,7 +767,7 @@ async function provisionUnmanaged(
     }
     isGitRepo = await detectGitRepo(opts.path);
   }
-  const canonicalPath = await realpath(opts.path);
+  const canonicalPath = await canonicalizeExistingDirectoryPath(opts.path);
   const isWorktree = isGitRepo ? await detectWorktree(canonicalPath) : false;
 
   return new ProvisionedHostWorkspace({
