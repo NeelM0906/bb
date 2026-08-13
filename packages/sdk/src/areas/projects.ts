@@ -225,6 +225,7 @@ export interface ProjectsArea {
 function projectUpdateJson(args: ProjectUpdateArgs): UpdateProjectRequest {
   return {
     name: args.name,
+    protectUnmanagedWorkspace: args.protectUnmanagedWorkspace,
   };
 }
 

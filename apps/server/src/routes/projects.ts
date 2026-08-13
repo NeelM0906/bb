@@ -102,6 +102,7 @@ function toProjectResponseProjectFields(
     kind: project.kind,
     name: project.name,
     gitRemoteUrl: project.gitRemoteUrl,
+    protectUnmanagedWorkspace: project.protectUnmanagedWorkspace,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   };

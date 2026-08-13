@@ -5,6 +5,7 @@ import {
   getThread,
   listEvents,
   listQueuedThreadMessages,
+  listWaitingWorkAdmissions,
   markThreadDeleted,
 } from "@bb/db";
 import { turnScope, type Environment, type Thread } from "@bb/domain";
@@ -13,6 +14,7 @@ import type { TelemetryService } from "../../src/services/system/telemetry.js";
 import { sendQueuedMessage } from "../../src/services/threads/queued-messages.js";
 import { handleUpdateEnvironmentDirectoryToolCall } from "../../src/services/threads/thread-environment-directory.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
+import { listRecoverableWorkAdmissionCommands } from "../../src/services/threads/work-admission.js";
 import {
   listQueuedThreadCommands,
   reportQueuedCommandError,
@@ -523,6 +525,20 @@ describe("idle cold-start activation", () => {
         status: "waiting",
         waitingReason: "Host capacity limit reached",
       });
+      const waiting = listWaitingWorkAdmissions(harness.db, {
+        hostId: environment.hostId,
+      });
+      expect(waiting).toHaveLength(1);
+      expect(JSON.parse(waiting[0]?.commandJson ?? "null")).toMatchObject({
+        environmentId: environment.id,
+        threadId: thread.id,
+        type: "thread.start",
+      });
+      expect(
+        listRecoverableWorkAdmissionCommands(harness.deps, {
+          hostId: environment.hostId,
+        }).map((entry) => entry.command.requestId),
+      ).toEqual(waiting.map((row) => row.id));
     });
   });
 

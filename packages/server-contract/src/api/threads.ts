@@ -435,6 +435,12 @@ export const threadAdmissionWaitingStateSchema = z
     queuedAt: z.number().int().nonnegative(),
     reason: hostAdmissionReasonSchema,
     waitingReason: z.string().min(1),
+    workspace: z
+      .object({
+        canonicalPath: z.string().min(1),
+        holderThreadId: z.string().min(1),
+      })
+      .nullable(),
   })
   .strict();
 export type ThreadAdmissionWaitingState = z.infer<

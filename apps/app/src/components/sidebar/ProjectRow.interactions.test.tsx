@@ -86,6 +86,7 @@ function makeProject(): ProjectResponse {
     kind: "standard",
     name: "Test project",
     gitRemoteUrl: null,
+    protectUnmanagedWorkspace: false,
     sources: [],
     createdAt: 0,
     updatedAt: 0,

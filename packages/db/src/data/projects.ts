@@ -273,6 +273,7 @@ export function listPublicProjects(db: DbConnection) {
 
 export interface UpdateProjectInput {
   name?: string;
+  protectUnmanagedWorkspace?: boolean;
 }
 
 export function setProjectGitRemoteUrlIfMissing(

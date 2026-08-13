@@ -1,5 +1,14 @@
 # Configuration
 
+## Project workspace mutation protection
+
+Projects default `protectUnmanagedWorkspace` to `false` for compatibility. Turn
+it on in Project Settings or with
+`bb project update <id> --protect-unmanaged-workspace true`. If any project
+attached to an unmanaged physical folder enables protection, BB serializes all
+work using that canonical folder across projects. Managed worktrees and
+different host/path pairs remain independent.
+
 The packaged `npx bb-app` flow stores persistent package settings under
 `~/.bb/config.json`, provider environment values under `~/.bb/env.json`, and
 client SSH target mappings under `~/.bb/client.json`.

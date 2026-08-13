@@ -253,6 +253,10 @@ status|install` to inspect or install provider CLIs on a selected machine.
   CLI machine fallback (normally the primary machine).
 - `bb project list` preserves the ordinary-project-only default. Pass
   `--include-personal` when the singleton personal project must be discoverable.
+- Use `bb project update <id> --protect-unmanaged-workspace true` to serialize
+  threads and automations mutating the same unmanaged physical folder, even
+  when another project uses a canonical alias. It defaults to `false` and the
+  same flag accepts `false` to opt out.
 - Use `bb project source add <project-id> --machine <id-or-name> --path <path>`
   to register a path on another connected machine. It uses the same selector
   resolution and fallback as project create. Use `--clone` instead of `--path`

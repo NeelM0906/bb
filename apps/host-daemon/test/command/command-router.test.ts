@@ -95,6 +95,17 @@ function createRouter(
   harness: RouterHarness,
   args: CreateRouterArgs = {},
 ): CommandRouter {
+  const hostAdmissionController =
+    args.hostAdmissionController ??
+    new HostAdmissionController({
+      hostId: "host-router",
+      limit: 10,
+      listProviderProcessDiagnostics: () => [],
+      reapIdleProviderSessions: vi.fn(async () => ({ reapedSessions: [] })),
+    });
+  if (args.hostAdmissionController === undefined) {
+    vi.spyOn(hostAdmissionController, "validate").mockReturnValue(true);
+  }
   return new CommandRouter({
     dataDir: "/tmp/bb-router-test-data",
     eventSink: noopEventSink,
@@ -104,7 +115,7 @@ function createRouter(
       warn: () => undefined,
       ...args.logger,
     },
-    hostAdmissionController: args.hostAdmissionController,
+    hostAdmissionController,
     runtimeManager: args.runtimeManager ?? harness.manager,
     threadStorageRootPath: "/tmp/bb-router-test-thread-storage",
   });
@@ -258,6 +269,29 @@ describe("CommandRouter", () => {
         router,
       }),
     ).resolves.toMatchObject({ ok: true });
+  });
+
+  it("rejects provider work when the admission controller is absent", async () => {
+    const harness = createHarness({ workspacePath: "/tmp/env-router" });
+    const router = new CommandRouter({
+      dataDir: "/tmp/bb-router-test-data",
+      eventSink: noopEventSink,
+      fetchProjectAttachment: unexpectedProjectAttachmentFetch,
+      logger: { warn: () => undefined },
+      runtimeManager: harness.manager,
+      threadStorageRootPath: "/tmp/bb-router-test-thread-storage",
+    });
+
+    await expect(
+      runRouterCommand({
+        command: createThreadStartCommand(),
+        requestId: "missing-admission-controller",
+        router,
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      errorMessage: "Host admission controller is unavailable",
+    });
   });
 
   it("does not warn for expected provision cancellation RPC failures", async () => {

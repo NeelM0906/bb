@@ -111,6 +111,11 @@ export const projects = sqliteTable(
     kind: text("kind").$type<ProjectKind>().notNull().default("standard"),
     name: text("name").notNull(),
     gitRemoteUrl: text("git_remote_url"),
+    protectUnmanagedWorkspace: integer("protect_unmanaged_workspace", {
+      mode: "boolean",
+    })
+      .notNull()
+      .default(false),
     sortKey: text("sort_key").notNull().default("V"),
     deletedAt: integer("deleted_at"),
     createdAt: integer("created_at").notNull(),
@@ -845,6 +850,114 @@ export const workAdmissions = sqliteTable(
         (${table.status} = 'running' AND ${table.reservationToken} IS NOT NULL AND ${table.reservationGeneration} IS NOT NULL)
         OR (${table.status} != 'running')
       )`,
+    ),
+  ],
+);
+
+export type UnmanagedWorkspaceMutationWaiterState =
+  | "waiting"
+  | "promoted"
+  | "cancelled";
+export type UnmanagedWorkspaceMutationLeaseEventType =
+  | "acquired"
+  | "joined"
+  | "waiting"
+  | "cancelled"
+  | "released"
+  | "promoted"
+  | "recovered";
+
+export const unmanagedWorkspaceMutationLeases = sqliteTable(
+  "unmanaged_workspace_mutation_leases",
+  {
+    hostId: text("host_id")
+      .notNull()
+      .references(() => hosts.id, { onDelete: "cascade" }),
+    canonicalPath: text("canonical_path").notNull(),
+    threadId: text("thread_id")
+      .notNull()
+      .references(() => threads.id, { onDelete: "cascade" }),
+    environmentId: text("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    requestId: text("request_id").notNull(),
+    generation: integer("generation").notNull(),
+    acquiredAt: integer("acquired_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.hostId, table.canonicalPath] }),
+    uniqueIndex("unmanaged_workspace_mutation_leases_request_idx").on(
+      table.requestId,
+    ),
+    index("unmanaged_workspace_mutation_leases_thread_idx").on(table.threadId),
+    check(
+      "unmanaged_workspace_mutation_leases_generation_check",
+      sql`${table.generation} > 0`,
+    ),
+  ],
+);
+
+export const unmanagedWorkspaceMutationWaiters = sqliteTable(
+  "unmanaged_workspace_mutation_waiters",
+  {
+    sequence: integer("sequence").primaryKey({ autoIncrement: true }),
+    requestId: text("request_id").notNull(),
+    hostId: text("host_id")
+      .notNull()
+      .references(() => hosts.id, { onDelete: "cascade" }),
+    canonicalPath: text("canonical_path").notNull(),
+    threadId: text("thread_id")
+      .notNull()
+      .references(() => threads.id, { onDelete: "cascade" }),
+    environmentId: text("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    state: text("state")
+      .$type<UnmanagedWorkspaceMutationWaiterState>()
+      .notNull(),
+    reason: text("reason"),
+    promotedGeneration: integer("promoted_generation"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("unmanaged_workspace_mutation_waiters_request_idx").on(
+      table.requestId,
+    ),
+    index("unmanaged_workspace_mutation_waiters_fifo_idx").on(
+      table.hostId,
+      table.canonicalPath,
+      table.state,
+      table.sequence,
+    ),
+  ],
+);
+
+export const unmanagedWorkspaceMutationLeaseEvents = sqliteTable(
+  "unmanaged_workspace_mutation_lease_events",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    hostId: text("host_id").notNull(),
+    canonicalPath: text("canonical_path").notNull(),
+    threadId: text("thread_id").notNull(),
+    environmentId: text("environment_id").notNull(),
+    requestId: text("request_id").notNull(),
+    generation: integer("generation"),
+    type: text("type")
+      .$type<UnmanagedWorkspaceMutationLeaseEventType>()
+      .notNull(),
+    reason: text("reason"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("unmanaged_workspace_mutation_lease_events_workspace_idx").on(
+      table.hostId,
+      table.canonicalPath,
+      table.id,
+    ),
+    index("unmanaged_workspace_mutation_lease_events_request_idx").on(
+      table.requestId,
     ),
   ],
 );

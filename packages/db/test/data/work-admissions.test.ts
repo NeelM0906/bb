@@ -4,6 +4,7 @@ import {
   createWorkAdmission,
   getCurrentThreadWorkAdmission,
   listWaitingWorkAdmissions,
+  listCurrentWorkAdmissions,
   markWorkAdmissionRunning,
   markWorkAdmissionTerminal,
 } from "../../src/data/work-admissions.js";
@@ -103,5 +104,33 @@ describe("durable work admissions", () => {
       }),
     ).toBe(true);
     expect(getCurrentThreadWorkAdmission(db, firstThread.id)).toBeNull();
+  });
+
+  it("persists every accepted command for one thread independently", () => {
+    const { db, firstThread, host } = setup();
+    for (const [id, commandJson, createdAt] of [
+      ["req-first", '{"requestId":"req-first"}', 10],
+      ["req-second", '{"requestId":"req-second"}', 20],
+    ] as const) {
+      createWorkAdmission(db, {
+        commandJson,
+        createdAt,
+        hostId: host.id,
+        id,
+        reason: "interactive",
+        threadId: firstThread.id,
+        waitingReason: "Awaiting host capacity",
+      });
+    }
+
+    expect(
+      listCurrentWorkAdmissions(db, { hostId: host.id }).map((row) => ({
+        commandJson: row.commandJson,
+        id: row.id,
+      })),
+    ).toEqual([
+      { commandJson: '{"requestId":"req-first"}', id: "req-first" },
+      { commandJson: '{"requestId":"req-second"}', id: "req-second" },
+    ]);
   });
 });

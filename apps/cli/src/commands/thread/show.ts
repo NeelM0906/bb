@@ -505,6 +505,11 @@ function printThreadStatus(
     console.log(
       `  Admission: waiting on ${thread.admission.hostId} (${thread.admission.waitingReason})`,
     );
+    if (thread.admission.workspace !== null) {
+      console.log(
+        `  Workspace: ${thread.admission.workspace.canonicalPath} (owned by ${thread.admission.workspace.holderThreadId})`,
+      );
+    }
   }
   if (thread.title) {
     console.log(`  Title: ${thread.title}`);

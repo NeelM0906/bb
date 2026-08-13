@@ -214,6 +214,37 @@ describe("bb project command output", () => {
     expect(get).toHaveBeenCalledWith({ query: {} });
   });
 
+  it("bb project update configures unmanaged workspace protection", async () => {
+    const patchProject = vi.fn(
+      async (args: { json: { protectUnmanagedWorkspace: boolean } }) => ({
+        id: "proj-1",
+        name: "Alpha",
+        protectUnmanagedWorkspace: args.json.protectUnmanagedWorkspace,
+      }),
+    );
+    stubServerApi({ "v1.projects.:id.$patch": patchProject });
+
+    await runCommand(
+      [
+        "project",
+        "update",
+        "proj-1",
+        "--protect-unmanaged-workspace",
+        "true",
+        "--json",
+      ],
+      register,
+    );
+
+    expect(patchProject).toHaveBeenCalledWith({
+      json: { protectUnmanagedWorkspace: true },
+      param: { id: "proj-1" },
+    });
+    expect(
+      JSON.parse(String(vi.mocked(console.log).mock.calls[0]?.[0])),
+    ).toMatchObject({ protectUnmanagedWorkspace: true });
+  });
+
   it("bb project list can include the personal project", async () => {
     const projects = [{ id: "proj_personal", name: "Personal" }];
     const get = vi.fn(async () => projects);

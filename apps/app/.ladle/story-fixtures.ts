@@ -391,6 +391,7 @@ export function makeProject(
     kind: "standard",
     name: PROJECT_NAMES.bb,
     gitRemoteUrl: null,
+    protectUnmanagedWorkspace: false,
     sources: [],
     createdAt: 1,
     updatedAt: 2,

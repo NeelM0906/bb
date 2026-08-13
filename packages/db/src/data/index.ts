@@ -574,6 +574,25 @@ export {
   shouldCompactDatabase,
   shouldRunIncrementalVacuum,
 } from "./maintenance.js";
+export {
+  acquireUnmanagedWorkspaceMutationLease,
+  acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission,
+  cancelUnmanagedWorkspaceMutationWaiter,
+  getUnmanagedWorkspaceMutationLease,
+  getUnmanagedWorkspaceMutationLeaseForThread,
+  getUnmanagedWorkspaceMutationWaitState,
+  isUnmanagedWorkspaceMutationProtected,
+  listUnmanagedWorkspaceMutationLeases,
+  listUnmanagedWorkspaceMutationLeaseEvents,
+  releaseUnmanagedWorkspaceMutationLease,
+} from "./unmanaged-workspace-mutation-leases.js";
+export type {
+  AcquireUnmanagedWorkspaceMutationLeaseResult,
+  AcquireUnmanagedWorkspaceMutationLeaseAndStartResult,
+  ReleaseUnmanagedWorkspaceMutationLeaseResult,
+  UnmanagedWorkspaceMutationLeaseEventRow,
+  UnmanagedWorkspaceMutationLeaseRow,
+} from "./unmanaged-workspace-mutation-leases.js";
 export type {
   CompactDatabaseResult,
   DatabaseAutoVacuumMode,

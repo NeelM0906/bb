@@ -666,6 +666,13 @@
       "when": 1786634486955,
       "tag": "0094_peaceful_thing",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "6",
+      "when": 1786634688958,
+      "tag": "0095_unusual_silverclaw",
+      "breakpoints": true
     }
   ]
 }

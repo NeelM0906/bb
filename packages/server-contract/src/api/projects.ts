@@ -256,10 +256,12 @@ export type ProjectAttachmentUploadForm = Record<"file", Blob>;
 export const updateProjectRequestSchema = z
   .object({
     name: z.string().min(1),
+    protectUnmanagedWorkspace: z.boolean(),
   })
   .partial()
   .refine(
-    (value) => value.name !== undefined,
+    (value) =>
+      value.name !== undefined || value.protectUnmanagedWorkspace !== undefined,
     "At least one field must be provided",
   );
 export type UpdateProjectRequest = z.infer<typeof updateProjectRequestSchema>;

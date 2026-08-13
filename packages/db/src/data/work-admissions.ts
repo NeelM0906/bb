@@ -1,5 +1,9 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
-import type { DbConnection, DbQueryConnection } from "../connection.js";
+import type {
+  DbConnection,
+  DbQueryConnection,
+  DbTransaction,
+} from "../connection.js";
 import {
   workAdmissions,
   type WorkAdmissionReason,
@@ -140,7 +144,7 @@ export function listCurrentWorkAdmissions(
 }
 
 export function markWorkAdmissionRunning(
-  db: DbConnection,
+  db: DbConnection | DbTransaction,
   args: MarkWorkAdmissionRunningArgs,
 ): boolean {
   return (

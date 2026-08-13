@@ -225,17 +225,21 @@ export class CommandRouter {
   private executeLiveDaemonCommand(
     command: HostDaemonCommand,
   ): Promise<HostDaemonCommandResultForCommand> {
-    if (
-      (command.type === "thread.start" || command.type === "turn.submit") &&
-      this.options.hostAdmissionController !== undefined &&
-      !this.options.hostAdmissionController.validate({
-        requestId: command.requestId,
-        threadId: command.threadId,
-      })
-    ) {
-      throw new Error(
-        "Provider work requires a valid host admission reservation",
-      );
+    if (command.type === "thread.start" || command.type === "turn.submit") {
+      const controller = this.options.hostAdmissionController;
+      if (!controller) {
+        throw new Error("Host admission controller is unavailable");
+      }
+      if (
+        !controller.validate({
+          requestId: command.requestId,
+          threadId: command.threadId,
+        })
+      ) {
+        throw new Error(
+          "Provider work requires a valid host admission reservation",
+        );
+      }
     }
     const environmentLaneMode = this.getEnvironmentLaneMode(command);
     const providerLane = this.resolveProviderLane(command);

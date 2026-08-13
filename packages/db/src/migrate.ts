@@ -596,9 +596,10 @@ function replayMissingCanonicalTailAfterLatestAppliedCanonicalMigration(
   }
 
   const appliedMigrations = db.$client
-    .prepare<[], AppliedMigrationIdentityRow>(
-      "SELECT hash, created_at AS createdAt FROM __drizzle_migrations",
-    )
+    .prepare<
+      [],
+      AppliedMigrationIdentityRow
+    >("SELECT hash, created_at AS createdAt FROM __drizzle_migrations")
     .all();
   const hasAppliedCanonicalMigration = (migration: ExpectedAppliedMigration) =>
     hasAppliedMigrationHash(migration, appliedMigrations);

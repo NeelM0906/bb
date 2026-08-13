@@ -203,6 +203,7 @@ function makeProject(args: MakeProjectArgs): ProjectWithThreadsResponse {
     kind: args.kind,
     name: args.name,
     gitRemoteUrl: null,
+    protectUnmanagedWorkspace: false,
     sources: [],
     threads: [...args.threads],
     defaultExecutionOptions: null,
