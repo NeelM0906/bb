@@ -319,14 +319,26 @@ async function ensureAdmissionWorkspaceCanonical<
   },
 ): Promise<TCommand> {
   try {
-    await ensureLegacyUnmanagedWorkspacePathsCanonical(deps, {
-      hostId: args.hostId,
-      targetEnvironmentId: args.environmentId,
-    });
-    const canonicalPath = getEnvironmentCanonicalPath(
-      deps.db,
-      args.environmentId,
-    );
+    // A warm provider command must keep using the path of its resident
+    // runtime. Re-canonicalizing a retargeted symlink to a different path
+    // cannot move that process, and attempting to acquire a second lease for
+    // the same admission would violate the durable request identity.
+    const residentLease =
+      args.row.status === "running"
+        ? getUnmanagedWorkspaceMutationLeaseForThread(
+            deps.db,
+            args.row.threadId,
+          )
+        : null;
+    if (residentLease === null) {
+      await ensureLegacyUnmanagedWorkspacePathsCanonical(deps, {
+        hostId: args.hostId,
+        targetEnvironmentId: args.environmentId,
+      });
+    }
+    const canonicalPath =
+      residentLease?.canonicalPath ??
+      getEnvironmentCanonicalPath(deps.db, args.environmentId);
     if (canonicalPath === null) return args.command;
     const command = commandWithWorkspacePath(args.command, canonicalPath);
     if (command === args.command) return command;
@@ -465,6 +477,14 @@ export async function awaitThreadWorkAdmission<
           hostId: args.hostId,
           row,
         });
+        if (
+          getUnmanagedWorkspaceMutationLeaseForThread(
+            deps.db,
+            command.threadId,
+          ) !== null
+        ) {
+          return { command, reservation: result.reservation };
+        }
         const workspace = acquireUnmanagedWorkspaceMutationLease(deps.db, {
           environmentId: command.environmentId,
           requestId: row.id,

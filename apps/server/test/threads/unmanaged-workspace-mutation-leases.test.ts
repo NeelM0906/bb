@@ -12,6 +12,7 @@ import {
   getUnmanagedWorkspaceMutationWaitState,
   markThreadDeleted,
   releaseUnmanagedWorkspaceMutationLease,
+  recordEnvironmentCanonicalPath,
   updateProject,
 } from "@bb/db";
 import { describe, expect, it, vi } from "vitest";
@@ -925,6 +926,114 @@ describe("protected unmanaged workspace dispatch", () => {
 
       await releaseThreadWorkAdmission(harness.deps, {
         terminalReason: "test refreshed turn command completed",
+        threadId: thread.id,
+      });
+    });
+  });
+
+  it("keeps a warm submission on its resident lease after a symlink retarget", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-workspace-resident-turn-command",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/resident-turn-command-repo",
+      });
+      updateProject(harness.db, harness.hub, project.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/resident-turn-command-repo",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const thread = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "active",
+      });
+      seedTurnStarted(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-resident-turn-command",
+        threadId: thread.id,
+        turnId: "turn-resident-turn-command",
+      });
+      const activeThread = getThread(harness.db, thread.id);
+      if (!activeThread) throw new Error("Expected active thread");
+      recordEnvironmentCanonicalPath(
+        harness.db,
+        harness.hub,
+        environment.id,
+        "/canonical/resident-turn-command-v1",
+      );
+      createWorkAdmission(harness.db, {
+        commandJson: "{}",
+        hostId: host.id,
+        id: "req-resident-turn-command",
+        reason: "interactive",
+        threadId: thread.id,
+        waitingReason: "Awaiting host capacity",
+      });
+      expect(
+        acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission(harness.db, {
+          environmentId: environment.id,
+          requestId: "req-resident-turn-command",
+          reservationGeneration: 1,
+          reservationToken: `test-admission:${thread.id}`,
+          threadId: thread.id,
+        }),
+      ).toMatchObject({
+        canonicalPath: "/canonical/resident-turn-command-v1",
+        outcome: "acquired",
+      });
+      registerTestHostRpcCapture(harness, {
+        canonicalPathByInput: {
+          "/legacy/resident-turn-command-repo":
+            "/canonical/resident-turn-command-v2",
+        },
+        hostId: host.id,
+        sessionId: session.id,
+      });
+      clearEnvironmentPathCanonicalizationsForHost(harness.db, host.id);
+
+      await sendThreadMessage(harness.deps, {
+        environment,
+        payload: {
+          input: textInput("steer the resident runtime"),
+          mode: "steer",
+          model: "gpt-5",
+          permissionMode: "full",
+          reasoningLevel: "medium",
+          serviceTier: "default",
+        },
+        thread: activeThread,
+        trigger: "user",
+      });
+      const submit = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "turn.submit" &&
+          queued.command.threadId === thread.id,
+      );
+      if (submit.command.type !== "turn.submit") {
+        throw new Error("Expected turn submit command");
+      }
+
+      expect(
+        submit.command.resumeContext.workspaceContext.workspacePath,
+      ).toBe("/canonical/resident-turn-command-v1");
+      expect(
+        getUnmanagedWorkspaceMutationLeaseForThread(harness.db, thread.id),
+      ).toMatchObject({
+        canonicalPath: "/canonical/resident-turn-command-v1",
+        requestId: "req-resident-turn-command",
+      });
+
+      await releaseThreadWorkAdmission(harness.deps, {
+        terminalReason: "test resident turn command completed",
         threadId: thread.id,
       });
     });
