@@ -1,4 +1,9 @@
-import { getEnvironment, getHost, getProject } from "@bb/db";
+import {
+  getEnvironment,
+  getEnvironmentCanonicalPath,
+  getHost,
+  getProject,
+} from "@bb/db";
 import type {
   DynamicTool,
   InstructionMode,
@@ -180,6 +185,8 @@ export async function resolveThreadRuntimeCommandConfig(
   }
 
   const { workspaceProvisionType } = args.environment;
+  const executionWorkspacePath =
+    getEnvironmentCanonicalPath(deps.db, args.environment.id) ?? workspacePath;
   const [projectSkillSources, sharedSkills, workspaceAgentInstructions] =
     await Promise.all([
       resolveWorkspaceProjectSkills(deps, {
@@ -324,7 +331,7 @@ export async function resolveThreadRuntimeCommandConfig(
     projectId: args.thread.projectId,
     providerId: args.thread.providerId,
     threadStoragePath,
-    workspacePath,
+    workspacePath: executionWorkspacePath,
     workspaceProvisionType,
   };
 }

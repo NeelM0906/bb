@@ -2,6 +2,7 @@ import {
   environments,
   events,
   getAppSettings,
+  getEnvironmentCanonicalPath,
   getExperiments,
   threads,
 } from "@bb/db";
@@ -570,7 +571,8 @@ export function dispatchArchivedThreadProviderArchiveCommand(
     return false;
   }
   const workspaceContext = workspaceContextFromPath({
-    path: environment.path,
+    path:
+      getEnvironmentCanonicalPath(deps.db, environment.id) ?? environment.path,
     workspaceProvisionType: environment.workspaceProvisionType,
   });
 

@@ -177,6 +177,45 @@ export function listUncanonicalizedLiveUnmanagedEnvironmentsOnHost(
     .map((row) => row.environment);
 }
 
+export function clearEnvironmentPathCanonicalizationsForHost(
+  db: EnvironmentWriteConnection,
+  hostId: string,
+): string[] {
+  const environmentIds = db
+    .select({ id: environments.id })
+    .from(environments)
+    .where(eq(environments.hostId, hostId))
+    .all()
+    .map((environment) => environment.id);
+  if (environmentIds.length === 0) return [];
+  db.delete(environmentPathCanonicalizations)
+    .where(
+      inArray(environmentPathCanonicalizations.environmentId, environmentIds),
+    )
+    .run();
+  return environmentIds;
+}
+
+export function getEnvironmentCanonicalPath(
+  db: EnvironmentReadConnection,
+  environmentId: string,
+): string | null {
+  const environment = getEnvironment(db, environmentId);
+  if (!environment || environment.path === null) return null;
+  return (
+    db
+      .select({ canonicalPath: environmentPathCanonicalizations.canonicalPath })
+      .from(environmentPathCanonicalizations)
+      .where(
+        and(
+          eq(environmentPathCanonicalizations.environmentId, environment.id),
+          eq(environmentPathCanonicalizations.path, environment.path),
+        ),
+      )
+      .get()?.canonicalPath ?? environment.path
+  );
+}
+
 export function listEnvironmentsByIds(
   db: DbConnection,
   environmentIds: readonly string[],
@@ -407,6 +446,34 @@ export function recordProvisionedEnvironmentWorkspace(
     db,
     updated.id,
     input.path,
+    input.path,
+  );
+  return updated;
+}
+
+export function recordObservedEnvironmentWorkspaceMetadata(
+  db: EnvironmentWriteConnection,
+  notifier: DbNotifier,
+  id: string,
+  input: RecordProvisionedEnvironmentWorkspaceInput,
+) {
+  const existing = getEnvironment(db, id);
+  if (!existing || existing.path === null) return null;
+  const updated = updateEnvironmentMetadataRecord(db, notifier, id, {
+    isGitRepo: input.isGitRepo,
+    isWorktree: input.isWorktree,
+    branchName: input.branchName,
+    defaultBranch: input.defaultBranch,
+    ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
+    ...(input.mergeBaseBranch !== undefined
+      ? { mergeBaseBranch: input.mergeBaseBranch }
+      : {}),
+  });
+  if (!updated) return null;
+  recordEnvironmentPathCanonicalization(
+    db,
+    updated.id,
+    existing.path,
     input.path,
   );
   return updated;

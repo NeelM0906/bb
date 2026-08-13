@@ -1007,14 +1007,16 @@ export class RuntimeManager {
     args: RefreshEnvironmentWorkspaceArgs,
   ): Promise<HostWorkspace> {
     const entry = await this.getOrAwait(args.environmentId);
-    if (entry && entry.path !== args.workspacePath) {
+    const workspace = await this.provisionWorkspace(args.provision);
+    if (entry && entry.path !== workspace.path) {
       throw new Error(
-        `Cannot refresh environment ${args.environmentId} at ${args.workspacePath}; it is bound to ${entry.path}`,
+        `Cannot refresh environment ${args.environmentId} at ${workspace.path}; it is bound to ${entry.path}`,
       );
     }
-
-    const workspace = await this.provisionWorkspace(args.provision);
-    if (workspace.path !== args.workspacePath) {
+    if (
+      args.provision.workspaceProvisionType !== "unmanaged" &&
+      workspace.path !== args.workspacePath
+    ) {
       throw new Error(
         `Workspace refresh for ${args.environmentId} returned ${workspace.path}, not ${args.workspacePath}`,
       );

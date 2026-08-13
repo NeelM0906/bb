@@ -5,8 +5,11 @@ import { noopNotifier } from "../../src/notifier.js";
 import type { DbNotifier } from "../../src/notifier.js";
 import {
   createEnvironment,
+  clearEnvironmentPathCanonicalizationsForHost,
+  getEnvironmentCanonicalPath,
   listUncanonicalizedLiveUnmanagedEnvironmentsOnHost,
   recordEnvironmentCanonicalPath,
+  recordObservedEnvironmentWorkspaceMetadata,
   listRetiredLoadedEnvironmentIdsOnHost,
   recordEnvironmentCurrentBranch,
   recordProvisionedEnvironmentWorkspace,
@@ -177,9 +180,55 @@ describe("environments", () => {
     expect(updated).toMatchObject({
       path: "/tmp/project-alias",
     });
+    expect(getEnvironmentCanonicalPath(db, environment.id)).toBe(
+      "/private/tmp/project",
+    );
     expect(
       listUncanonicalizedLiveUnmanagedEnvironmentsOnHost(db, host.id),
     ).toEqual([]);
+
+    expect(clearEnvironmentPathCanonicalizationsForHost(db, host.id)).toEqual([
+      environment.id,
+    ]);
+    expect(getEnvironmentCanonicalPath(db, environment.id)).toBe(
+      "/tmp/project-alias",
+    );
+    expect(
+      listUncanonicalizedLiveUnmanagedEnvironmentsOnHost(db, host.id),
+    ).toMatchObject([{ id: environment.id }]);
+  });
+
+  it("records canonical watcher metadata without replacing an aliased path", () => {
+    const { db, host, project } = setup();
+    const environment = createEnvironment(db, noopNotifier, {
+      projectId: project.id,
+      hostId: host.id,
+      path: "/tmp/project-alias",
+      workspaceProvisionType: "unmanaged",
+      status: "ready",
+    });
+
+    const updated = recordObservedEnvironmentWorkspaceMetadata(
+      db,
+      noopNotifier,
+      environment.id,
+      {
+        path: "/private/tmp/project",
+        isGitRepo: true,
+        isWorktree: false,
+        branchName: "main",
+        defaultBranch: "main",
+      },
+    );
+
+    expect(updated).toMatchObject({
+      path: "/tmp/project-alias",
+      isGitRepo: true,
+      branchName: "main",
+    });
+    expect(getEnvironmentCanonicalPath(db, environment.id)).toBe(
+      "/private/tmp/project",
+    );
   });
 
   it("records the current branch observed for an environment", () => {

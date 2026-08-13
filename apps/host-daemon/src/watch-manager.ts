@@ -126,8 +126,7 @@ export class WatchManager {
     this.provisionWorkspace = options.provisionWorkspace ?? provisionWorkspace;
     this.refreshWorkspace =
       options.refreshWorkspace ??
-      ((args: RefreshWorkspaceArgs) =>
-        this.provisionWorkspace(args.provision));
+      ((args: RefreshWorkspaceArgs) => this.provisionWorkspace(args.provision));
   }
 
   async replaceWatchSet(watchSet: HostDaemonWatchSet): Promise<void> {
@@ -449,12 +448,15 @@ export class WatchManager {
             ),
           }
         : {}),
-      workspaceContext: entry.target.workspaceContext,
+      workspaceContext: {
+        ...entry.target.workspaceContext,
+        workspacePath: entry.workspace.path,
+      },
     });
     const workspace = await this.refreshWorkspace({
       environmentId: entry.target.environmentId,
       provision,
-      workspacePath: entry.target.workspaceContext.workspacePath,
+      workspacePath: entry.workspace.path,
     });
     if (!workspace.isGitRepo) {
       return;

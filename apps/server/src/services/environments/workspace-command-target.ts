@@ -1,5 +1,6 @@
 import type { EnvironmentStatus, WorkspaceProvisionType } from "@bb/domain";
 import type { WorkspaceContext } from "@bb/host-daemon-contract";
+import { getEnvironmentCanonicalPath, type DbQueryConnection } from "@bb/db";
 import { throwEnvironmentNotReady } from "../lib/lifecycle-api-errors.js";
 
 interface WorkspaceCommandTargetEnvironment {
@@ -31,6 +32,7 @@ export function workspaceContextFromPath(
 }
 
 export function requireWorkspaceCommandTarget(
+  db: DbQueryConnection,
   environment: WorkspaceCommandTargetEnvironment,
 ): WorkspaceCommandTarget {
   // Not lifecycle: API boundary validation — workspace commands need a ready
@@ -43,7 +45,7 @@ export function requireWorkspaceCommandTarget(
     environmentId: environment.id,
     hostId: environment.hostId,
     workspaceContext: workspaceContextFromPath({
-      path: environment.path,
+      path: getEnvironmentCanonicalPath(db, environment.id) ?? environment.path,
       workspaceProvisionType: environment.workspaceProvisionType,
     }),
   };

@@ -275,7 +275,7 @@ function resolveGitDiffWorkspaceTarget(deps: AppDeps, environmentId: string) {
   if (!environment.isGitRepo) {
     return null;
   }
-  return requireWorkspaceCommandTarget(environment);
+  return requireWorkspaceCommandTarget(deps.db, environment);
 }
 
 export function registerEnvironmentRoutes(app: Hono, deps: AppDeps): void {
@@ -331,7 +331,7 @@ export function registerEnvironmentRoutes(app: Hono, deps: AppDeps): void {
         message: "Workspace status is not available for non-git environments",
       });
     }
-    const target = requireWorkspaceCommandTarget(environment);
+    const target = requireWorkspaceCommandTarget(deps.db, environment);
     const result = await callEnvironmentWorkspaceStatus(deps, {
       environment,
       target,
@@ -360,7 +360,7 @@ export function registerEnvironmentRoutes(app: Hono, deps: AppDeps): void {
     if (!environment.isGitRepo) {
       return context.json({ outcome: "absent" });
     }
-    const target = requireWorkspaceCommandTarget(environment);
+    const target = requireWorkspaceCommandTarget(deps.db, environment);
     const result = await callHostRetryableOnlineRpc(deps, {
       hostId: target.hostId,
       timeoutMs: COMMAND_TIMEOUT_MS,
@@ -394,7 +394,7 @@ export function registerEnvironmentRoutes(app: Hono, deps: AppDeps): void {
         message: "Workspace diff is not available for non-git environments",
       });
     }
-    const target = requireWorkspaceCommandTarget(environment);
+    const target = requireWorkspaceCommandTarget(deps.db, environment);
     const result = await callHostRetryableOnlineRpc(deps, {
       hostId: target.hostId,
       timeoutMs: COMMAND_TIMEOUT_MS,
@@ -621,7 +621,7 @@ export function registerEnvironmentRoutes(app: Hono, deps: AppDeps): void {
 
     switch (payload.action) {
       case "commit": {
-        const target = requireWorkspaceCommandTarget(environment);
+        const target = requireWorkspaceCommandTarget(deps.db, environment);
         const { workspaceContext } = target;
 
         const [statusResult, diffResult] = await Promise.all([
@@ -684,7 +684,7 @@ export function registerEnvironmentRoutes(app: Hono, deps: AppDeps): void {
         });
       }
       case "squash_merge": {
-        const target = requireWorkspaceCommandTarget(environment);
+        const target = requireWorkspaceCommandTarget(deps.db, environment);
         const { workspaceContext } = target;
         const targetBranch = payload.options.mergeBaseBranch;
 
@@ -789,7 +789,7 @@ export function registerEnvironmentRoutes(app: Hono, deps: AppDeps): void {
             "Pull request actions require a git environment",
           );
         }
-        const target = requireWorkspaceCommandTarget(environment);
+        const target = requireWorkspaceCommandTarget(deps.db, environment);
         const pullRequest = await getPullRequestForWorkspaceTarget(
           deps,
           target,
@@ -822,7 +822,7 @@ export function registerEnvironmentRoutes(app: Hono, deps: AppDeps): void {
             "Pull request actions require a git environment",
           );
         }
-        const target = requireWorkspaceCommandTarget(environment);
+        const target = requireWorkspaceCommandTarget(deps.db, environment);
         const pullRequest = await getPullRequestForWorkspaceTarget(
           deps,
           target,
@@ -855,7 +855,7 @@ export function registerEnvironmentRoutes(app: Hono, deps: AppDeps): void {
             "Pull request actions require a git environment",
           );
         }
-        const target = requireWorkspaceCommandTarget(environment);
+        const target = requireWorkspaceCommandTarget(deps.db, environment);
         const pullRequest = await getPullRequestForWorkspaceTarget(
           deps,
           target,

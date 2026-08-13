@@ -267,7 +267,9 @@ export type {
 
 export {
   createEnvironment,
+  clearEnvironmentPathCanonicalizationsForHost,
   getEnvironment,
+  getEnvironmentCanonicalPath,
   findProjectEnvironmentByHostPath,
   listEnvironments,
   listUncanonicalizedLiveUnmanagedEnvironmentsOnHost,
@@ -275,6 +277,7 @@ export {
   listEnvironmentsByIds,
   listRetiredLoadedEnvironmentIdsOnHost,
   recordEnvironmentCanonicalPath,
+  recordObservedEnvironmentWorkspaceMetadata,
   updateEnvironmentMetadata,
 } from "./environments.js";
 export type {

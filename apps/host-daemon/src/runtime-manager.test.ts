@@ -15,6 +15,7 @@ import {
 } from "@bb/host-workspace";
 import { makeWorkspaceMergeBase, makeWorkspaceStatus } from "@bb/test-helpers";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { requireWorkspaceEnvironment } from "./command-dispatch-support.js";
 import {
   RuntimeManager,
   SkillCatalogConflictError,
@@ -343,6 +344,39 @@ describe("RuntimeManager", () => {
     expect(entry.path).toBe("/tmp/env-1");
   });
 
+  it("reuses a resident unmanaged runtime when a queued command carries an alias", async () => {
+    const root = await makeTempDir("bb-runtime-alias-");
+    const workspaceDirectory = path.join(root, "workspace");
+    const aliasPath = path.join(root, "workspace-alias");
+    await fs.mkdir(workspaceDirectory);
+    await fs.symlink(workspaceDirectory, aliasPath, "dir");
+    const canonicalPath = await fs.realpath(workspaceDirectory);
+    const provisionWorkspace = createProvisionWorkspaceMock(canonicalPath);
+    const manager = new RuntimeManager({
+      provisionWorkspace,
+      createRuntime: () => createFakeRuntime(),
+    });
+    const resident = await manager.ensureEnvironment({
+      environmentId: "env-aliased-command",
+      workspacePath: canonicalPath,
+      workspaceProvisionType: "unmanaged",
+    });
+
+    const resolved = await requireWorkspaceEnvironment(
+      {
+        environmentId: "env-aliased-command",
+        workspaceContext: {
+          workspacePath: aliasPath,
+          workspaceProvisionType: "unmanaged",
+        },
+      },
+      manager,
+    );
+
+    expect(resolved).toBe(resident);
+    expect(provisionWorkspace).toHaveBeenCalledTimes(1);
+  });
+
   it("refreshes the workspace on the resident runtime entry", async () => {
     const plainWorkspace = createFakeWorkspace("/tmp/env-refresh", false);
     const gitWorkspace = createFakeWorkspace("/tmp/env-refresh");
@@ -372,6 +406,36 @@ describe("RuntimeManager", () => {
     expect(entry.workspace).toBe(gitWorkspace);
     expect(manager.get("env-refresh")?.workspace).toBe(gitWorkspace);
     expect(provisionWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes an unmanaged alias through the resident canonical path", async () => {
+    const plainWorkspace = createFakeWorkspace("/canonical/env-refresh", false);
+    const gitWorkspace = createFakeWorkspace("/canonical/env-refresh");
+    const provisionWorkspace = vi
+      .fn<(options: ProvisionWorkspaceArgs) => Promise<HostWorkspace>>()
+      .mockResolvedValueOnce(plainWorkspace)
+      .mockResolvedValueOnce(gitWorkspace);
+    const manager = new RuntimeManager({
+      provisionWorkspace,
+      createRuntime: () => createFakeRuntime(),
+    });
+    const entry = await manager.ensureEnvironment({
+      environmentId: "env-refresh-alias",
+      workspacePath: "/legacy/env-refresh-alias",
+    });
+
+    const refreshed = await manager.refreshEnvironmentWorkspace({
+      environmentId: "env-refresh-alias",
+      provision: {
+        workspaceProvisionType: "unmanaged",
+        path: "/legacy/env-refresh-alias",
+      },
+      workspacePath: "/legacy/env-refresh-alias",
+    });
+
+    expect(refreshed).toBe(gitWorkspace);
+    expect(entry.path).toBe("/canonical/env-refresh");
+    expect(entry.workspace).toBe(gitWorkspace);
   });
 
   it("reaps idle provider sessions from loaded runtimes", async () => {

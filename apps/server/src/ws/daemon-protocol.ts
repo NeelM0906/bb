@@ -1,4 +1,7 @@
-import { heartbeatSession } from "@bb/db";
+import {
+  clearEnvironmentPathCanonicalizationsForHost,
+  heartbeatSession,
+} from "@bb/db";
 import {
   hasHostDaemonWebSocketProtocol,
   hostDaemonDaemonWsMessageSchema,
@@ -90,6 +93,7 @@ export function onDaemonSocketOpen(
     { sessionId: args.sessionId, hostId: args.hostId },
     "Daemon WebSocket opened",
   );
+  clearEnvironmentPathCanonicalizationsForHost(deps.db, args.hostId);
   deps.hub.registerDaemon(args.sessionId, args.hostId, args.socket);
   deps.sharedPorts.pushCurrentSharedPortsForHost(args.hostId);
   deps.terminalSessions.expireDisconnectedHostTerminals({
