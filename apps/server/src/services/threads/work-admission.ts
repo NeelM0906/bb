@@ -271,9 +271,16 @@ async function reserve(
 async function releaseHostReservation(
   deps: WorkAdmissionDeps,
   reservation: HostAdmissionReservation,
+  args: { retryableRequestId?: string } = {},
 ): Promise<boolean> {
   const result = await callHostRetryableOnlineRpc(deps, {
-    command: { type: "host.admission.release", reservation },
+    command: {
+      type: "host.admission.release",
+      reservation,
+      ...(args.retryableRequestId === undefined
+        ? {}
+        : { retryableRequestId: args.retryableRequestId }),
+    },
     hostId: reservation.hostId,
     timeoutMs: ADMISSION_RPC_TIMEOUT_MS,
   });
@@ -557,7 +564,9 @@ export async function awaitThreadWorkAdmission<
         );
       }
       if (workspace.outcome === "waiting") {
-        await releaseHostReservation(deps, result.reservation);
+        await releaseHostReservation(deps, result.reservation, {
+          retryableRequestId: row.id,
+        });
         updateWorkAdmissionWaitingReason(deps.db, {
           id: row.id,
           waitingReason: workspaceWaitingReason({

@@ -325,4 +325,60 @@ describe("HostAdmissionController", () => {
     ).rejects.toThrow("Admission request was already released");
     expect(controller.listReservations()).toEqual([]);
   });
+
+  it("permits only the nominated request id to retry a temporary release", async () => {
+    const controller = new HostAdmissionController({
+      hostId: "host-1",
+      limit: 1,
+      listProviderProcessDiagnostics: () => [],
+      reapIdleProviderSessions: vi
+        .fn()
+        .mockResolvedValue({ reapedSessions: [] }),
+      randomUUID: vi
+        .fn()
+        .mockReturnValueOnce("token-1")
+        .mockReturnValueOnce("token-2"),
+    });
+    const original = await controller.reserve({
+      hostId: "host-1",
+      requestId: "req-original",
+      threadId: "thread-1",
+      reason: "interactive",
+    });
+    const retryable = await controller.reserve({
+      hostId: "host-1",
+      requestId: "req-retryable",
+      threadId: "thread-1",
+      reason: "queued",
+    });
+    if (retryable.outcome !== "reserved") {
+      throw new Error("expected shared reservation");
+    }
+    expect(retryable).toEqual(original);
+    expect(
+      controller.release(retryable.reservation, {
+        retryableRequestId: "req-retryable",
+      }),
+    ).toEqual({ released: true });
+
+    await expect(
+      controller.reserve({
+        hostId: "host-1",
+        requestId: "req-original",
+        threadId: "thread-1",
+        reason: "interactive",
+      }),
+    ).rejects.toThrow("Admission request was already released");
+    await expect(
+      controller.reserve({
+        hostId: "host-1",
+        requestId: "req-retryable",
+        threadId: "thread-1",
+        reason: "queued",
+      }),
+    ).resolves.toMatchObject({
+      outcome: "reserved",
+      reservation: { generation: 2, token: "token-2" },
+    });
+  });
 });

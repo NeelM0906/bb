@@ -711,6 +711,7 @@ const hostAdmissionReleaseCommandSchema = z
   .object({
     type: z.literal("host.admission.release"),
     reservation: hostAdmissionReservationSchema,
+    retryableRequestId: z.string().min(1).optional(),
   })
   .strict();
 

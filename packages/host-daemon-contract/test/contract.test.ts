@@ -708,6 +708,8 @@ function terminalDataBase64(byteLength: number): string {
 }
 
 const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
+  "hostDaemonOnlineRpcCommandSchema.retryableRequestId":
+    "host.admission.release omits retryableRequestId for terminal releases; temporary capacity releases nominate only the durable admission request that may retry.",
   "hostDaemonCommandSchema.acpLaunchSpec":
     "thread.start and turn.submit include an ACP launch spec only for dynamic ACP providers; built-ins resolve from daemon-side profiles.",
   "hostDaemonCommandSchema.acpLaunchSpec.cwd":

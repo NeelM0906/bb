@@ -645,7 +645,11 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
   "host.admission.reserve": (command, options) =>
     getHostAdmissionController(options).reserve(command),
   "host.admission.release": async (command, options) =>
-    getHostAdmissionController(options).release(command.reservation),
+    getHostAdmissionController(options).release(command.reservation, {
+      ...(command.retryableRequestId === undefined
+        ? {}
+        : { retryableRequestId: command.retryableRequestId }),
+    }),
   "host.admission.reconcile": async (_command, options) => ({
     reservations: getHostAdmissionController(options).listReservations(),
   }),
