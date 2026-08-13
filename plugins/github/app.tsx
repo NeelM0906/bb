@@ -2411,7 +2411,7 @@ function GithubPanelBody({
   }
   if (status !== null && status.repos.length === 0) {
     return (
-      <EmptyState message="No GitHub repos tracked yet. Create a BB project whose checkout has a GitHub origin remote, or add repos via the extraRepos plugin setting." />
+      <EmptyState message="No GitHub repos tracked yet. Add owner/repo values under Shared repositories, or enable Follow BB project remotes for origins you can write to." />
     );
   }
 

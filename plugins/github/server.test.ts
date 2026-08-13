@@ -3,9 +3,14 @@ import { defineRpcContract } from "@bb/plugin-sdk";
 import type { PluginRpcClient, PluginRpcHandlers } from "@bb/plugin-sdk";
 import { createFakePluginHost } from "@bb/plugin-sdk/testing";
 import {
+  canAutoTrackPermission,
   fetchRepoItems,
   githubRpcContract,
+  nextAutoTrackedRepos,
   parsePaginatedGhApi,
+  parseRepoList,
+  repoAccessFromCheck,
+  selectTrackedRepos,
   validateGithubCliArgs,
 } from "./server";
 
@@ -174,5 +179,118 @@ describe("GitHub RPC contract", () => {
     await expect(
       harness.callRpc("startWork", { repo: "get-bb/bb", number: 694 }),
     ).rejects.toMatchObject({ code: "invalid_output" });
+  });
+});
+
+describe("GitHub repo tracking", () => {
+  it("parses comma or whitespace separated owner/repo values", () => {
+    expect(parseRepoList("get-bb/bb, acme/widgets\nowner/other")).toEqual([
+      "get-bb/bb",
+      "acme/widgets",
+      "owner/other",
+    ]);
+    expect(parseRepoList("not-a-repo, acme/widgets, acme/widgets")).toEqual([
+      "acme/widgets",
+    ]);
+  });
+
+  it("auto-tracks only permissions the viewer was granted", () => {
+    expect(canAutoTrackPermission("READ")).toBe(false);
+    expect(canAutoTrackPermission("TRIAGE")).toBe(true);
+    expect(canAutoTrackPermission("WRITE")).toBe(true);
+    expect(canAutoTrackPermission("MAINTAIN")).toBe(true);
+    expect(canAutoTrackPermission("ADMIN")).toBe(true);
+    expect(canAutoTrackPermission(null)).toBe(false);
+  });
+
+  it("does not auto-track a read-only upstream remote", () => {
+    expect(
+      selectTrackedRepos({
+        projectRepos: [
+          { repo: "get-bb/bb", projectId: "proj_bb" },
+          { repo: "acme/widgets", projectId: "proj_widgets" },
+        ],
+        extraRepos: [],
+        ignoredRepos: [],
+        trackProjectRemotes: true,
+        accessByRepo: new Map([
+          ["get-bb/bb", "denied"],
+          ["acme/widgets", "granted"],
+        ]),
+        previouslyAutoTracked: [],
+      }),
+    ).toEqual([{ repo: "acme/widgets", projectId: "proj_widgets" }]);
+  });
+
+  it("keeps explicitly shared extra repos even without write access", () => {
+    expect(
+      selectTrackedRepos({
+        projectRepos: [{ repo: "get-bb/bb", projectId: "proj_bb" }],
+        extraRepos: ["get-bb/bb"],
+        ignoredRepos: [],
+        trackProjectRemotes: false,
+        accessByRepo: new Map([["get-bb/bb", "denied"]]),
+        previouslyAutoTracked: [],
+      }),
+    ).toEqual([{ repo: "get-bb/bb", projectId: "proj_bb" }]);
+  });
+
+  it("never tracks ignored repos, including extraRepos", () => {
+    expect(
+      selectTrackedRepos({
+        projectRepos: [{ repo: "acme/widgets", projectId: "proj_widgets" }],
+        extraRepos: ["get-bb/bb", "acme/widgets"],
+        ignoredRepos: ["get-bb/bb", "acme/widgets"],
+        trackProjectRemotes: true,
+        accessByRepo: new Map([["acme/widgets", "granted"]]),
+        previouslyAutoTracked: ["acme/widgets"],
+      }),
+    ).toEqual([]);
+  });
+
+  it("does not drop a previously tracked writable origin when the permission check fails", () => {
+    expect(
+      selectTrackedRepos({
+        projectRepos: [{ repo: "acme/widgets", projectId: "proj_widgets" }],
+        extraRepos: [],
+        ignoredRepos: [],
+        trackProjectRemotes: true,
+        accessByRepo: new Map([["acme/widgets", "unknown"]]),
+        previouslyAutoTracked: ["acme/widgets"],
+      }),
+    ).toEqual([{ repo: "acme/widgets", projectId: "proj_widgets" }]);
+  });
+
+  it("does not auto-track an unknown origin that was never granted", () => {
+    expect(
+      selectTrackedRepos({
+        projectRepos: [{ repo: "get-bb/bb", projectId: "proj_bb" }],
+        extraRepos: [],
+        ignoredRepos: [],
+        trackProjectRemotes: true,
+        accessByRepo: new Map([["get-bb/bb", "unknown"]]),
+        previouslyAutoTracked: [],
+      }),
+    ).toEqual([]);
+  });
+
+  it("treats a thrown permission check as unknown, not denied", () => {
+    expect(repoAccessFromCheck(null, true)).toBe("unknown");
+    expect(repoAccessFromCheck("READ", false)).toBe("denied");
+    expect(repoAccessFromCheck("WRITE", false)).toBe("granted");
+  });
+
+  it("keeps a previously granted origin across an unknown check", () => {
+    expect(
+      nextAutoTrackedRepos({
+        projectRepos: ["acme/widgets", "get-bb/bb"],
+        ignoredRepos: [],
+        accessByRepo: new Map([
+          ["acme/widgets", "unknown"],
+          ["get-bb/bb", "denied"],
+        ]),
+        previouslyAutoTracked: ["acme/widgets", "get-bb/bb"],
+      }),
+    ).toEqual(["acme/widgets"]);
   });
 });
