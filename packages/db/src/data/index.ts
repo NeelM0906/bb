@@ -495,6 +495,28 @@ export {
   setQueuedThreadMessageGroupBoundary,
   updateQueuedThreadMessage,
 } from "./queued-thread-messages.js";
+
+export {
+  createWorkAdmission,
+  getCurrentThreadWorkAdmission,
+  getWorkAdmission,
+  listCurrentWorkAdmissions,
+  listWaitingWorkAdmissions,
+  markWorkAdmissionRunning,
+  markWorkAdmissionTerminal,
+  markWaitingWorkAdmissionTerminal,
+  updateWorkAdmissionWaitingReason,
+} from "./work-admissions.js";
+export type {
+  CreateWorkAdmissionInput,
+  ListCurrentWorkAdmissionsArgs,
+  ListWaitingWorkAdmissionsArgs,
+  MarkWorkAdmissionRunningArgs,
+  MarkWorkAdmissionTerminalArgs,
+  MarkWaitingWorkAdmissionTerminalArgs,
+  UpdateWorkAdmissionWaitingReasonArgs,
+  WorkAdmissionRow,
+} from "./work-admissions.js";
 export type {
   ClaimedQueuedThreadMessageRow,
   ClaimedQueuedThreadMessageMutationArgs,

@@ -63,15 +63,195 @@ afterEach(async () => {
 
 describe("provisionWorkspace", () => {
   describe("unmanaged", () => {
+    it("returns one canonical path for symlink and alternate spellings", async () => {
+      const repoPath = await initRepo();
+      const canonicalRepoPath = await fs.realpath(repoPath);
+      const aliasParent = await makeTempDir("bb-provision-alias-parent-");
+      const aliasPath = path.join(aliasParent, "repo-alias");
+      await fs.symlink(repoPath, aliasPath, "dir");
+
+      const [targetWorkspace, aliasWorkspace, alternateWorkspace] =
+        await Promise.all([
+          provisionWorkspace({
+            workspaceProvisionType: "unmanaged",
+            path: repoPath,
+          }),
+          provisionWorkspace({
+            workspaceProvisionType: "unmanaged",
+            path: aliasPath,
+          }),
+          provisionWorkspace({
+            workspaceProvisionType: "unmanaged",
+            path: `${repoPath}${path.sep}.`,
+          }),
+        ]);
+
+      expect(targetWorkspace.path).toBe(canonicalRepoPath);
+      expect(aliasWorkspace.path).toBe(canonicalRepoPath);
+      expect(alternateWorkspace.path).toBe(canonicalRepoPath);
+    });
+
+    it("uses directory-entry spelling for case-insensitive path aliases", async () => {
+      const fixtureRoot = await makeTempDir("bb-provision-case-alias-");
+      const actualParentPath = path.join(fixtureRoot, "ProjectDirectory");
+      const actualWorkspacePath = path.join(actualParentPath, "WorkspaceRoot");
+      const aliasWorkspacePath = path.join(
+        fixtureRoot,
+        "projectdirectory",
+        "workspaceroot",
+      );
+      await fs.mkdir(actualWorkspacePath, { recursive: true });
+
+      try {
+        await fs.stat(aliasWorkspacePath);
+      } catch {
+        // A case-sensitive filesystem already treats these as distinct paths.
+        return;
+      }
+
+      const aliasWorkspace = await provisionWorkspace({
+        workspaceProvisionType: "unmanaged",
+        path: aliasWorkspacePath,
+      });
+      const canonicalFixtureRoot = await fs.realpath(fixtureRoot);
+      const [storedParentName] = await fs.readdir(canonicalFixtureRoot);
+      if (storedParentName === undefined) {
+        throw new Error("Expected case-alias fixture parent");
+      }
+      const [storedWorkspaceName] = await fs.readdir(
+        path.join(canonicalFixtureRoot, storedParentName),
+      );
+      if (storedWorkspaceName === undefined) {
+        throw new Error("Expected case-alias workspace");
+      }
+
+      expect(aliasWorkspace.path).toBe(
+        path.join(canonicalFixtureRoot, storedParentName, storedWorkspaceName),
+      );
+      await expect(fs.stat(aliasWorkspace.path)).resolves.toBeDefined();
+    });
+
+    it("uses directory-entry spelling for Unicode-normalized path aliases", async () => {
+      const fixtureRoot = await makeTempDir("bb-provision-unicode-alias-");
+      const composedName = "Caf\u00e9Workspace";
+      const decomposedName = "Cafe\u0301Workspace";
+      const actualWorkspacePath = path.join(fixtureRoot, composedName);
+      const aliasWorkspacePath = path.join(fixtureRoot, decomposedName);
+      await fs.mkdir(actualWorkspacePath);
+
+      try {
+        await fs.stat(aliasWorkspacePath);
+      } catch {
+        // Filesystems without Unicode normalization aliases keep both names distinct.
+        return;
+      }
+
+      const aliasWorkspace = await provisionWorkspace({
+        workspaceProvisionType: "unmanaged",
+        path: aliasWorkspacePath,
+      });
+      const canonicalFixtureRoot = await fs.realpath(fixtureRoot);
+      const [storedWorkspaceName] = await fs.readdir(canonicalFixtureRoot);
+      if (storedWorkspaceName === undefined) {
+        throw new Error("Expected Unicode-alias workspace");
+      }
+
+      expect(aliasWorkspace.path).toBe(
+        path.join(canonicalFixtureRoot, storedWorkspaceName),
+      );
+      await expect(fs.stat(aliasWorkspace.path)).resolves.toBeDefined();
+    });
+
+    it("keeps case-distinct directories independent on case-sensitive filesystems", async () => {
+      const fixtureRoot = await makeTempDir("bb-provision-case-distinct-");
+      const upperPath = path.join(fixtureRoot, "WorkspaceRoot");
+      const lowerPath = path.join(fixtureRoot, "workspaceroot");
+      await fs.mkdir(upperPath);
+      try {
+        await fs.mkdir(lowerPath);
+      } catch {
+        // A case-insensitive filesystem cannot host this portability fixture.
+        return;
+      }
+
+      const [upperWorkspace, lowerWorkspace] = await Promise.all([
+        provisionWorkspace({
+          workspaceProvisionType: "unmanaged",
+          path: upperPath,
+        }),
+        provisionWorkspace({
+          workspaceProvisionType: "unmanaged",
+          path: lowerPath,
+        }),
+      ]);
+
+      expect(upperWorkspace.path).not.toBe(lowerWorkspace.path);
+    });
+
+    it("reports a broken symlink as a missing unmanaged workspace", async () => {
+      const fixtureRoot = await makeTempDir("bb-provision-broken-alias-");
+      const brokenAliasPath = path.join(fixtureRoot, "broken-workspace");
+      await fs.symlink(
+        path.join(fixtureRoot, "missing-target"),
+        brokenAliasPath,
+      );
+
+      await expect(
+        provisionWorkspace({
+          workspaceProvisionType: "unmanaged",
+          path: brokenAliasPath,
+        }),
+      ).rejects.toHaveProperty("code", "path_not_found");
+    });
+
+    it("canonicalizes an accessible workspace below an execute-only ancestor", async () => {
+      if (process.platform === "win32") {
+        return;
+      }
+      const fixtureRoot = await makeTempDir("bb-provision-search-only-");
+      const restrictedAncestor = path.join(fixtureRoot, "SearchOnlyParent");
+      const workspacePath = path.join(restrictedAncestor, "WorkspaceRoot");
+      await fs.mkdir(workspacePath, { recursive: true });
+      const expectedPath = await fs.realpath(workspacePath);
+      await fs.chmod(restrictedAncestor, 0o111);
+
+      try {
+        let readdirDenied = false;
+        try {
+          await fs.readdir(restrictedAncestor);
+        } catch (error) {
+          readdirDenied =
+            error instanceof Error &&
+            "code" in error &&
+            (error.code === "EACCES" || error.code === "EPERM");
+        }
+        if (!readdirDenied) {
+          // Privileged users and some filesystems do not enforce this fixture.
+          return;
+        }
+
+        const workspace = await provisionWorkspace({
+          workspaceProvisionType: "unmanaged",
+          path: workspacePath,
+        });
+
+        expect(workspace.path).toBe(expectedPath);
+        await expect(fs.stat(workspace.path)).resolves.toBeDefined();
+      } finally {
+        await fs.chmod(restrictedAncestor, 0o700);
+      }
+    });
+
     it("provisions an unmanaged git repo and discovers properties", async () => {
       const repoPath = await initRepo();
+      const canonicalRepoPath = await fs.realpath(repoPath);
 
       const ws = await provisionWorkspace({
         workspaceProvisionType: "unmanaged",
         path: repoPath,
       });
 
-      expect(ws.path).toBe(repoPath);
+      expect(ws.path).toBe(canonicalRepoPath);
       expect(ws.managed).toBe(false);
       expect(ws.isGitRepo).toBe(true);
       expect(ws.isWorktree).toBe(false);
@@ -466,6 +646,26 @@ describe("provisionWorkspace", () => {
   });
 
   describe("managed-worktree", () => {
+    it("preserves the requested path when reconnecting a managed worktree through a symlink", async () => {
+      const repoPath = await initRepo();
+      const parentDir = await makeTempDir("bb-provision-reconnect-parent-");
+      const targetPath = path.join(parentDir, "worktree");
+      const aliasPath = path.join(parentDir, "worktree-alias");
+      await runGit(["worktree", "add", "-B", "feature-alias", targetPath], {
+        cwd: repoPath,
+      });
+      await fs.symlink(targetPath, aliasPath, "dir");
+
+      const ws = await provisionWorkspace({
+        workspaceProvisionType: "reconnect-managed-worktree",
+        path: aliasPath,
+      });
+
+      expect(ws.path).toBe(aliasPath);
+      expect(ws.managed).toBe(true);
+      expect(ws.isWorktree).toBe(true);
+    });
+
     it("provisions a worktree and returns HostWorkspace", async () => {
       const repoPath = await initRepo();
       const parentDir = await makeTempDir("bb-provision-mwt-parent-");

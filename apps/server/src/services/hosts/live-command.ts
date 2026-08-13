@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
+  type HostAdmissionReason,
   type HostDaemonCommand,
   type HostDaemonCommandResult,
   type HostDaemonSettledCommandType,
 } from "@bb/host-daemon-contract";
+import { getThread } from "@bb/db";
 import { ApiError } from "../../errors.js";
 import {
   buildCommandResultSettlementDeps,
@@ -17,6 +19,12 @@ import {
 import { handleLiveCommandResultSideEffects } from "../../internal/command-results.js";
 import { NotificationBuffer } from "../lib/notification-buffer.js";
 import { callHostOnlineRpc } from "./online-rpc.js";
+import {
+  awaitThreadWorkAdmission,
+  isProviderWorkCommand,
+  listRecoverableWorkAdmissionCommands,
+  releaseThreadWorkAdmission,
+} from "../threads/work-admission.js";
 
 export const LIVE_DAEMON_COMMAND_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
@@ -24,6 +32,7 @@ export interface RunLiveHostCommandArgs<
   TType extends HostDaemonSettledCommandType,
 > {
   command: Extract<HostDaemonCommand, { type: TType }>;
+  admissionReason?: HostAdmissionReason;
   execution?: HostDaemonCommandExecutionRecord;
   hostId: string;
   timeoutMs: number;
@@ -214,6 +223,18 @@ export async function runLiveHostCommand<
 ): Promise<HostDaemonCommandResult<TType>> {
   const execution =
     args.execution ?? createLiveHostCommandExecution(args.hostId);
+  const providerWorkCommand = isProviderWorkCommand(args.command)
+    ? args.command
+    : null;
+  if (providerWorkCommand !== null) {
+    await awaitThreadWorkAdmission(deps, {
+      command: providerWorkCommand,
+      hostId: args.hostId,
+      ...(args.admissionReason === undefined
+        ? {}
+        : { reason: args.admissionReason }),
+    });
+  }
   try {
     const result = await callHostOnlineRpc(deps, {
       command: args.command,
@@ -257,6 +278,46 @@ export async function runLiveHostCommand<
       );
     }
     throw normalized;
+  } finally {
+    if (providerWorkCommand !== null) {
+      const thread = getThread(deps.db, providerWorkCommand.threadId);
+      if (
+        !thread ||
+        (thread.status !== "active" && thread.status !== "stopping")
+      ) {
+        await releaseThreadWorkAdmission(deps, {
+          terminalReason: thread
+            ? `thread became ${thread.status}`
+            : "thread deleted",
+          threadId: providerWorkCommand.threadId,
+        }).catch((error) => {
+          deps.logger.warn(
+            { err: error, threadId: providerWorkCommand.threadId },
+            "Failed to release settled thread work admission",
+          );
+        });
+      }
+    }
+  }
+}
+
+export function recoverDurableWorkAdmissions(
+  deps: CommandResultSideEffectsDeps,
+  args: { hostId?: string } = {},
+): void {
+  for (const entry of listRecoverableWorkAdmissionCommands(deps, args)) {
+    startLiveHostCommand(deps, {
+      admissionReason: entry.reason,
+      command: entry.command,
+      hostId: entry.hostId,
+      timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
+      onError: ({ error }) => {
+        deps.logger.warn(
+          { err: error, threadId: entry.command.threadId },
+          "Recovered work admission command failed",
+        );
+      },
+    });
   }
 }
 

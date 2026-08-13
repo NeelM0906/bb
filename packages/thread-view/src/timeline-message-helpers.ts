@@ -1,9 +1,23 @@
 import type { EventProjectionMessage } from "./event-projection-types.js";
 
+export function isTimelineIgnoredBlankAssistantMessage(
+  message: EventProjectionMessage,
+): boolean {
+  return (
+    message.kind === "assistant-text" &&
+    message.isLegacyUserMessage !== true &&
+    message.text.trim().length === 0
+  );
+}
+
 export function isTimelineTerminalMessage(
   message: EventProjectionMessage,
 ): boolean {
-  return message.kind === "assistant-text" || message.kind === "error";
+  return (
+    (message.kind === "assistant-text" &&
+      !isTimelineIgnoredBlankAssistantMessage(message)) ||
+    message.kind === "error"
+  );
 }
 
 export function isTimelineSummaryGroupableSteerMessage(
@@ -23,7 +37,7 @@ export function isTimelineUngroupableMessage(
     return !isTimelineSummaryGroupableSteerMessage(message);
   }
   if (message.kind === "assistant-text") {
-    return message.isLegacyUserMessage === true;
+    return !isTimelineIgnoredBlankAssistantMessage(message);
   }
   return message.kind === "debug/raw-event";
 }
@@ -31,7 +45,10 @@ export function isTimelineUngroupableMessage(
 export function isTimelineSummaryCountedMessage(
   message: EventProjectionMessage,
 ): boolean {
-  return !isTimelineUngroupableMessage(message);
+  return (
+    !isTimelineIgnoredBlankAssistantMessage(message) &&
+    !isTimelineUngroupableMessage(message)
+  );
 }
 
 export function isSingletonContextCompaction(

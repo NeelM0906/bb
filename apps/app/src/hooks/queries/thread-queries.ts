@@ -550,6 +550,7 @@ function liftThreadListPlaceholder(
   return {
     ...thread,
     activeBackgroundAgentCount: thread.activity.activeBackgroundAgentCount,
+    admission: null,
     canSpawnChild: false,
   };
 }

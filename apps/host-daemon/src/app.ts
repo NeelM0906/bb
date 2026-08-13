@@ -60,12 +60,14 @@ import {
   disposeParcelWatcherBackend,
   type HostWatcher,
 } from "@bb/host-watcher";
+import { HostAdmissionController } from "./host-admission-controller.js";
 
 interface SessionState {
   value: string | null;
 }
 
 const INTERACTIVE_INTERRUPT_RETRY_DELAY_MS = 1_000;
+export const DEFAULT_HOST_ADMISSION_LIMIT = 4;
 const IDLE_PROVIDER_SESSION_REAP_AFTER_MS = 30 * 60 * 1000;
 const IDLE_PROVIDER_SESSION_REAP_INTERVAL_MS = 5 * 60 * 1000;
 const RUNTIME_SHELL_ENV_REFRESH_TTL_MS = 10_000;
@@ -132,6 +134,7 @@ export interface CreateHostDaemonAppOptions {
   nowMs?: () => number;
   threadStorageRootPath?: string;
   hostWatcher?: HostWatcher;
+  hostAdmissionLimit?: number;
   onToolCall?: (request: ToolCallRequest) => Promise<ToolCallResponse>;
   fetchFn?: FetchFn;
   createWebSocket?: CreateReconnectingWebSocket;
@@ -721,6 +724,15 @@ export async function createHostDaemonApp(
       };
     },
   });
+  const hostAdmissionController = new HostAdmissionController({
+    hostId: options.hostId,
+    limit: options.hostAdmissionLimit ?? DEFAULT_HOST_ADMISSION_LIMIT,
+    listProviderProcessDiagnostics: () =>
+      runtimeManager.listProviderProcessDiagnostics(),
+    reapIdleProviderSessions: (args) =>
+      runtimeManager.reapIdleProviderSessions(args),
+    nowMs,
+  });
   let sendTerminalMessage: TerminalManagerOptions["sendMessage"] = (message) =>
     sendServerMessage(message);
   const terminalManager = new TerminalManager({
@@ -755,6 +767,7 @@ export async function createHostDaemonApp(
       interactiveRequestRegistry.resolve(request);
     },
     ensureConnectTunnelIdentity: () => connectTunnel.ensureTunnelIdentity(),
+    hostAdmissionController,
     caffeinateManager,
     threadStorageRootPath,
     logger: options.logger,

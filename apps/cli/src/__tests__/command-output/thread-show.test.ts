@@ -18,6 +18,22 @@ describe("bb thread show command output", () => {
   const register: CommandRegistrar = (program) =>
     registerThreadCommands(program, () => "http://server");
 
+  function makeThreadResponse(
+    overrides: Parameters<typeof fixtures.makeThread>[0],
+  ): serverContract.ThreadResponse {
+    const thread = fixtures.makeThread(overrides);
+    return {
+      ...thread,
+      activeBackgroundAgentCount: 0,
+      admission: null,
+      canSpawnChild: true,
+      runtime: {
+        displayStatus: thread.status,
+        hostReconnectGraceExpiresAt: null,
+      },
+    };
+  }
+
   function makePullRequest(
     overrides: Partial<domain.ThreadPullRequest> = {},
   ): domain.ThreadPullRequest {
@@ -51,7 +67,7 @@ describe("bb thread show command output", () => {
   }
 
   it("bb thread show prints archived timestamp for archived threads", async () => {
-    const thread: domain.Thread = fixtures.makeThread({
+    const thread = makeThreadResponse({
       id: "thread-archived-1",
       projectId: "proj-1",
       providerId: "codex",
@@ -81,7 +97,7 @@ describe("bb thread show command output", () => {
   });
 
   it("bb thread show prints pinned timestamp for pinned threads", async () => {
-    const thread: domain.Thread = fixtures.makeThread({
+    const thread = makeThreadResponse({
       id: "thread-pinned-1",
       projectId: "proj-1",
       providerId: "codex",
@@ -105,7 +121,7 @@ describe("bb thread show command output", () => {
 
   it("bb thread show --self resolves from BB_THREAD_ID", async () => {
     vi.stubEnv("BB_THREAD_ID", "thread-show-self");
-    const thread: domain.Thread = fixtures.makeThread({
+    const thread = makeThreadResponse({
       id: "thread-show-self",
       projectId: "proj-1",
       providerId: "codex",
@@ -128,8 +144,35 @@ describe("bb thread show command output", () => {
     expect(collectLogLines(vi.mocked(console.error))).toEqual([]);
   });
 
+  it("bb thread show prints durable admission waiting details", async () => {
+    const thread = {
+      ...makeThreadResponse({
+        id: "thread-waiting-admission",
+        projectId: "proj-1",
+        providerId: "codex",
+        status: "active",
+      }),
+      admission: {
+        hostId: "host-busy",
+        queuedAt: 123,
+        reason: "interactive" as const,
+        waitingReason: "Host capacity limit reached",
+      },
+    };
+    stubServerApi({
+      "v1.threads.:id.$get": vi.fn(async () => thread),
+      "v1.threads.:id.timeline.$get": fixtures.makeEmptyTimelineGetMock(),
+    });
+
+    await runCommand(["thread", "show", thread.id], register);
+
+    expect(collectLogLines(vi.mocked(console.log))).toContain(
+      "  Admission: waiting on host-busy (Host capacity limit reached)",
+    );
+  });
+
   it("bb thread show --work-status prints non-git environment message", async () => {
-    const thread: domain.Thread = fixtures.makeThread({
+    const thread = makeThreadResponse({
       id: "thread-show-work-status",
       projectId: "proj-1",
       providerId: "codex",
@@ -191,7 +234,7 @@ describe("bb thread show command output", () => {
   });
 
   it("bb thread show --git-diff uses the environment base branch before the repository default", async () => {
-    const thread: domain.Thread = fixtures.makeThread({
+    const thread = makeThreadResponse({
       id: "thread-show-diff-base",
       projectId: "proj-1",
       providerId: "codex",
@@ -249,7 +292,7 @@ describe("bb thread show command output", () => {
   });
 
   it("bb thread show --git-diff renders an available uncommitted diff response", async () => {
-    const thread: domain.Thread = fixtures.makeThread({
+    const thread = makeThreadResponse({
       id: "thread-show-uncommitted-diff",
       projectId: "proj-1",
       providerId: "codex",
@@ -314,7 +357,7 @@ describe("bb thread show command output", () => {
   });
 
   it("bb thread show prints pull request details for the thread environment", async () => {
-    const thread: domain.Thread = fixtures.makeThread({
+    const thread = makeThreadResponse({
       id: "thread-show-pr",
       projectId: "proj-1",
       providerId: "codex",
@@ -337,7 +380,10 @@ describe("bb thread show command output", () => {
     });
     const get = vi.fn(async () => thread);
     const environmentGet = vi.fn(async () => environment);
-    const pullRequestGet = vi.fn(async () => ({ outcome: "available", pullRequest }));
+    const pullRequestGet = vi.fn(async () => ({
+      outcome: "available",
+      pullRequest,
+    }));
     const timelineGet = fixtures.makeEmptyTimelineGetMock();
     stubServerApi({
       "v1.environments.:id.$get": environmentGet,
@@ -369,7 +415,7 @@ describe("bb thread show command output", () => {
   });
 
   it("bb thread show reports a failed pull request lookup distinctly from none", async () => {
-    const thread: domain.Thread = fixtures.makeThread({
+    const thread = makeThreadResponse({
       id: "thread-show-pr-down",
       projectId: "proj-1",
       providerId: "codex",
@@ -408,7 +454,7 @@ describe("bb thread show command output", () => {
   });
 
   it("bb thread show --json includes pull request details", async () => {
-    const thread: domain.Thread = fixtures.makeThread({
+    const thread = makeThreadResponse({
       id: "thread-json-show-pr",
       projectId: "proj-1",
       providerId: "codex",
@@ -427,7 +473,10 @@ describe("bb thread show command output", () => {
     const pullRequest = makePullRequest();
     const get = vi.fn(async () => thread);
     const environmentGet = vi.fn(async () => environment);
-    const pullRequestGet = vi.fn(async () => ({ outcome: "available", pullRequest }));
+    const pullRequestGet = vi.fn(async () => ({
+      outcome: "available",
+      pullRequest,
+    }));
     const timelineGet = fixtures.makeEmptyTimelineGetMock();
     stubServerApi({
       "v1.environments.:id.$get": environmentGet,
@@ -457,7 +506,7 @@ describe("bb thread show command output", () => {
   });
 
   it("bb thread show --json prints the thread in status payload format", async () => {
-    const thread: domain.Thread = fixtures.makeThread({
+    const thread = makeThreadResponse({
       id: "thread-json-show",
       projectId: "proj-1",
       providerId: "codex",

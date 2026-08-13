@@ -21,11 +21,11 @@ import {
   defaultAppSettings,
   resolveEnvironmentMergeBaseBranch,
   type ThreadListEntry,
-  type ThreadWithRuntime,
 } from "@bb/domain";
 import type {
   PullRequestMergeMethod,
   TerminalSession,
+  ThreadResponse,
   TimelineRow,
 } from "@bb/server-contract";
 import type { WorkspaceOpenTarget } from "@bb/host-daemon-contract";
@@ -360,12 +360,19 @@ export interface ResolveHostFilePreviewLinkRootPathArgs {
 }
 
 function buildHostConnectionNotice(
-  thread: ThreadWithRuntime,
+  thread: ThreadResponse,
   /** Machine name to blame explicitly. Only passed when more than one
    * machine exists — a bare "Host" is unambiguous
    * on a single-machine setup. */
   hostName: string | null,
 ): HostConnectionNotice | null {
+  if (thread.admission !== null) {
+    const subject = hostName ?? "Host";
+    return {
+      label: `${subject} is at capacity. ${thread.admission.waitingReason}`,
+      tone: "pending",
+    };
+  }
   const displayStatus = thread.runtime.displayStatus;
   if (
     displayStatus !== "host-reconnecting" &&

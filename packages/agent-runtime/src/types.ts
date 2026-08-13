@@ -61,6 +61,7 @@ export type AgentRuntimeSkillRoot =
  */
 export interface AgentRuntimeProcessExitThreadState {
   activeTurnId: string | null;
+  pendingTurnStart: boolean;
   providerThreadId: string | null;
   threadId: string;
 }
@@ -253,6 +254,24 @@ export interface AgentRuntimeProviderSession {
   providerThreadId: string;
 }
 
+/** Current ownership of a provider session by one direct provider child. */
+export interface AgentRuntimeProviderSessionDiagnostic {
+  activeTurnId: string | null;
+  idleDeadlineMs: number | null;
+  providerThreadId: string | null;
+  threadId: string;
+}
+
+/** Observable direct provider-child ownership for host diagnostics. */
+export interface AgentRuntimeProviderProcessDiagnostic {
+  directPid: number | null;
+  generation: number;
+  processKey: string;
+  providerId: string;
+  sessions: AgentRuntimeProviderSessionDiagnostic[];
+  state: "finalizing" | "running";
+}
+
 export interface WaitForActiveTurnArgs {
   timeoutMs: number;
 }
@@ -339,6 +358,9 @@ export interface AgentRuntime {
   }>;
 
   listRunningProviders(): string[];
+
+  /** Direct child ownership, including the sessions sharing that child. */
+  listProviderProcessDiagnostics?(): AgentRuntimeProviderProcessDiagnostic[];
 
   /** Active turn id for the thread, or `null` when no turn is running. */
   getActiveTurnId(threadId: string): string | null;

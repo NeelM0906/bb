@@ -378,6 +378,9 @@ const rowidThreadSearchMigrationHash =
   "025358fe89253aec7f5bd970dc3eb88d0e834f0d58fb9d75329a5d39899340f4";
 const legacyExperimentsMigrationWhen = 1781299832942;
 const eventLargeValuesMigrationWhen = 1781403656069;
+const environmentArchiveGraceMigrationWhen = 1786416023798;
+const threadSearchSourceSeqIndexMigrationWhen = 1786468375011;
+const farFutureBranchMigrationWhen = 9_999_999_999_999;
 const eventLargeValuesRestoreMigrationWhen = 1781557200000;
 const cleanupModeDropMigrationWhen = 1781557300000;
 const stopRequestedAtDropMigrationWhen = 1781557400000;
@@ -4004,6 +4007,193 @@ describe("migrate", () => {
 
       expect(() => migrate(db)).toThrow(
         /Missing applied migration timestamps: 0008_thread_pinning/,
+      );
+    } finally {
+      closeConnection(db);
+    }
+  });
+
+  it("replays a canonical tail skipped by a far-future branch migration", () => {
+    const db = createConnection(":memory:");
+
+    try {
+      migrate(db);
+      db.$client.exec(`
+        DROP INDEX thread_search_segments_thread_source_seq_idx;
+        CREATE INDEX thread_search_segments_thread_idx
+          ON thread_search_segments (thread_id);
+      `);
+      db.$client
+        .prepare<DeleteMigrationParameters>(
+          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
+        )
+        .run(threadSearchSourceSeqIndexMigrationWhen);
+      db.$client
+        .prepare<InsertMigrationParameters>(
+          "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
+        )
+        .run("future-branch-migration", farFutureBranchMigrationWhen);
+
+      expect(() => migrate(db)).not.toThrow();
+
+      expect(readAppliedMigrationCreatedAts(db)).toContain(
+        threadSearchSourceSeqIndexMigrationWhen,
+      );
+      expect(
+        readIndexNames({ db, tableName: "thread_search_segments" }),
+      ).toContain("thread_search_segments_thread_source_seq_idx");
+    } finally {
+      closeConnection(db);
+    }
+  });
+
+  it("replays several canonical tail migrations skipped by a future branch migration", () => {
+    const db = createConnection(":memory:");
+
+    try {
+      migrate(db);
+      db.$client.exec(`
+        ALTER TABLE environments DROP COLUMN retire_requested_at;
+        DROP INDEX thread_search_segments_thread_source_seq_idx;
+        CREATE INDEX thread_search_segments_thread_idx
+          ON thread_search_segments (thread_id);
+      `);
+      db.$client
+        .prepare<[number, number]>(
+          "DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?)",
+        )
+        .run(
+          environmentArchiveGraceMigrationWhen,
+          threadSearchSourceSeqIndexMigrationWhen,
+        );
+      db.$client
+        .prepare<InsertMigrationParameters>(
+          "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
+        )
+        .run("future-branch-migration", farFutureBranchMigrationWhen);
+
+      expect(() => migrate(db)).not.toThrow();
+
+      expect(readAppliedMigrationCreatedAts(db)).toEqual(
+        expect.arrayContaining([
+          environmentArchiveGraceMigrationWhen,
+          threadSearchSourceSeqIndexMigrationWhen,
+        ]),
+      );
+      expect(
+        db.$client
+          .prepare<[], TableInfoRow>("PRAGMA table_info(environments)")
+          .all()
+          .map((column) => column.name),
+      ).toContain("retire_requested_at");
+      expect(
+        readIndexNames({ db, tableName: "thread_search_segments" }),
+      ).toContain("thread_search_segments_thread_source_seq_idx");
+    } finally {
+      closeConnection(db);
+    }
+  });
+
+  it("does not replay an interior canonical migration gap", () => {
+    const db = createConnection(":memory:");
+
+    try {
+      migrate(db);
+      db.$client
+        .prepare<DeleteMigrationParameters>(
+          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
+        )
+        .run(environmentArchiveGraceMigrationWhen);
+
+      expect(() => migrate(db)).toThrow(
+        /Missing applied migration timestamps: 0091_daffy_dark_phoenix/,
+      );
+      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
+        environmentArchiveGraceMigrationWhen,
+      );
+    } finally {
+      closeConnection(db);
+    }
+  });
+
+  it("does not replay a canonical migration with a mismatched ledger hash", () => {
+    const db = createConnection(":memory:");
+
+    try {
+      migrate(db);
+      replaceAppliedMigrationHash({
+        db,
+        createdAt: threadSearchSourceSeqIndexMigrationWhen,
+        hash: "wrong-canonical-hash",
+      });
+
+      expect(() => migrate(db)).toThrow(
+        /Mismatched applied migration hashes: 0092_windy_doctor_faustus/,
+      );
+      expect(
+        db.$client
+          .prepare<[number, string], MigrationCountRow>(
+            "SELECT COUNT(*) AS count FROM __drizzle_migrations WHERE created_at = ? AND hash = ?",
+          )
+          .get(threadSearchSourceSeqIndexMigrationWhen, "wrong-canonical-hash"),
+      ).toEqual({ count: 1 });
+    } finally {
+      closeConnection(db);
+    }
+  });
+
+  it("does not infer a canonical tail when the ledger has no canonical anchor", () => {
+    const db = createConnection(":memory:");
+
+    try {
+      db.$client.exec(`
+        CREATE TABLE __drizzle_migrations (
+          id integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+          hash text NOT NULL,
+          created_at numeric
+        );
+        INSERT INTO __drizzle_migrations (hash, created_at)
+        VALUES ('future-branch-migration', ${farFutureBranchMigrationWhen});
+      `);
+
+      expect(() => migrate(db)).toThrow(
+        /Missing applied migration timestamps: 0000_baseline/,
+      );
+      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
+        threadSearchSourceSeqIndexMigrationWhen,
+      );
+    } finally {
+      closeConnection(db);
+    }
+  });
+
+  it("does not record a successful ledger row when canonical tail DDL fails", () => {
+    const db = createConnection(":memory:");
+
+    try {
+      migrate(db);
+      db.$client
+        .prepare<[number, number]>(
+          "DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?)",
+        )
+        .run(
+          environmentArchiveGraceMigrationWhen,
+          threadSearchSourceSeqIndexMigrationWhen,
+        );
+      db.$client
+        .prepare<InsertMigrationParameters>(
+          "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
+        )
+        .run("future-branch-migration", farFutureBranchMigrationWhen);
+
+      expect(() => migrate(db)).toThrow(
+        /duplicate column name: retire_requested_at/,
+      );
+      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
+        environmentArchiveGraceMigrationWhen,
+      );
+      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
+        threadSearchSourceSeqIndexMigrationWhen,
       );
     } finally {
       closeConnection(db);

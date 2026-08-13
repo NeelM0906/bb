@@ -6,7 +6,6 @@ import {
 import {
   resolveEnvironmentMergeBaseBranch,
   type Environment,
-  type Thread,
   type ThreadGitDiffResponse,
   type ThreadPullRequest,
   type ThreadTimelinePendingTodos,
@@ -15,6 +14,7 @@ import {
 import type { BbSdk } from "@bb/sdk";
 import type {
   EnvironmentDiffQuery,
+  ThreadResponse,
   ThreadTimelineResponse,
 } from "@bb/server-contract";
 import { action } from "../../action.js";
@@ -56,7 +56,7 @@ interface ThreadOutputCommandOptions {
 }
 
 interface ThreadStatusPayload {
-  thread: Thread;
+  thread: ThreadResponse;
 }
 
 type ThreadShowEnvironmentJsonPayload = Environment & {
@@ -172,13 +172,11 @@ function threadShowEnvironmentJson(
   }
   return {
     ...environment,
-    pullRequest:
-      pullRequest ??
-      {
-        status: "unavailable",
-        pullRequest: null,
-        message: "Pull request lookup was not run.",
-      },
+    pullRequest: pullRequest ?? {
+      status: "unavailable",
+      pullRequest: null,
+      message: "Pull request lookup was not run.",
+    },
   };
 }
 
@@ -352,11 +350,7 @@ export function registerShowCommand(
           return;
         }
 
-        printThreadStatus(
-          statusPayload,
-          environmentInfo,
-          fetchedPullRequest,
-        );
+        printThreadStatus(statusPayload, environmentInfo, fetchedPullRequest);
 
         printPendingTodos(pendingTodos);
 
@@ -483,17 +477,19 @@ export function registerShowCommand(
     .option("--self", "Target the current thread (from BB_THREAD_ID)")
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (id: string | undefined, opts: ThreadOutputCommandOptions) => {
-        const threadId = requireThreadIdOrSelf(id, opts);
-        const sdk = createCliBbSdk(getUrl());
-        const result = await sdk.threads.output({ threadId });
-        if (outputJson(opts, result)) return;
-        if (result.output) {
-          console.log(result.output);
-        } else {
-          console.log("(no output)");
-        }
-      }),
+      action(
+        async (id: string | undefined, opts: ThreadOutputCommandOptions) => {
+          const threadId = requireThreadIdOrSelf(id, opts);
+          const sdk = createCliBbSdk(getUrl());
+          const result = await sdk.threads.output({ threadId });
+          if (outputJson(opts, result)) return;
+          if (result.output) {
+            console.log(result.output);
+          } else {
+            console.log("(no output)");
+          }
+        },
+      ),
     );
 }
 
@@ -505,6 +501,11 @@ function printThreadStatus(
   const { thread } = payload;
   console.log(`Thread: ${thread.id}`);
   console.log(`  Status: ${thread.status}`);
+  if (thread.admission !== null) {
+    console.log(
+      `  Admission: waiting on ${thread.admission.hostId} (${thread.admission.waitingReason})`,
+    );
+  }
   if (thread.title) {
     console.log(`  Title: ${thread.title}`);
   }

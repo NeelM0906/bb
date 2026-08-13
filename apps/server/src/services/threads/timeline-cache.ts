@@ -39,10 +39,12 @@ export interface ThreadTimelineCacheOptions {
 }
 
 export interface ThreadTimelineCache {
+  get(key: string): ThreadTimelineResponse | undefined;
   getOrBuild(
     key: string,
     build: () => ThreadTimelineResponse,
   ): ThreadTimelineResponse;
+  set(key: string, value: ThreadTimelineResponse): void;
   /** Number of currently cached entries (for tests/metrics). */
   readonly size: number;
 }
@@ -56,6 +58,14 @@ export function createThreadTimelineCache(
   const entries = new Map<string, ThreadTimelineResponse>();
 
   return {
+    get(key) {
+      const cached = entries.get(key);
+      if (cached !== undefined) {
+        entries.delete(key);
+        entries.set(key, cached);
+      }
+      return cached;
+    },
     getOrBuild(key, build) {
       const cached = entries.get(key);
       if (cached !== undefined) {
@@ -77,6 +87,19 @@ export function createThreadTimelineCache(
         }
       }
       return value;
+    },
+    set(key, value) {
+      if (value.rows.length > maxCacheableRows) {
+        return;
+      }
+      entries.set(key, value);
+      while (entries.size > maxEntries) {
+        const oldest = entries.keys().next().value;
+        if (oldest === undefined) {
+          break;
+        }
+        entries.delete(oldest);
+      }
     },
     get size() {
       return entries.size;

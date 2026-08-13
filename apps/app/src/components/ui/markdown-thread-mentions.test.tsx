@@ -67,6 +67,7 @@ function threadResponse(
       hostReconnectGraceExpiresAt: null,
     },
     activeBackgroundAgentCount: 0,
+    admission: null,
     canSpawnChild: true,
     ...overrides,
   };

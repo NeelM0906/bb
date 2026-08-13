@@ -4,7 +4,6 @@ import {
   countNonDeletedAssignedChildThreads,
   getEnvironment,
   getThreadSectionById,
-  listThreadsWithPendingInteractionState,
   markThreadDeleted,
   searchThreadsWithPendingInteractionState,
   updateThread,
@@ -46,6 +45,7 @@ import { createThreadFromRequest } from "../../services/threads/thread-create.js
 import { createThreadForkFromRequest } from "../../services/threads/thread-fork.js";
 import { requireChildThreadsConfirmation } from "../../services/threads/child-thread-confirmation.js";
 import {
+  overlayThreadListEntryLiveRuntime,
   toThreadListEntryResponses,
   toThreadResponseFromThread,
 } from "../../services/threads/thread-runtime-display.js";
@@ -195,7 +195,7 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
   });
   const routes = publicApiRoutes.threads;
 
-  get(routes.list, (context, query) => {
+  get(routes.list, async (context, query) => {
     const limit = parseOptionalInteger(query.limit, "limit");
     if (limit !== undefined && limit <= 0) {
       throw new ApiError(400, "invalid_request", "limit must be positive");
@@ -217,25 +217,45 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     if (query.sectionId) {
       requireThreadSection(deps, query.sectionId);
     }
-    const threads = listThreadsWithPendingInteractionState(deps.db, {
-      ...(query.projectId ? { projectId: query.projectId } : {}),
-      ...(query.parentThreadId ? { parentThreadId: query.parentThreadId } : {}),
-      ...(query.sourceThreadId ? { sourceThreadId: query.sourceThreadId } : {}),
-      ...(query.sectionId ? { sectionId: query.sectionId } : {}),
-      ...(query.unsectioned === "true" ? { unsectioned: true } : {}),
-      ...(query.originKind ? { originKind: query.originKind } : {}),
-      ...(query.originPluginId ? { originPluginId: query.originPluginId } : {}),
-      ...(query.childOrigin ? { childOrigin: query.childOrigin } : {}),
-      includeHidden: query.includeHidden === "true",
-      archived:
-        query.archived === undefined ? undefined : query.archived === "true",
-      hasParent:
-        query.hasParent === undefined ? undefined : query.hasParent === "true",
-      ...(limit !== undefined ? { limit } : {}),
-      ...(offset !== undefined ? { offset } : {}),
-    });
+    const threads = await deps.dbReadWorker.threadListSnapshot(
+      {
+        kind: "list",
+        now: Date.now(),
+        options: {
+          ...(query.projectId ? { projectId: query.projectId } : {}),
+          ...(query.parentThreadId
+            ? { parentThreadId: query.parentThreadId }
+            : {}),
+          ...(query.sourceThreadId
+            ? { sourceThreadId: query.sourceThreadId }
+            : {}),
+          ...(query.sectionId ? { sectionId: query.sectionId } : {}),
+          ...(query.unsectioned === "true" ? { unsectioned: true } : {}),
+          ...(query.originKind ? { originKind: query.originKind } : {}),
+          ...(query.originPluginId
+            ? { originPluginId: query.originPluginId }
+            : {}),
+          ...(query.childOrigin ? { childOrigin: query.childOrigin } : {}),
+          includeHidden: query.includeHidden === "true",
+          archived:
+            query.archived === undefined
+              ? undefined
+              : query.archived === "true",
+          hasParent:
+            query.hasParent === undefined
+              ? undefined
+              : query.hasParent === "true",
+          ...(limit !== undefined ? { limit } : {}),
+          ...(offset !== undefined ? { offset } : {}),
+        },
+      },
+      { signal: context.req.raw.signal },
+    );
     return context.json(
-      toThreadListEntryResponses(deps, { threads }) satisfies ThreadListEntry[],
+      overlayThreadListEntryLiveRuntime(
+        deps,
+        threads,
+      ) satisfies ThreadListEntry[],
     );
   });
 

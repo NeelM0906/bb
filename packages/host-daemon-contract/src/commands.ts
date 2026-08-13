@@ -36,7 +36,7 @@ import {
   providerCliStatusResponseSchema,
 } from "./local.js";
 
-export const HOST_DAEMON_PROTOCOL_VERSION = 106 as const;
+export const HOST_DAEMON_PROTOCOL_VERSION = 107 as const;
 
 export {
   BRANCH_LIST_LIMIT_MAX,
@@ -658,6 +658,90 @@ const hostCaffeinateCommandSchema = z
   })
   .strict();
 
+export const hostAdmissionReasonSchema = z.enum([
+  "interactive",
+  "child",
+  "automation",
+  "queued",
+  "resumed",
+]);
+export type HostAdmissionReason = z.infer<typeof hostAdmissionReasonSchema>;
+
+export const hostAdmissionReservationSchema = z
+  .object({
+    token: z.string().min(1),
+    generation: z.number().int().positive(),
+    hostId: z.string().min(1),
+    reason: hostAdmissionReasonSchema,
+  })
+  .strict();
+export type HostAdmissionReservation = z.infer<
+  typeof hostAdmissionReservationSchema
+>;
+
+const hostAdmissionReserveCommandSchema = z
+  .object({
+    type: z.literal("host.admission.reserve"),
+    hostId: z.string().min(1),
+    requestId: clientTurnRequestIdSchema,
+    threadId: z.string().min(1),
+    reason: hostAdmissionReasonSchema,
+  })
+  .strict();
+
+const hostAdmissionReserveResultSchema = z.discriminatedUnion("outcome", [
+  z
+    .object({
+      outcome: z.literal("reserved"),
+      reservation: hostAdmissionReservationSchema,
+    })
+    .strict(),
+  z
+    .object({
+      outcome: z.literal("unavailable"),
+      reason: z.string().min(1),
+    })
+    .strict(),
+]);
+export type HostAdmissionReserveResult = z.infer<
+  typeof hostAdmissionReserveResultSchema
+>;
+
+const hostAdmissionReleaseCommandSchema = z
+  .object({
+    type: z.literal("host.admission.release"),
+    reservation: hostAdmissionReservationSchema,
+  })
+  .strict();
+
+const hostAdmissionReleaseResultSchema = z
+  .object({ released: z.boolean() })
+  .strict();
+export type HostAdmissionReleaseResult = z.infer<
+  typeof hostAdmissionReleaseResultSchema
+>;
+
+const hostAdmissionReconcileCommandSchema = z
+  .object({ type: z.literal("host.admission.reconcile") })
+  .strict();
+
+const hostAdmissionReconcileResultSchema = z
+  .object({
+    reservations: z.array(
+      z
+        .object({
+          requestIds: z.array(clientTurnRequestIdSchema).min(1),
+          reservation: hostAdmissionReservationSchema,
+          threadId: z.string().min(1),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+export type HostAdmissionReconcileResult = z.infer<
+  typeof hostAdmissionReconcileResultSchema
+>;
+
 const connectTunnelEnsureIdentityCommandSchema = z
   .object({
     type: z.literal("connect-tunnel.ensure-identity"),
@@ -1017,7 +1101,9 @@ const personalEnvironmentProvisionCommandSchema =
  * Idempotent — if path already exists and is valid, reports success.
  * Rolls back partial state on failure.
  *
- * Result: `{ path, isGitRepo, isWorktree, branchName, transcript }`.
+ * Result: `{ path, isGitRepo, isWorktree, branchName, transcript }`. For an
+ * unmanaged workspace, `path` is the canonical absolute path reported by the
+ * host filesystem.
  *
  * Lane-serialized per environmentId. Git worktree metadata mutations are
  * protected by the workspace implementation.
@@ -1851,6 +1937,33 @@ export const hostDaemonCommandRegistry = {
     resultSchema: hostCaffeinateResultSchema,
     transport: "onlineRpc",
     retryable: false,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "host.admission.reserve": defineHostDaemonCommandDescriptor({
+    type: "host.admission.reserve",
+    schema: hostAdmissionReserveCommandSchema,
+    resultSchema: hostAdmissionReserveResultSchema,
+    transport: "onlineRpc",
+    retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "host.admission.release": defineHostDaemonCommandDescriptor({
+    type: "host.admission.release",
+    schema: hostAdmissionReleaseCommandSchema,
+    resultSchema: hostAdmissionReleaseResultSchema,
+    transport: "onlineRpc",
+    retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "host.admission.reconcile": defineHostDaemonCommandDescriptor({
+    type: "host.admission.reconcile",
+    schema: hostAdmissionReconcileCommandSchema,
+    resultSchema: hostAdmissionReconcileResultSchema,
+    transport: "onlineRpc",
+    retryable: true,
     flushEventsBeforeResult: false,
     envLane: null,
   }),

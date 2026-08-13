@@ -12,7 +12,6 @@ import {
   listPublicProjects,
   listProjectSourcesByProjectIds,
   listThreadSections,
-  listThreadsWithPendingInteractionStateForProjects,
   reorderProject,
   updateProject,
   updateProjectSource,
@@ -46,10 +45,10 @@ import {
   requirePublicProject,
   requirePublicStandardProject,
 } from "../services/lib/entity-lookup.js";
-import { PROMPT_HISTORY_ENTRY_LIMIT } from "@bb/domain";
+import { PROMPT_HISTORY_ENTRY_LIMIT, type ThreadListEntry } from "@bb/domain";
 import { resolveCreateThreadExecutionDefaults } from "../services/threads/thread-default-policy.js";
 import { resolveProjectCreateDefaultExecutionPlan } from "../services/threads/thread-execution-plan.js";
-import { toThreadListEntryResponses } from "../services/threads/thread-runtime-display.js";
+import { overlayThreadListEntryLiveRuntime } from "../services/threads/thread-runtime-display.js";
 import { callHostRetryableOnlineRpc } from "../services/hosts/online-rpc.js";
 import { runLiveHostCommand } from "../services/hosts/live-command.js";
 import {
@@ -197,34 +196,36 @@ function parseProjectListIncludes(
   return includes;
 }
 
-function buildProjectsWithThreadsResponse(
+async function buildProjectsWithThreadsResponse(
   deps: AppDeps,
   options: ProjectListOptions,
-): ProjectWithThreadsResponse[] {
-  return buildProjectsWithThreadsResponseFromRows(
+  signal?: AbortSignal,
+): Promise<ProjectWithThreadsResponse[]> {
+  const projectRows = listDiscoverableProjects(deps, options);
+  const threads = await readProjectThreadListSnapshot(
     deps,
-    listDiscoverableProjects(deps, options),
+    projectRows.map((project) => project.id),
+    signal,
   );
+  return buildProjectsWithThreadsResponseFromRows(deps, projectRows, threads);
 }
 
 function buildProjectsWithThreadsResponseFromRows(
   deps: AppDeps,
   projectRows: ProjectResponseRow[],
+  threadResponses: ThreadListEntry[],
 ): ProjectWithThreadsResponse[] {
   const projects = buildProjectResponsesFromRows(deps, projectRows);
   const projectIds = projects.map((project) => project.id);
-  const threadRows = listThreadsWithPendingInteractionStateForProjects(
-    deps.db,
-    { archived: false, projectIds },
-  );
-  const threadResponses = toThreadListEntryResponses(deps, {
-    threads: threadRows,
-  });
+  const includedProjectIds = new Set(projectIds);
   const threadsByProjectId = new Map<
     string,
     ProjectWithThreadsResponse["threads"]
   >();
   for (const thread of threadResponses) {
+    if (!includedProjectIds.has(thread.projectId)) {
+      continue;
+    }
     const projectThreads = threadsByProjectId.get(thread.projectId);
     if (projectThreads) {
       projectThreads.push(thread);
@@ -246,7 +247,27 @@ function buildProjectsWithThreadsResponseFromRows(
   }));
 }
 
-function buildSidebarBootstrapResponse(deps: AppDeps) {
+async function readProjectThreadListSnapshot(
+  deps: AppDeps,
+  projectIds: string[],
+  signal?: AbortSignal,
+): Promise<ThreadListEntry[]> {
+  const threads = await deps.dbReadWorker.threadListSnapshot(
+    {
+      archived: false,
+      kind: "projects",
+      now: Date.now(),
+      projectIds,
+    },
+    { signal },
+  );
+  return overlayThreadListEntryLiveRuntime(deps, threads);
+}
+
+async function buildSidebarBootstrapResponse(
+  deps: AppDeps,
+  signal?: AbortSignal,
+) {
   const personalProject = getPersonalProject(deps.db);
   if (!personalProject) {
     throw new ApiError(
@@ -255,9 +276,16 @@ function buildSidebarBootstrapResponse(deps: AppDeps) {
       "Personal project is not initialized",
     );
   }
+  const projectRows = listPublicProjects(deps.db);
+  const threadResponses = await readProjectThreadListSnapshot(
+    deps,
+    [personalProject.id, ...projectRows.map((project) => project.id)],
+    signal,
+  );
   const personalProjectResponse = buildProjectsWithThreadsResponseFromRows(
     deps,
     [personalProject],
+    threadResponses,
   )[0];
   if (!personalProjectResponse) {
     throw new ApiError(
@@ -270,7 +298,8 @@ function buildSidebarBootstrapResponse(deps: AppDeps) {
     sections: listThreadSections(deps.db),
     projects: buildProjectsWithThreadsResponseFromRows(
       deps,
-      listPublicProjects(deps.db),
+      projectRows,
+      threadResponses,
     ),
     personalProject: personalProjectResponse,
   };
@@ -331,7 +360,7 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
   });
   const routes = publicApiRoutes.projects;
 
-  get(routes.list, (context, query) => {
+  get(routes.list, async (context, query) => {
     const includes = parseProjectListIncludes(query);
     // Compatibility is resolved once at the HTTP boundary: ordinary projects
     // remain the default, and all internal list paths receive an explicit flag.
@@ -339,7 +368,13 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
       includePersonal: query.includePersonal === "true",
     };
     if (includes.has("threads")) {
-      return context.json(buildProjectsWithThreadsResponse(deps, options));
+      return context.json(
+        await buildProjectsWithThreadsResponse(
+          deps,
+          options,
+          context.req.raw.signal,
+        ),
+      );
     }
     return context.json(
       buildProjectResponsesFromRows(
@@ -349,8 +384,10 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
     );
   });
 
-  get(routes.sidebarBootstrap, (context) =>
-    context.json(buildSidebarBootstrapResponse(deps)),
+  get(routes.sidebarBootstrap, async (context) =>
+    context.json(
+      await buildSidebarBootstrapResponse(deps, context.req.raw.signal),
+    ),
   );
 
   post(routes.create, async (context, payload) => {

@@ -14,6 +14,7 @@ import {
 } from "@bb/host-daemon-contract";
 import { type HostType, type ThreadEvent } from "@bb/domain";
 import type {
+  HostAdmissionReservation,
   HostDaemonCommand,
   HostDaemonEventEnvelope,
   HostDaemonOnlineRpcResult,
@@ -125,6 +126,17 @@ export function listQueuedEnvironmentCommands(
 
 const pendingHostRpcRequests: QueuedCommand[] = [];
 const testRpcCursorByHost = new Map<string, number>();
+const testAdmissionsByHost = new Map<
+  string,
+  Map<
+    string,
+    {
+      requestIds: Set<string>;
+      reservation: HostAdmissionReservation;
+      threadId: string;
+    }
+  >
+>();
 
 interface RegisterTestHostRpcCaptureArgs {
   hostId: string;
@@ -340,6 +352,7 @@ export function registerTestHostRpcCapture(
   args: RegisterTestHostRpcCaptureArgs,
 ): void {
   testRpcCursorByHost.delete(args.hostId);
+  testAdmissionsByHost.delete(args.hostId);
   for (let index = pendingHostRpcRequests.length - 1; index >= 0; index -= 1) {
     const queued = pendingHostRpcRequests[index];
     if (queued?.row.hostId === args.hostId) {
@@ -358,6 +371,76 @@ export function registerTestHostRpcCapture(
         return;
       }
       if (respondToProviderModelListCommand(deps, args, message)) {
+        return;
+      }
+      if (command.type === "host.admission.reserve") {
+        const reservations = testAdmissionsByHost.get(args.hostId) ?? new Map();
+        const existing = reservations.get(command.threadId);
+        const entry = existing ?? {
+          requestIds: new Set<string>(),
+          reservation: {
+            generation: 1,
+            hostId: args.hostId,
+            reason: command.reason,
+            token: `test-admission:${command.threadId}`,
+          },
+          threadId: command.threadId,
+        };
+        entry.requestIds.add(command.requestId);
+        reservations.set(command.threadId, entry);
+        testAdmissionsByHost.set(args.hostId, reservations);
+        deps.hub.recordHostOnlineRpcResponse({
+          message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+            type: "host-rpc.response",
+            requestId: message.requestId,
+            commandType: command.type,
+            ok: true,
+            result: { outcome: "reserved", reservation: entry.reservation },
+          }),
+          sessionId: args.sessionId,
+        });
+        return;
+      }
+      if (command.type === "host.admission.release") {
+        const reservations = testAdmissionsByHost.get(args.hostId);
+        const entry = [...(reservations?.values() ?? [])].find(
+          (candidate) =>
+            candidate.reservation.token === command.reservation.token &&
+            candidate.reservation.generation === command.reservation.generation,
+        );
+        if (entry) reservations?.delete(entry.threadId);
+        deps.hub.recordHostOnlineRpcResponse({
+          message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+            type: "host-rpc.response",
+            requestId: message.requestId,
+            commandType: command.type,
+            ok: true,
+            result: { released: entry !== undefined },
+          }),
+          sessionId: args.sessionId,
+        });
+        return;
+      }
+      if (command.type === "host.admission.reconcile") {
+        const reservations = testAdmissionsByHost.get(args.hostId);
+        deps.hub.recordHostOnlineRpcResponse({
+          message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+            type: "host-rpc.response",
+            requestId: message.requestId,
+            commandType: command.type,
+            ok: true,
+            result: {
+              reservations: [...(reservations?.values() ?? [])].map(
+                (entry) => ({
+                  requestIds: [...entry.requestIds],
+                  reservation: entry.reservation,
+                  threadId: entry.threadId,
+                }),
+              ),
+            },
+          }),
+          sessionId: args.sessionId,
+        });
         return;
       }
       if (command.type === "host.list_branches") {

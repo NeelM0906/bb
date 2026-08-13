@@ -77,6 +77,7 @@ const THREAD_WITH_INCLUDES = {
     hostReconnectGraceExpiresAt: null,
   },
   activeBackgroundAgentCount: 0,
+  admission: null,
   canSpawnChild: true,
   environment: null,
   host: null,

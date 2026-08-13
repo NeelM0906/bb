@@ -171,6 +171,30 @@ const WORKSPACE_DIFF_AVAILABLE_RESULT: JsonObject = {
 };
 
 const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
+  "host.admission.reserve": {
+    outcome: "reserved",
+    reservation: {
+      token: "reservation-token",
+      generation: 1,
+      hostId: "host-1",
+      reason: "interactive",
+    },
+  },
+  "host.admission.release": { released: true },
+  "host.admission.reconcile": {
+    reservations: [
+      {
+        requestIds: [CLIENT_REQUEST_ID],
+        reservation: {
+          token: "reservation-token",
+          generation: 1,
+          hostId: "host-1",
+          reason: "interactive",
+        },
+        threadId: "thread-1",
+      },
+    ],
+  },
   "connect-tunnel.ensure-identity": {
     label: "sawyer-air",
     baseDomain: "getbb.app",
@@ -1056,12 +1080,10 @@ describe("host-daemon local schemas", () => {
 });
 
 describe("host-daemon command schemas", () => {
-  // Version 106 preserves an unknown Claude Code release channel when doctor
-  // cannot report it and recovers native update actions for standard installs.
-  // Older daemons can verify stable against latest or hide the managed update,
-  // so enrolled machines must update for the corrected status behavior.
-  it("uses protocol version 106 for Claude Code status fixes", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(106);
+  // Version 107 coordinates provider-exit reconciliation and host admission.
+  // Older daemons cannot preserve either lifecycle invariant.
+  it("uses protocol version 107 for lifecycle and admission reconciliation", () => {
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(107);
   });
 
   it("binds Plan cancellation to a required turn id and typed result", () => {

@@ -6,6 +6,7 @@ import {
   type AgentRuntimeOptions,
   type AgentRuntimeSkillRoot,
   type AgentRuntimeProcessExitInfo,
+  type AgentRuntimeProviderProcessDiagnostic,
   type ReapedIdleProviderSession,
 } from "@bb/agent-runtime";
 import type { Logger } from "@bb/logger";
@@ -15,7 +16,7 @@ import type {
   ThreadEvent,
   WorkspaceProvisionType,
 } from "@bb/domain";
-import { turnScope } from "@bb/domain";
+import { threadScope, turnScope } from "@bb/domain";
 import type {
   HostDaemonActiveThread,
   HostDaemonEnvironmentChange,
@@ -226,6 +227,10 @@ export interface RuntimeManagerReapedIdleProviderSession extends ReapedIdleProvi
 
 export interface RuntimeManagerReapIdleProviderSessionsResult {
   reapedSessions: RuntimeManagerReapedIdleProviderSession[];
+}
+
+export interface RuntimeManagerProviderProcessDiagnostic extends AgentRuntimeProviderProcessDiagnostic {
+  environmentId: string;
 }
 
 /**
@@ -572,6 +577,17 @@ export class RuntimeManager {
     return [...this.entries.keys()].map((environmentId) => ({
       environmentId,
     }));
+  }
+
+  listProviderProcessDiagnostics(): RuntimeManagerProviderProcessDiagnostic[] {
+    return [...this.entries.values()].flatMap((entry) =>
+      (entry.runtime.listProviderProcessDiagnostics?.() ?? []).map(
+        (diagnostic) => ({
+          ...diagnostic,
+          environmentId: entry.environmentId,
+        }),
+      ),
+    );
   }
 
   async reapIdleProviderSessions(
@@ -1176,11 +1192,9 @@ export class RuntimeManager {
   }
 
   /**
-   * Synthesizes failure events for threads that were mid-turn when their
-   * provider process died, from the runtime's final per-thread snapshot.
-   * Threads without an active turn need no synthesized events: in-flight
-   * RPCs fail through the command result path, and idle resident threads
-   * simply resume on their next turn.
+   * Synthesizes failure events for threads that were mid-turn or awaiting
+   * turn/start when their provider process died, from the runtime's final
+   * per-thread snapshot. Fully idle resident threads remain silent.
    */
   private buildUnexpectedProviderExitEvents(
     info: AgentRuntimeProcessExitInfo,
@@ -1190,7 +1204,20 @@ export class RuntimeManager {
     const events: ThreadEvent[] = [];
 
     for (const thread of info.threads) {
-      if (thread.activeTurnId === null || thread.providerThreadId === null) {
+      if (thread.activeTurnId === null) {
+        if (thread.pendingTurnStart) {
+          events.push({
+            type: "system/error",
+            threadId: thread.threadId,
+            scope: threadScope(),
+            code: "provider_process_exited",
+            message,
+            ...(detail ? { detail } : {}),
+          });
+        }
+        continue;
+      }
+      if (thread.providerThreadId === null) {
         continue;
       }
 

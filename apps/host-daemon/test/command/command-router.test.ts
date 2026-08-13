@@ -15,6 +15,7 @@ import {
   type CommandRouterOptions,
 } from "../../src/command-router.js";
 import { noopEventSink } from "../../src/command-dispatch-support.js";
+import { HostAdmissionController } from "../../src/host-admission-controller.js";
 import {
   createHarness,
   createFakeRuntime,
@@ -58,6 +59,7 @@ interface CreateTurnSubmitCommandArgs {
 }
 
 interface CreateRouterArgs {
+  hostAdmissionController?: HostAdmissionController;
   logger?: CommandRouterOptions["logger"];
   runtimeManager?: RuntimeManager;
 }
@@ -102,6 +104,7 @@ function createRouter(
       warn: () => undefined,
       ...args.logger,
     },
+    hostAdmissionController: args.hostAdmissionController,
     runtimeManager: args.runtimeManager ?? harness.manager,
     threadStorageRootPath: "/tmp/bb-router-test-thread-storage",
   });
@@ -219,6 +222,44 @@ async function runRouterCommand({
 }
 
 describe("CommandRouter", () => {
+  it("rejects unreserved provider work and dispatches matching reservations", async () => {
+    const harness = createHarness({ workspacePath: "/tmp/env-router" });
+    const hostAdmissionController = new HostAdmissionController({
+      hostId: "host-router",
+      limit: 1,
+      listProviderProcessDiagnostics: () => [],
+      reapIdleProviderSessions: vi.fn(async () => ({ reapedSessions: [] })),
+      randomUUID: () => "token-router",
+    });
+    const router = createRouter(harness, { hostAdmissionController });
+    const command = createThreadStartCommand();
+
+    await expect(
+      runRouterCommand({
+        command,
+        requestId: "unreserved-thread-start",
+        router,
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      errorMessage: "Provider work requires a valid host admission reservation",
+    });
+
+    await hostAdmissionController.reserve({
+      hostId: "host-router",
+      requestId: command.requestId,
+      threadId: command.threadId,
+      reason: "interactive",
+    });
+    await expect(
+      runRouterCommand({
+        command,
+        requestId: "reserved-thread-start",
+        router,
+      }),
+    ).resolves.toMatchObject({ ok: true });
+  });
+
   it("does not warn for expected provision cancellation RPC failures", async () => {
     const harness = createHarness({ workspacePath: "/tmp/env-router" });
     const logger = {

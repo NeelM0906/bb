@@ -112,6 +112,7 @@ export interface CommandRouterOptions {
   resolveInteractiveRequest?: CommandDispatchOptions["resolveInteractiveRequest"];
   caffeinateManager?: CommandDispatchOptions["caffeinateManager"];
   ensureConnectTunnelIdentity?: CommandDispatchOptions["ensureConnectTunnelIdentity"];
+  hostAdmissionController?: CommandDispatchOptions["hostAdmissionController"];
   threadStorageRootPath: string;
   logger: CommandRouterLogger;
 }
@@ -224,6 +225,18 @@ export class CommandRouter {
   private executeLiveDaemonCommand(
     command: HostDaemonCommand,
   ): Promise<HostDaemonCommandResultForCommand> {
+    if (
+      (command.type === "thread.start" || command.type === "turn.submit") &&
+      this.options.hostAdmissionController !== undefined &&
+      !this.options.hostAdmissionController.validate({
+        requestId: command.requestId,
+        threadId: command.threadId,
+      })
+    ) {
+      throw new Error(
+        "Provider work requires a valid host admission reservation",
+      );
+    }
     const environmentLaneMode = this.getEnvironmentLaneMode(command);
     const providerLane = this.resolveProviderLane(command);
     const task = this.runAfterThreadUnarchiveBarrier(command, () =>
@@ -325,6 +338,7 @@ export class CommandRouter {
       resolveInteractiveRequest: this.options.resolveInteractiveRequest,
       caffeinateManager: this.options.caffeinateManager,
       ensureConnectTunnelIdentity: this.options.ensureConnectTunnelIdentity,
+      hostAdmissionController: this.options.hostAdmissionController,
       threadStorageRootPath: this.options.threadStorageRootPath,
     };
   }

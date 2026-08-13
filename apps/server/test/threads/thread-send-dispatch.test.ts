@@ -1,5 +1,6 @@
 import {
   archiveThread,
+  getCurrentThreadWorkAdmission,
   getQueuedThreadMessage,
   getThread,
   listQueuedThreadMessages,
@@ -27,6 +28,7 @@ import {
   seedTurnStarted,
 } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+import { registerHostRpcResponder } from "../helpers/host-rpc.js";
 
 interface IdleThreadFixture {
   environment: Environment;
@@ -257,6 +259,84 @@ describe("user message telemetry", () => {
 });
 
 describe("idle cold-start activation", () => {
+  it("durably waits without dispatching provider work when host capacity is unavailable", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedColdIdleThreadFixture({
+        harness,
+        value: 30,
+      });
+      const sessionId = harness.hub.getDaemonSessionIdForHost(
+        environment.hostId,
+      );
+      if (!sessionId) throw new Error("Expected a connected test daemon");
+      const responder = registerHostRpcResponder(harness, {
+        hostId: environment.hostId,
+        sessionId,
+        handle: ({ command }) => {
+          if (command.type === "host.list_files") {
+            return { ok: true, result: { files: [], truncated: false } };
+          }
+          if (command.type === "host.read_file") {
+            return {
+              ok: true,
+              result: {
+                content: "",
+                contentEncoding: "utf8",
+                modifiedAtMs: 1,
+                path: command.path,
+                sha256:
+                  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                sizeBytes: 0,
+              },
+            };
+          }
+          if (command.type === "host.admission.reserve") {
+            return {
+              ok: true,
+              result: {
+                outcome: "unavailable",
+                reason: "Host capacity limit reached",
+              },
+            };
+          }
+          throw new Error(`Unexpected command ${command.type}`);
+        },
+      });
+
+      await sendThreadMessage(harness.deps, {
+        environment,
+        payload: {
+          input: textInput("wait for capacity"),
+          mode: "start",
+          model: "gpt-5",
+          permissionMode: "full",
+          reasoningLevel: "medium",
+          serviceTier: "default",
+        },
+        thread,
+        trigger: "user",
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          responder.requests
+            .map((request) => request.command.type)
+            .filter(
+              (type) => type !== "host.list_files" && type !== "host.read_file",
+            ),
+        ).toEqual(["host.admission.reserve"]);
+      });
+      expect(
+        getCurrentThreadWorkAdmission(harness.db, thread.id),
+      ).toMatchObject({
+        hostId: environment.hostId,
+        reason: "interactive",
+        status: "waiting",
+        waitingReason: "Host capacity limit reached",
+      });
+    });
+  });
+
   it("activates an idle thread immediately when it does a cold thread.start", async () => {
     await withTestHarness(async (harness) => {
       const { environment, thread } = seedColdIdleThreadFixture({

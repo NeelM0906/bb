@@ -127,17 +127,20 @@ const originalPiBridgeSessionDir = process.env[PI_BRIDGE_SESSION_DIR_ENV];
 
 interface ControlledPiAgentSession {
   abort: ReturnType<typeof vi.fn>;
+  bindExtensions: ReturnType<typeof vi.fn>;
   compact: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   emit(event: AgentSessionEvent): void;
   finishAbort(): void;
   getActiveToolNames: ReturnType<typeof vi.fn>;
   getContextUsage: ReturnType<typeof vi.fn>;
+  hasExtensionHandlers: ReturnType<typeof vi.fn>;
   isStreaming: boolean;
   prompt: ReturnType<typeof vi.fn>;
   sessionManager: { getLeafId: ReturnType<typeof vi.fn> };
   setActiveToolsByName: ReturnType<typeof vi.fn>;
   subscribe: ReturnType<typeof vi.fn>;
+  extensionRunner: { emit: ReturnType<typeof vi.fn> };
 }
 
 function createControlledPiAgentSession(): ControlledPiAgentSession {
@@ -151,6 +154,7 @@ function createControlledPiAgentSession(): ControlledPiAgentSession {
   );
   return {
     abort,
+    bindExtensions: vi.fn(async () => undefined),
     compact: vi.fn(async () => undefined),
     dispose: vi.fn(),
     emit(event: AgentSessionEvent): void {
@@ -167,10 +171,12 @@ function createControlledPiAgentSession(): ControlledPiAgentSession {
     },
     getActiveToolNames: vi.fn(() => []),
     getContextUsage: vi.fn(() => undefined),
+    hasExtensionHandlers: vi.fn(() => false),
     isStreaming: false,
     prompt: vi.fn(async () => {}),
     sessionManager: { getLeafId: vi.fn(() => "pi-entry-checkpoint") },
     setActiveToolsByName: vi.fn(),
+    extensionRunner: { emit: vi.fn(async () => undefined) },
     subscribe: vi.fn((listener: ControlledPiAgentSessionListener) => {
       listeners.push(listener);
       return () => {
@@ -728,6 +734,9 @@ describe("pi bridge", () => {
     const sessions: ControlledPiAgentSession[] = [];
     mockCreateAgentSession.mockImplementation(async () => {
       const session = createControlledPiAgentSession();
+      if (sessions.length === 0) {
+        session.hasExtensionHandlers.mockReturnValue(true);
+      }
       sessions.push(session);
       return { session };
     });
@@ -760,6 +769,12 @@ describe("pi bridge", () => {
         id: 13,
       });
       expect(sessions).toHaveLength(2);
+      expect(sessions[0]?.extensionRunner.emit).toHaveBeenCalledWith({
+        type: "session_shutdown",
+        reason: "quit",
+      });
+      expect(sessions[0]?.dispose).toHaveBeenCalledOnce();
+      expect(sessions[1]?.bindExtensions).toHaveBeenCalledWith({ mode: "rpc" });
 
       bridge.sendRequest(14, "thread/stop", { threadId: "thread-overlap" });
       await bridge.flushWork();

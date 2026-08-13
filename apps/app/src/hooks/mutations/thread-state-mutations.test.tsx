@@ -62,6 +62,7 @@ function makeThreadResponse(
   return {
     ...makeThreadWithRuntime(thread),
     activeBackgroundAgentCount: 0,
+    admission: null,
     canSpawnChild: true,
     ...thread,
   };

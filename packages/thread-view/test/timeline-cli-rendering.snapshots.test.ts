@@ -95,6 +95,37 @@ function getOnlyTimelineWebWorkRow(
 }
 
 describe("timeline CLI rendering snapshots", () => {
+  it("renders assistant prose on both sides of summarized command work", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const timeline = renderIdleTimeline([
+      event.turnStarted(),
+      event.assistantCompleted({
+        itemId: "assistant-1",
+        text: "First assistant update.",
+      }),
+      event.commandCompleted({
+        itemId: "command-1",
+        command: "pnpm test",
+      }),
+      event.assistantCompleted({
+        itemId: "assistant-2",
+        text: "Second assistant update.",
+      }),
+      event.turnCompleted(),
+    ]);
+
+    const firstAssistantOffset = timeline.text.indexOf("First assistant update.");
+    const workSummaryOffset = timeline.text.indexOf("── Worked");
+    const secondAssistantOffset = timeline.text.indexOf(
+      "Second assistant update.",
+    );
+
+    expect(firstAssistantOffset).toBeGreaterThanOrEqual(0);
+    expect(workSummaryOffset).toBeGreaterThan(firstAssistantOffset);
+    expect(secondAssistantOffset).toBeGreaterThan(workSummaryOffset);
+    expect(timeline.text.match(/── Worked/g)).toHaveLength(1);
+  });
+
   it("keeps accepted steer rows outside summaries while preserving summary segments", () => {
     const event = createTimelineEventFactory({ threadId: "thread-1" });
     const events: TimelineFixtureEvent[] = [
@@ -993,7 +1024,7 @@ describe("timeline CLI rendering snapshots", () => {
     `);
   });
 
-  it("keeps summary projections compact with a finished-turn summary", () => {
+  it("keeps assistant prose visible between finished-turn summaries", () => {
     const event = createTimelineEventFactory({ threadId: "thread-1" });
     const timeline = renderTimelineFixture({
       events: [
@@ -1024,13 +1055,23 @@ describe("timeline CLI rendering snapshots", () => {
       },
     });
 
-    expect(timeline.turnRows).toHaveLength(1);
-    expect(timeline.turnRows[0]).toMatchObject({
-      sourceSeqStart: 1,
-      sourceSeqEnd: 6,
-    });
+    expect(timeline.turnRows).toHaveLength(2);
+    expect(
+      timeline.turnRows.map(({ sourceSeqEnd, sourceSeqStart }) => ({
+        sourceSeqEnd,
+        sourceSeqStart,
+      })),
+    ).toEqual([
+      { sourceSeqEnd: 2, sourceSeqStart: 2 },
+      { sourceSeqEnd: 4, sourceSeqStart: 4 },
+    ]);
     expect(timeline.text).toMatchInlineSnapshot(`
-      "── Worked for (5ms) ────────────────────────────────────────
+      "── Worked for (0ms) ────────────────────────────────────────
+
+      ── Assistant ───────────────────────────────────────────────
+      I found the test path.
+
+      ── Worked for (0ms) ────────────────────────────────────────
 
       ── Assistant ───────────────────────────────────────────────
       Done."

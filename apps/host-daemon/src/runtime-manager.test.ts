@@ -278,6 +278,9 @@ function createFakeRuntime() {
       selectedOnlyModels: [],
     })),
     listRunningProviders: vi.fn((): string[] => []),
+    listProviderProcessDiagnostics: vi.fn<
+      NonNullable<AgentRuntime["listProviderProcessDiagnostics"]>
+    >(() => []),
     getActiveTurnId: (threadId) => activeTurnsByThreadId.get(threadId) ?? null,
     waitForActiveTurn: async (threadId) =>
       activeTurnsByThreadId.get(threadId) ?? null,
@@ -442,6 +445,54 @@ describe("RuntimeManager", () => {
       idleForMs: 1_000,
       nowMs: 5_000,
     });
+  });
+
+  it("reports direct provider ownership with its environment", async () => {
+    const runtime = createFakeRuntime();
+    runtime.listProviderProcessDiagnostics.mockReturnValue([
+      {
+        directPid: 4242,
+        generation: 7,
+        processKey: "fake",
+        providerId: "fake",
+        state: "running",
+        sessions: [
+          {
+            activeTurnId: "turn-1",
+            idleDeadlineMs: null,
+            providerThreadId: "provider-thread-1",
+            threadId: "thread-1",
+          },
+        ],
+      },
+    ]);
+    const manager = new RuntimeManager({
+      provisionWorkspace: createProvisionWorkspaceMock("/tmp/env-1"),
+      createRuntime: () => runtime,
+    });
+    await manager.ensureEnvironment({
+      environmentId: "env-1",
+      workspacePath: "/tmp/env-1",
+    });
+
+    expect(manager.listProviderProcessDiagnostics()).toEqual([
+      {
+        directPid: 4242,
+        environmentId: "env-1",
+        generation: 7,
+        processKey: "fake",
+        providerId: "fake",
+        state: "running",
+        sessions: [
+          {
+            activeTurnId: "turn-1",
+            idleDeadlineMs: null,
+            providerThreadId: "provider-thread-1",
+            threadId: "thread-1",
+          },
+        ],
+      },
+    ]);
   });
 
   it("passes staged injected skill roots to created runtimes", async () => {
@@ -1765,7 +1816,12 @@ describe("RuntimeManager", () => {
     onProcessExit?.({
       providerId: "fake",
       threads: [
-        { threadId: "thread-1", activeTurnId: null, providerThreadId: null },
+        {
+          threadId: "thread-1",
+          activeTurnId: null,
+          pendingTurnStart: false,
+          providerThreadId: null,
+        },
       ],
       code: 1,
       expected: false,
@@ -1804,7 +1860,12 @@ describe("RuntimeManager", () => {
     onProcessExit?.({
       providerId: "fake-alpha",
       threads: [
-        { threadId: "thread-a", activeTurnId: null, providerThreadId: null },
+        {
+          threadId: "thread-a",
+          activeTurnId: null,
+          pendingTurnStart: false,
+          providerThreadId: null,
+        },
       ],
       code: 1,
       expected: false,
@@ -1866,6 +1927,7 @@ describe("RuntimeManager", () => {
         {
           threadId: "thread-1",
           activeTurnId: "turn-1",
+          pendingTurnStart: false,
           providerThreadId: "provider-1",
         },
       ],
@@ -1954,6 +2016,7 @@ describe("RuntimeManager", () => {
         {
           threadId: "thread-idle",
           activeTurnId: null,
+          pendingTurnStart: false,
           providerThreadId: "provider-idle",
         },
       ],
@@ -1964,6 +2027,64 @@ describe("RuntimeManager", () => {
     });
 
     expect(emittedEvents).toEqual([]);
+  });
+
+  it("emits one thread-scoped error for a provider exit before turn start", async () => {
+    const emittedEvents: Array<{
+      environmentId: string;
+      event: ThreadEvent;
+    }> = [];
+    const runtime = createFakeRuntime();
+    let onProcessExit:
+      | NonNullable<AgentRuntimeOptions["onProcessExit"]>
+      | undefined;
+    const manager = new RuntimeManager({
+      provisionWorkspace: createProvisionWorkspaceMock(
+        "/tmp/env-pending-exit",
+      ).mockResolvedValue(createFakeWorkspace("/tmp/env-pending-exit")),
+      createRuntime: vi.fn((options) => {
+        onProcessExit = options.onProcessExit;
+        return runtime;
+      }),
+      onEvent: (event) => emittedEvents.push(event),
+    });
+
+    await manager.ensureEnvironment({
+      environmentId: "env-pending-exit",
+      workspacePath: "/tmp/env-pending-exit",
+    });
+    if (!onProcessExit) {
+      throw new Error("Expected runtime callback to be captured");
+    }
+
+    onProcessExit({
+      providerId: "acp-cursor",
+      threads: [
+        {
+          threadId: "thread-pending",
+          activeTurnId: null,
+          pendingTurnStart: true,
+          providerThreadId: "provider-pending",
+        },
+      ],
+      code: 1,
+      expected: false,
+      signal: null,
+      stderr: null,
+    });
+
+    expect(emittedEvents).toEqual([
+      {
+        environmentId: "env-pending-exit",
+        event: {
+          type: "system/error",
+          threadId: "thread-pending",
+          scope: { kind: "thread" },
+          code: "provider_process_exited",
+          message: 'Provider "acp-cursor" exited unexpectedly with code 1',
+        },
+      },
+    ]);
   });
 
   it("does not emit failure events for expected provider exits", async () => {
@@ -2011,6 +2132,7 @@ describe("RuntimeManager", () => {
         {
           threadId: "thread-1",
           activeTurnId: "turn-1",
+          pendingTurnStart: false,
           providerThreadId: "provider-1",
         },
       ],

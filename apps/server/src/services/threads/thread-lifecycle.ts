@@ -13,8 +13,10 @@ import {
   environments,
   events,
   getEnvironment,
+  getCurrentThreadWorkAdmission,
   getLatestThreadInterruptedReason,
   getThread,
+  listWaitingWorkAdmissions,
   listThreadIdsWithLatestHostDaemonRestartInterruption,
   listThreadTurnInterruptionEventStates,
   threads,
@@ -96,6 +98,7 @@ import {
 } from "./thread-provisioning-active-context.js";
 import { hasProvisioningTimelineRow } from "./thread-provisioning-context.js";
 import { isPreStartThreadStatus } from "./thread-status.js";
+import { releaseThreadWorkAdmission } from "./work-admission.js";
 
 type ReadyThreadTurnDispatchKind = "thread.start" | "turn.submit";
 type ThreadStartCommand = Awaited<ReturnType<typeof buildThreadStartCommand>>;
@@ -1146,6 +1149,12 @@ async function requestThreadStartOnce(
       inFlightThreadRpcGuard.claim(args.thread.id, "thread.start.title-sync");
     }
     void runLiveHostCommand(deps, {
+      admissionReason:
+        args.thread.parentThreadId !== null
+          ? "child"
+          : args.thread.originPluginId !== null
+            ? "automation"
+            : "interactive",
       command,
       hostId: args.environment.hostId,
       timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
@@ -1255,10 +1264,15 @@ function requestPreStartThreadStop(
       // Accept pre-start threads, threads still holding a provisioning context,
       // and threads already `stopping` (a pre-start cancel being retried after
       // its provision-cancel RPC failed).
+      const waitingAdmission = getCurrentThreadWorkAdmission(
+        tx,
+        currentThread.id,
+      );
       if (
         !isPreStartThreadStatus(currentThread.status) &&
         currentThread.status !== "stopping" &&
-        !hasProvisioningContext
+        !hasProvisioningContext &&
+        waitingAdmission?.status !== "waiting"
       ) {
         return {
           cancelHostId: null,
@@ -1305,6 +1319,18 @@ function requestPreStartThreadStop(
   );
   notificationBuffer.flushInto(deps.hub);
 
+  if (result.finalized) {
+    void releaseThreadWorkAdmission(deps, {
+      terminalReason: "thread stopped before admission dispatch",
+      threadId: thread.id,
+    }).catch((error) => {
+      deps.logger.warn(
+        { err: error, threadId: thread.id },
+        "Failed to cancel pre-start work admission",
+      );
+    });
+  }
+
   if (!result.finalized && result.environmentId && result.cancelHostId) {
     requestEnvironmentCleanup(deps, { environmentId: result.environmentId });
     startLiveHostCommand(deps, {
@@ -1345,8 +1371,10 @@ export function requestThreadStopForCurrentState(
   // runtime stop RPC; a stopping thread with a live turn re-dispatches that
   // same stop (the retry path). A stopping thread with no live turn is a
   // pre-start cancellation that has not finished settling.
+  const isWaitingForAdmission =
+    getCurrentThreadWorkAdmission(deps.db, thread.id)?.status === "waiting";
   const hasLiveRuntime =
-    thread.status === "active" ||
+    (!isWaitingForAdmission && thread.status === "active") ||
     hasLiveThreadStartInFlight(thread.id) ||
     (thread.status === "stopping" && getActiveTurnId(deps, thread.id) !== null);
   if (hasLiveRuntime) {
@@ -1543,6 +1571,9 @@ export function interruptActiveThreadsForHost(
   deps: Pick<AppDeps, "db" | "hub" | "logger" | "pendingInteractions">,
   args: InterruptActiveThreadsForHostArgs,
 ): InterruptActiveThreadsResult {
+  const waitingThreadIds = listWaitingWorkAdmissions(deps.db, {
+    hostId: args.hostId,
+  }).map((admission) => admission.threadId);
   const activeThreads = deps.db
     .select({
       environmentId: environments.id,
@@ -1555,6 +1586,9 @@ export function interruptActiveThreadsForHost(
         eq(environments.hostId, args.hostId),
         eq(threads.status, "active"),
         isNull(threads.deletedAt),
+        waitingThreadIds.length > 0
+          ? notInArray(threads.id, waitingThreadIds)
+          : undefined,
       ),
     )
     .all();
@@ -1711,6 +1745,9 @@ export async function reconcileDaemonReportedThreads(
   args: ReconcileDaemonReportedThreadsArgs,
 ): Promise<void> {
   const activeThreadIdSet = new Set(args.activeThreadIds);
+  const waitingThreadIds = listWaitingWorkAdmissions(deps.db, {
+    hostId: args.hostId,
+  }).map((admission) => admission.threadId);
 
   // Threads with pending shutdown intent: a requested stop (status = stopping —
   // the durable record the old stopRequestedAt field used to carry) or a
@@ -1791,6 +1828,9 @@ export async function reconcileDaemonReportedThreads(
         isNull(threads.deletedAt),
         args.activeThreadIds.length > 0
           ? notInArray(threads.id, [...args.activeThreadIds])
+          : undefined,
+        waitingThreadIds.length > 0
+          ? notInArray(threads.id, waitingThreadIds)
           : undefined,
       ),
     )

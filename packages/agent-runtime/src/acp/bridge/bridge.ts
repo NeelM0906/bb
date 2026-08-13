@@ -1937,11 +1937,11 @@ async function handleRequest(
     case "turn/steer": {
       const session = getSessionByProviderThreadId(request.params.threadId);
       if (!session || session.stopping) {
-        sendError(request.id, -32000, "No active ACP session");
+        sendResult(request.id, { status: "stale", activeTurnId: null });
         return;
       }
       if (session.activePromptKind !== "turn") {
-        sendError(request.id, -32000, "No active turn to steer");
+        sendResult(request.id, { status: "stale", activeTurnId: null });
         return;
       }
       session.queuedInputs.push(request.params.input);
