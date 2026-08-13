@@ -34,6 +34,7 @@ export function makeThreadResponse(
     updatedAt: 0,
     runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null },
     activeBackgroundAgentCount: 0,
+    admission: null,
     canSpawnChild: true,
     ...overrides,
   };
