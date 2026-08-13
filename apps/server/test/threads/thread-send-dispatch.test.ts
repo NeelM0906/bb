@@ -14,7 +14,10 @@ import type { TelemetryService } from "../../src/services/system/telemetry.js";
 import { sendQueuedMessage } from "../../src/services/threads/queued-messages.js";
 import { handleUpdateEnvironmentDirectoryToolCall } from "../../src/services/threads/thread-environment-directory.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
-import { listRecoverableWorkAdmissionCommands } from "../../src/services/threads/work-admission.js";
+import {
+  listRecoverableWorkAdmissionCommands,
+  signalHostAdmissionPromotion,
+} from "../../src/services/threads/work-admission.js";
 import {
   listQueuedThreadCommands,
   reportQueuedCommandError,
@@ -539,6 +542,95 @@ describe("idle cold-start activation", () => {
           hostId: environment.hostId,
         }).map((entry) => entry.command.requestId),
       ).toEqual(waiting.map((row) => row.id));
+    });
+  });
+
+  it("does not lose a host promotion delivered during the reserve RPC", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedColdIdleThreadFixture({
+        harness,
+        value: 31,
+      });
+      const sessionId = harness.hub.getDaemonSessionIdForHost(
+        environment.hostId,
+      );
+      if (!sessionId) throw new Error("Expected a connected test daemon");
+      let reserveAttempts = 0;
+      const responder = registerHostRpcResponder(harness, {
+        hostId: environment.hostId,
+        sessionId,
+        handle: ({ command }) => {
+          if (command.type === "host.list_files") {
+            return { ok: true, result: { files: [], truncated: false } };
+          }
+          if (command.type === "host.read_file") {
+            return {
+              ok: true,
+              result: {
+                content: "",
+                contentEncoding: "utf8",
+                modifiedAtMs: 1,
+                path: command.path,
+                sha256:
+                  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                sizeBytes: 0,
+              },
+            };
+          }
+          if (command.type === "host.admission.reserve") {
+            reserveAttempts += 1;
+            if (reserveAttempts === 1) {
+              signalHostAdmissionPromotion(environment.hostId);
+              return {
+                ok: true,
+                result: {
+                  outcome: "unavailable",
+                  reason: "Capacity released while reserving",
+                },
+              };
+            }
+            return {
+              ok: true,
+              result: {
+                outcome: "reserved",
+                reservation: {
+                  generation: 1,
+                  hostId: environment.hostId,
+                  reason: command.reason,
+                  token: `test-admission:${command.threadId}`,
+                },
+              },
+            };
+          }
+          throw new Error(`Unexpected command ${command.type}`);
+        },
+      });
+
+      await sendThreadMessage(harness.deps, {
+        environment,
+        payload: {
+          input: textInput("retry after the concurrent promotion"),
+          mode: "start",
+          model: "gpt-5",
+          permissionMode: "full",
+          reasoningLevel: "medium",
+          serviceTier: "default",
+        },
+        thread,
+        trigger: "user",
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          responder.requests.filter(
+            (request) => request.command.type === "host.admission.reserve",
+          ),
+        ).toHaveLength(2);
+      });
+      expect(reserveAttempts).toBe(2);
+      expect(
+        getCurrentThreadWorkAdmission(harness.db, thread.id),
+      ).toMatchObject({ status: "running" });
     });
   });
 

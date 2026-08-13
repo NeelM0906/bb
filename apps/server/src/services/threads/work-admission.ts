@@ -82,17 +82,31 @@ export function isProviderWorkCommand(
   return command.type === "thread.start" || command.type === "turn.submit";
 }
 
-function waitForHostPromotion(hostId: string): Promise<void> {
-  return new Promise((resolve) => {
+function createHostPromotionWaiter(hostId: string): {
+  cancel: () => void;
+  promise: Promise<void>;
+} {
+  let cancel = () => {};
+  const promise = new Promise<void>((resolve) => {
     const waiters = promotionWaitersByHost.get(hostId) ?? new Set();
+    let active = true;
     const waiter = () => {
+      if (!active) return;
+      active = false;
       waiters.delete(waiter);
       if (waiters.size === 0) promotionWaitersByHost.delete(hostId);
       resolve();
     };
+    cancel = () => {
+      if (!active) return;
+      active = false;
+      waiters.delete(waiter);
+      if (waiters.size === 0) promotionWaitersByHost.delete(hostId);
+    };
     waiters.add(waiter);
     promotionWaitersByHost.set(hostId, waiters);
   });
+  return { cancel, promise };
 }
 
 export function signalHostAdmissionPromotion(hostId: string): void {
@@ -244,58 +258,66 @@ export async function awaitThreadWorkAdmission(
       );
     }
 
-    const head = listWaitingWorkAdmissions(deps.db, {
-      hostId: args.hostId,
-    })[0];
-    if (head?.id !== row.id) {
-      await waitForHostPromotion(args.hostId);
-      row = getWorkAdmission(deps.db, row.id) ?? row;
-      continue;
-    }
+    // Subscribe before checking queue position or reserving. A release can
+    // otherwise land during the reserve RPC and be lost before we start
+    // waiting, stranding runnable work until some unrelated later release.
+    const promotion = createHostPromotionWaiter(args.hostId);
+    try {
+      const head = listWaitingWorkAdmissions(deps.db, {
+        hostId: args.hostId,
+      })[0];
+      if (head?.id !== row.id) {
+        await promotion.promise;
+        row = getWorkAdmission(deps.db, row.id) ?? row;
+        continue;
+      }
 
-    const result = await reserve(deps, { ...args, reason });
-    if (result.outcome === "unavailable") {
-      updateWorkAdmissionWaitingReason(deps.db, {
-        id: row.id,
-        waitingReason: result.reason,
-      });
-      await waitForHostPromotion(args.hostId);
-      row = getWorkAdmission(deps.db, row.id) ?? row;
-      continue;
-    }
-    const workspace = acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission(
-      deps.db,
-      {
-        environmentId: args.command.environmentId,
-        requestId: row.id,
-        reservationGeneration: result.reservation.generation,
-        reservationToken: result.reservation.token,
-        threadId: args.command.threadId,
-      },
-    );
-    if (workspace.outcome === "waiting") {
-      await releaseHostReservation(deps, result.reservation);
-      updateWorkAdmissionWaitingReason(deps.db, {
-        id: row.id,
-        waitingReason: workspaceWaitingReason({
+      const result = await reserve(deps, { ...args, reason });
+      if (result.outcome === "unavailable") {
+        updateWorkAdmissionWaitingReason(deps.db, {
+          id: row.id,
+          waitingReason: result.reason,
+        });
+        await promotion.promise;
+        row = getWorkAdmission(deps.db, row.id) ?? row;
+        continue;
+      }
+      const workspace = acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission(
+        deps.db,
+        {
+          environmentId: args.command.environmentId,
+          requestId: row.id,
+          reservationGeneration: result.reservation.generation,
+          reservationToken: result.reservation.token,
+          threadId: args.command.threadId,
+        },
+      );
+      if (workspace.outcome === "waiting") {
+        await releaseHostReservation(deps, result.reservation);
+        updateWorkAdmissionWaitingReason(deps.db, {
+          id: row.id,
+          waitingReason: workspaceWaitingReason({
+            canonicalPath: workspace.canonicalPath,
+            holderThreadId: workspace.holder.threadId,
+          }),
+        });
+        await waitForWorkspacePromotion(deps, {
           canonicalPath: workspace.canonicalPath,
-          holderThreadId: workspace.holder.threadId,
-        }),
-      });
-      await waitForWorkspacePromotion(deps, {
-        canonicalPath: workspace.canonicalPath,
-        hostId: workspace.hostId,
-        requestId: row.id,
-      });
+          hostId: workspace.hostId,
+          requestId: row.id,
+        });
+        row = getWorkAdmission(deps.db, row.id) ?? row;
+        continue;
+      }
+      if (workspace.outcome !== "admission-not-waiting") {
+        signalHostAdmissionPromotion(args.hostId);
+        return result.reservation;
+      }
+      await releaseHostReservation(deps, result.reservation);
       row = getWorkAdmission(deps.db, row.id) ?? row;
-      continue;
+    } finally {
+      promotion.cancel();
     }
-    if (workspace.outcome !== "admission-not-waiting") {
-      signalHostAdmissionPromotion(args.hostId);
-      return result.reservation;
-    }
-    await releaseHostReservation(deps, result.reservation);
-    row = getWorkAdmission(deps.db, row.id) ?? row;
   }
 }
 
