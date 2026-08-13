@@ -50,6 +50,11 @@ export interface UpdateWorkAdmissionWaitingReasonArgs {
   waitingReason: string;
 }
 
+export interface UpdateCurrentWorkAdmissionCommandArgs {
+  commandJson: string;
+  id: string;
+}
+
 export function createWorkAdmission(
   db: DbConnection,
   input: CreateWorkAdmissionInput,
@@ -260,6 +265,24 @@ export function updateWorkAdmissionWaitingReason(
         and(
           eq(workAdmissions.id, args.id),
           eq(workAdmissions.status, "waiting"),
+        ),
+      )
+      .run().changes === 1
+  );
+}
+
+export function updateCurrentWorkAdmissionCommand(
+  db: DbConnection,
+  args: UpdateCurrentWorkAdmissionCommandArgs,
+): boolean {
+  return (
+    db
+      .update(workAdmissions)
+      .set({ commandJson: args.commandJson, updatedAt: Date.now() })
+      .where(
+        and(
+          eq(workAdmissions.id, args.id),
+          inArray(workAdmissions.status, ["waiting", "running"]),
         ),
       )
       .run().changes === 1

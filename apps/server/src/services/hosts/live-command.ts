@@ -223,29 +223,30 @@ export async function runLiveHostCommand<
 ): Promise<HostDaemonCommandResult<TType>> {
   const execution =
     args.execution ?? createLiveHostCommandExecution(args.hostId);
-  const providerWorkCommand = isProviderWorkCommand(args.command)
-    ? args.command
-    : null;
+  let command = args.command;
+  let providerWorkCommand = isProviderWorkCommand(command) ? command : null;
   if (providerWorkCommand !== null) {
-    await awaitThreadWorkAdmission(deps, {
+    const admitted = await awaitThreadWorkAdmission(deps, {
       command: providerWorkCommand,
       hostId: args.hostId,
       ...(args.admissionReason === undefined
         ? {}
         : { reason: args.admissionReason }),
     });
+    command = admitted.command;
+    providerWorkCommand = admitted.command;
   }
   try {
     const result = await callHostOnlineRpc(deps, {
-      command: args.command,
+      command,
       hostId: args.hostId,
       timeoutMs: args.timeoutMs,
     });
     await applyLiveHostCommandReport(deps, {
-      command: args.command,
+      command,
       execution,
       report: buildLiveHostCommandSuccessReport({
-        command: args.command,
+        command,
         completedAt: Date.now(),
         execution,
         result,
@@ -256,14 +257,14 @@ export async function runLiveHostCommand<
     const normalized =
       error instanceof Error ? error : new Error(String(error));
     const failureReport = buildLiveHostCommandFailureReport({
-      command: args.command,
+      command,
       completedAt: Date.now(),
       error: normalized,
       execution,
     });
     try {
       await applyLiveHostCommandReport(deps, {
-        command: args.command,
+        command,
         execution,
         report: failureReport,
       });
@@ -271,7 +272,7 @@ export async function runLiveHostCommand<
       deps.logger.error(
         {
           err: settlementError,
-          commandType: args.command.type,
+          commandType: command.type,
           originalError: normalized,
         },
         "Live command failure settlement failed",

@@ -4,6 +4,7 @@ import {
   cancelUnmanagedWorkspaceMutationWaiter,
   createWorkAdmission,
   getEnvironment,
+  getEnvironmentCanonicalPath,
   getCurrentThreadWorkAdmission,
   getFirstHostEligibleWaitingAdmission,
   hasProtectedUnmanagedWorkspaceOnHost,
@@ -21,6 +22,7 @@ import {
   recordEnvironmentCanonicalPath,
   releaseUnmanagedWorkspaceMutationLease,
   releaseUnmanagedWorkspaceMutationLeaseInTransaction,
+  updateCurrentWorkAdmissionCommand,
   updateWorkAdmissionWaitingReason,
   type WorkAdmissionRow,
   type DbTransaction,
@@ -278,20 +280,67 @@ async function releaseHostReservation(
   return result.released;
 }
 
-async function ensureAdmissionWorkspaceCanonical(
+function commandWithWorkspacePath<TCommand extends ProviderWorkCommand>(
+  command: TCommand,
+  workspacePath: string,
+): TCommand {
+  if (command.type === "thread.start") {
+    if (command.workspaceContext.workspacePath === workspacePath) return command;
+    return {
+      ...command,
+      workspaceContext: { ...command.workspaceContext, workspacePath },
+    } as TCommand;
+  }
+  if (command.resumeContext.workspaceContext.workspacePath === workspacePath) {
+    return command;
+  }
+  return {
+    ...command,
+    resumeContext: {
+      ...command.resumeContext,
+      workspaceContext: {
+        ...command.resumeContext.workspaceContext,
+        workspacePath,
+      },
+    },
+  } as TCommand;
+}
+
+async function ensureAdmissionWorkspaceCanonical<
+  TCommand extends ProviderWorkCommand,
+>(
   deps: WorkAdmissionDeps,
   args: {
+    command: TCommand;
     environmentId: string;
     hostId: string;
     row: WorkAdmissionRow;
     unpersistedReservation?: HostAdmissionReservation;
   },
-): Promise<void> {
+): Promise<TCommand> {
   try {
     await ensureLegacyUnmanagedWorkspacePathsCanonical(deps, {
       hostId: args.hostId,
       targetEnvironmentId: args.environmentId,
     });
+    const canonicalPath = getEnvironmentCanonicalPath(
+      deps.db,
+      args.environmentId,
+    );
+    if (canonicalPath === null) return args.command;
+    const command = commandWithWorkspacePath(args.command, canonicalPath);
+    if (command === args.command) return command;
+    if (
+      !updateCurrentWorkAdmissionCommand(deps.db, {
+        commandJson: JSON.stringify(command),
+        id: args.row.id,
+      })
+    ) {
+      throw new Error(
+        `Work admission ${args.row.id} changed while refreshing its workspace command`,
+      );
+    }
+    return command;
   } catch (error) {
     if (args.unpersistedReservation) {
       try {
@@ -370,14 +419,16 @@ export function releaseWorkspaceLeaseForThreadInTransaction(
   return result.released;
 }
 
-export async function awaitThreadWorkAdmission(
+export async function awaitThreadWorkAdmission<
+  TCommand extends ProviderWorkCommand,
+>(
   deps: WorkAdmissionDeps,
   args: {
-    command: ProviderWorkCommand;
+    command: TCommand;
     hostId: string;
     reason?: HostAdmissionReason;
   },
-): Promise<HostAdmissionReservation> {
+): Promise<{ command: TCommand; reservation: HostAdmissionReservation }> {
   const reason = resolveAdmissionReason(deps, {
     ...(args.reason === undefined ? {} : { explicitReason: args.reason }),
     threadId: args.command.threadId,
@@ -385,9 +436,11 @@ export async function awaitThreadWorkAdmission(
   // Persist before the first awaited host operation. If the server exits while
   // canonicalization is in flight, reconnect recovery can still resume this
   // command from the durable admission queue.
-  let row = ensureAdmissionRow(deps, { ...args, reason });
-  await ensureAdmissionWorkspaceCanonical(deps, {
-    environmentId: args.command.environmentId,
+  let command = args.command;
+  let row = ensureAdmissionRow(deps, { ...args, command, reason });
+  command = await ensureAdmissionWorkspaceCanonical(deps, {
+    command,
+    environmentId: command.environmentId,
     hostId: args.hostId,
     row,
   });
@@ -397,22 +450,29 @@ export async function awaitThreadWorkAdmission(
       throw new Error(`Work admission ${row.id} is already terminal`);
     }
     if (row.status === "running") {
-      const result = await reserve(deps, { ...args, reason });
+      const result = await reserve(deps, {
+        command,
+        hostId: args.hostId,
+        reason,
+      });
       if (result.outcome === "reserved") {
         // A daemon reconnect invalidates confirmed paths while this admission
         // can remain queued. Re-gate immediately before the synchronous lease
         // acquisition so an alias cannot bypass a canonical holder.
-        await ensureAdmissionWorkspaceCanonical(deps, {
-          environmentId: args.command.environmentId,
+        command = await ensureAdmissionWorkspaceCanonical(deps, {
+          command,
+          environmentId: command.environmentId,
           hostId: args.hostId,
           row,
         });
         const workspace = acquireUnmanagedWorkspaceMutationLease(deps.db, {
-          environmentId: args.command.environmentId,
+          environmentId: command.environmentId,
           requestId: row.id,
-          threadId: args.command.threadId,
+          threadId: command.threadId,
         });
-        if (workspace.outcome !== "waiting") return result.reservation;
+        if (workspace.outcome !== "waiting") {
+          return { command, reservation: result.reservation };
+        }
         await releaseHostReservation(deps, result.reservation);
         throw new Error(
           `Running admission ${row.id} lost workspace ownership to ${workspace.holder.threadId}`,
@@ -435,7 +495,11 @@ export async function awaitThreadWorkAdmission(
         continue;
       }
 
-      const result = await reserve(deps, { ...args, reason });
+      const result = await reserve(deps, {
+        command,
+        hostId: args.hostId,
+        reason,
+      });
       if (result.outcome === "unavailable") {
         updateWorkAdmissionWaitingReason(deps.db, {
           id: row.id,
@@ -449,8 +513,9 @@ export async function awaitThreadWorkAdmission(
       // reconnect cleared its confirmations. The reservation is not durable
       // until the transaction below, so release it explicitly on re-gating
       // failure.
-      await ensureAdmissionWorkspaceCanonical(deps, {
-        environmentId: args.command.environmentId,
+      command = await ensureAdmissionWorkspaceCanonical(deps, {
+        command,
+        environmentId: command.environmentId,
         hostId: args.hostId,
         row,
         unpersistedReservation: result.reservation,
@@ -458,11 +523,11 @@ export async function awaitThreadWorkAdmission(
       const workspace = acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission(
         deps.db,
         {
-          environmentId: args.command.environmentId,
+          environmentId: command.environmentId,
           requestId: row.id,
           reservationGeneration: result.reservation.generation,
           reservationToken: result.reservation.token,
-          threadId: args.command.threadId,
+          threadId: command.threadId,
         },
       );
       if (workspace.outcome === "waiting") {
@@ -488,7 +553,7 @@ export async function awaitThreadWorkAdmission(
       }
       if (workspace.outcome !== "admission-not-waiting") {
         signalHostAdmissionPromotion(args.hostId);
-        return result.reservation;
+        return { command, reservation: result.reservation };
       }
       await releaseHostReservation(deps, result.reservation);
       row = getWorkAdmission(deps.db, row.id) ?? row;
@@ -623,6 +688,11 @@ export async function reconcileHostWorkAdmissions(
       row.reservationToken === null ? [] : [row.reservationToken],
     ),
   );
+  const waitingByRequestId = new Map(
+    local
+      .filter((row) => row.status === "waiting")
+      .map((row) => [row.id, row] as const),
+  );
 
   for (const row of local) {
     if (row.status !== "running") continue;
@@ -682,6 +752,17 @@ export async function reconcileHostWorkAdmissions(
 
   for (const remote of result.reservations) {
     if (localTokens.has(remote.reservation.token)) continue;
+    if (
+      remote.requestIds.some(
+        (requestId) =>
+          waitingByRequestId.get(requestId)?.threadId === remote.threadId,
+      )
+    ) {
+      // A waiting admission can own a daemon reservation briefly while it
+      // revalidates its workspace path. Preserve that reservation so the
+      // admission can atomically persist it with the canonical lease.
+      continue;
+    }
     await callHostRetryableOnlineRpc(deps, {
       command: {
         type: "host.admission.release",

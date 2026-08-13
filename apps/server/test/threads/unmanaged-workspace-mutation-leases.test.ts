@@ -5,6 +5,7 @@ import {
   createWorkAdmission,
   getEnvironment,
   getCurrentThreadWorkAdmission,
+  getThread,
   getWorkAdmission,
   getUnmanagedWorkspaceMutationLease,
   getUnmanagedWorkspaceMutationLeaseForThread,
@@ -613,6 +614,318 @@ describe("protected unmanaged workspace dispatch", () => {
       await releaseThreadWorkAdmission(harness.deps, {
         terminalReason: "test reconnect holder completed",
         threadId: first.id,
+      });
+    });
+  });
+
+  it("preserves an in-flight waiting reservation during reconnect reconciliation", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-workspace-reconnect-reconcile",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/reconnect-reconcile-repo",
+      });
+      updateProject(harness.db, harness.hub, project.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/reconnect-reconcile-repo",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const thread = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const deferredInspects = new Set<string>();
+      registerTestHostRpcCapture(harness, {
+        canonicalPathByInput: {
+          "/legacy/reconnect-reconcile-repo":
+            "/canonical/reconnect-reconcile-repo",
+        },
+        deferAdmissionReserveForThreadIds: new Set([thread.id]),
+        deferProjectInspectForPaths: deferredInspects,
+        hostId: host.id,
+        sessionId: session.id,
+      });
+
+      await sendThreadMessage(harness.deps, {
+        environment,
+        payload: {
+          input: textInput("reconcile while re-gating"),
+          mode: "start",
+          model: "gpt-5",
+          permissionMode: "full",
+          reasoningLevel: "medium",
+          serviceTier: "default",
+        },
+        thread,
+        trigger: "user",
+      });
+      const reservation = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "host.admission.reserve" &&
+          queued.command.threadId === thread.id,
+      );
+      if (reservation.command.type !== "host.admission.reserve") {
+        throw new Error("Expected deferred admission reservation");
+      }
+      deferredInspects.add("/legacy/reconnect-reconcile-repo");
+      clearEnvironmentPathCanonicalizationsForHost(harness.db, host.id);
+      await reportQueuedCommandSuccess(harness, reservation, {
+        outcome: "reserved",
+        reservation: {
+          generation: 1,
+          hostId: host.id,
+          reason: reservation.command.reason,
+          token: `test-admission:${thread.id}`,
+        },
+      });
+      const inspection = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "project.inspect" &&
+          queued.command.path === "/legacy/reconnect-reconcile-repo",
+      );
+
+      await reconcileHostWorkAdmissions(harness.deps, { hostId: host.id });
+      if (inspection.command.type !== "project.inspect") {
+        throw new Error("Expected deferred project inspection");
+      }
+      await reportQueuedCommandSuccess(harness, inspection, {
+        path: "/canonical/reconnect-reconcile-repo",
+        gitRemoteUrl: null,
+      });
+      await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "thread.start" &&
+          queued.command.threadId === thread.id,
+      );
+      await reconcileHostWorkAdmissions(harness.deps, { hostId: host.id });
+      expect(
+        getCurrentThreadWorkAdmission(harness.db, thread.id),
+      ).toMatchObject({ status: "running" });
+      expect(
+        getUnmanagedWorkspaceMutationLeaseForThread(harness.db, thread.id),
+      ).toMatchObject({
+        canonicalPath: "/canonical/reconnect-reconcile-repo",
+      });
+      await releaseThreadWorkAdmission(harness.deps, {
+        terminalReason: "test reconnect reconciliation completed",
+        threadId: thread.id,
+      });
+    });
+  });
+
+  it("refreshes the queued workspace command when its canonical target changes", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-workspace-reconnect-command",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/reconnect-command-repo",
+      });
+      updateProject(harness.db, harness.hub, project.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/reconnect-command-repo",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const thread = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const canonicalPathByInput: Record<string, string> = {
+        "/legacy/reconnect-command-repo": "/canonical/reconnect-command-v1",
+      };
+      registerTestHostRpcCapture(harness, {
+        canonicalPathByInput,
+        deferAdmissionReserveForThreadIds: new Set([thread.id]),
+        hostId: host.id,
+        sessionId: session.id,
+      });
+
+      await sendThreadMessage(harness.deps, {
+        environment,
+        payload: {
+          input: textInput("dispatch at the refreshed target"),
+          mode: "start",
+          model: "gpt-5",
+          permissionMode: "full",
+          reasoningLevel: "medium",
+          serviceTier: "default",
+        },
+        thread,
+        trigger: "user",
+      });
+      const reservation = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "host.admission.reserve" &&
+          queued.command.threadId === thread.id,
+      );
+      if (reservation.command.type !== "host.admission.reserve") {
+        throw new Error("Expected deferred admission reservation");
+      }
+      canonicalPathByInput["/legacy/reconnect-command-repo"] =
+        "/canonical/reconnect-command-v2";
+      clearEnvironmentPathCanonicalizationsForHost(harness.db, host.id);
+      await reportQueuedCommandSuccess(harness, reservation, {
+        outcome: "reserved",
+        reservation: {
+          generation: 1,
+          hostId: host.id,
+          reason: reservation.command.reason,
+          token: `test-admission:${thread.id}`,
+        },
+      });
+      const start = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "thread.start" &&
+          queued.command.threadId === thread.id,
+      );
+      if (start.command.type !== "thread.start") {
+        throw new Error("Expected thread start command");
+      }
+
+      expect(start.command.workspaceContext.workspacePath).toBe(
+        "/canonical/reconnect-command-v2",
+      );
+      const admission = getCurrentThreadWorkAdmission(harness.db, thread.id);
+      expect(admission).toMatchObject({ status: "running" });
+      expect(
+        JSON.parse(admission!.commandJson).workspaceContext.workspacePath,
+      ).toBe("/canonical/reconnect-command-v2");
+      expect(
+        getUnmanagedWorkspaceMutationLeaseForThread(harness.db, thread.id),
+      ).toMatchObject({ canonicalPath: "/canonical/reconnect-command-v2" });
+
+      await releaseThreadWorkAdmission(harness.deps, {
+        terminalReason: "test refreshed command completed",
+        threadId: thread.id,
+      });
+    });
+  });
+
+  it("refreshes a queued turn submission when its canonical target changes", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-workspace-reconnect-turn-command",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/reconnect-turn-command-repo",
+      });
+      updateProject(harness.db, harness.hub, project.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/reconnect-turn-command-repo",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const thread = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "active",
+      });
+      seedTurnStarted(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-reconnect-turn-command",
+        threadId: thread.id,
+        turnId: "turn-reconnect-turn-command",
+      });
+      const activeThread = getThread(harness.db, thread.id);
+      if (!activeThread) throw new Error("Expected active thread");
+      const canonicalPathByInput: Record<string, string> = {
+        "/legacy/reconnect-turn-command-repo":
+          "/canonical/reconnect-turn-command-v1",
+      };
+      registerTestHostRpcCapture(harness, {
+        canonicalPathByInput,
+        deferAdmissionReserveForThreadIds: new Set([thread.id]),
+        hostId: host.id,
+        sessionId: session.id,
+      });
+
+      await sendThreadMessage(harness.deps, {
+        environment,
+        payload: {
+          input: textInput("steer at the refreshed target"),
+          mode: "steer",
+          model: "gpt-5",
+          permissionMode: "full",
+          reasoningLevel: "medium",
+          serviceTier: "default",
+        },
+        thread: activeThread,
+        trigger: "user",
+      });
+      const reservation = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "host.admission.reserve" &&
+          queued.command.threadId === thread.id,
+      );
+      if (reservation.command.type !== "host.admission.reserve") {
+        throw new Error("Expected deferred admission reservation");
+      }
+      canonicalPathByInput["/legacy/reconnect-turn-command-repo"] =
+        "/canonical/reconnect-turn-command-v2";
+      clearEnvironmentPathCanonicalizationsForHost(harness.db, host.id);
+      await reportQueuedCommandSuccess(harness, reservation, {
+        outcome: "reserved",
+        reservation: {
+          generation: 1,
+          hostId: host.id,
+          reason: reservation.command.reason,
+          token: `test-admission:${thread.id}`,
+        },
+      });
+      const submit = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "turn.submit" &&
+          queued.command.threadId === thread.id,
+      );
+      if (submit.command.type !== "turn.submit") {
+        throw new Error("Expected turn submit command");
+      }
+
+      expect(
+        submit.command.resumeContext.workspaceContext.workspacePath,
+      ).toBe("/canonical/reconnect-turn-command-v2");
+      const admission = getCurrentThreadWorkAdmission(harness.db, thread.id);
+      expect(admission).toMatchObject({ status: "running" });
+      expect(
+        JSON.parse(admission!.commandJson).resumeContext.workspaceContext
+          .workspacePath,
+      ).toBe("/canonical/reconnect-turn-command-v2");
+      expect(
+        getUnmanagedWorkspaceMutationLeaseForThread(harness.db, thread.id),
+      ).toMatchObject({
+        canonicalPath: "/canonical/reconnect-turn-command-v2",
+      });
+
+      await releaseThreadWorkAdmission(harness.deps, {
+        terminalReason: "test refreshed turn command completed",
+        threadId: thread.id,
       });
     });
   });

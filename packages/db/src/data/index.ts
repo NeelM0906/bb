@@ -515,6 +515,7 @@ export {
   markWorkAdmissionRunning,
   markWorkAdmissionTerminal,
   markWaitingWorkAdmissionTerminal,
+  updateCurrentWorkAdmissionCommand,
   updateWorkAdmissionWaitingReason,
 } from "./work-admissions.js";
 export type {
@@ -524,6 +525,7 @@ export type {
   MarkWorkAdmissionRunningArgs,
   MarkWorkAdmissionTerminalArgs,
   MarkWaitingWorkAdmissionTerminalArgs,
+  UpdateCurrentWorkAdmissionCommandArgs,
   UpdateWorkAdmissionWaitingReasonArgs,
   WorkAdmissionRow,
 } from "./work-admissions.js";
