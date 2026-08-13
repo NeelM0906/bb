@@ -484,6 +484,12 @@ describe("idle cold-start activation", () => {
               },
             };
           }
+          if (command.type === "project.inspect") {
+            return {
+              ok: true,
+              result: { gitRemoteUrl: null, path: command.path },
+            };
+          }
           if (command.type === "host.admission.reserve") {
             return {
               ok: true,
@@ -575,6 +581,12 @@ describe("idle cold-start activation", () => {
                   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
                 sizeBytes: 0,
               },
+            };
+          }
+          if (command.type === "project.inspect") {
+            return {
+              ok: true,
+              result: { gitRemoteUrl: null, path: command.path },
             };
           }
           if (command.type === "host.admission.reserve") {

@@ -1,4 +1,5 @@
 import {
+  getEnvironment,
   getCurrentThreadWorkAdmission,
   getUnmanagedWorkspaceMutationLeaseForThread,
   updateProject,
@@ -8,6 +9,7 @@ import { releaseThreadWorkAdmission } from "../../src/services/threads/work-admi
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
 import {
   listQueuedThreadCommands,
+  registerTestHostRpcCapture,
   waitForQueuedCommand,
 } from "../helpers/commands.js";
 import { textInput } from "../helpers/prompt-input.js";
@@ -22,8 +24,15 @@ import { withTestHarness } from "../helpers/test-app.js";
 describe("protected unmanaged workspace dispatch", () => {
   it("withholds a second provider command until the holder releases through the common admission seam", async () => {
     await withTestHarness(async (harness) => {
-      const { host } = seedHostSession(harness.deps, {
+      const { host, session } = seedHostSession(harness.deps, {
         id: "host-workspace-lease",
+      });
+      registerTestHostRpcCapture(harness, {
+        canonicalPathByInput: {
+          "/canonical/shared-repo": "/canonical/shared-repo",
+        },
+        hostId: host.id,
+        sessionId: session.id,
       });
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
@@ -109,8 +118,15 @@ describe("protected unmanaged workspace dispatch", () => {
 
   it("cancels a workspace waiter without leaving its admission loop stranded", async () => {
     await withTestHarness(async (harness) => {
-      const { host } = seedHostSession(harness.deps, {
+      const { host, session } = seedHostSession(harness.deps, {
         id: "host-workspace-cancel",
+      });
+      registerTestHostRpcCapture(harness, {
+        canonicalPathByInput: {
+          "/canonical/cancel-repo": "/canonical/cancel-repo",
+        },
+        hostId: host.id,
+        sessionId: session.id,
       });
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
@@ -188,6 +204,202 @@ describe("protected unmanaged workspace dispatch", () => {
         listQueuedThreadCommands(harness, "thread.start", second.id),
       ).toHaveLength(0);
       expect(getCurrentThreadWorkAdmission(harness.db, second.id)).toBeNull();
+    });
+  });
+
+  it("lets unrelated work bypass a workspace-blocked FIFO head", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-workspace-independent",
+      });
+      registerTestHostRpcCapture(harness, {
+        canonicalPathByInput: {
+          "/canonical/blocked-repo": "/canonical/blocked-repo",
+          "/canonical/independent-repo": "/canonical/independent-repo",
+        },
+        hostId: host.id,
+        sessionId: session.id,
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/blocked-repo",
+      });
+      updateProject(harness.db, harness.hub, project.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const blockedEnvironment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/blocked-repo",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const independentEnvironment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/independent-repo",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const holder = seedThread(harness.deps, {
+        environmentId: blockedEnvironment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const blocked = seedThread(harness.deps, {
+        environmentId: blockedEnvironment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const independent = seedThread(harness.deps, {
+        environmentId: independentEnvironment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const payload = (text: string) => ({
+        input: textInput(text),
+        mode: "start" as const,
+        model: "gpt-5",
+        permissionMode: "full" as const,
+        reasoningLevel: "medium" as const,
+        serviceTier: "default" as const,
+      });
+
+      await sendThreadMessage(harness.deps, {
+        environment: blockedEnvironment,
+        payload: payload("hold blocked path"),
+        thread: holder,
+        trigger: "user",
+      });
+      await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "thread.start" &&
+          queued.command.threadId === holder.id,
+      );
+      await sendThreadMessage(harness.deps, {
+        environment: blockedEnvironment,
+        payload: payload("wait behind holder"),
+        thread: blocked,
+        trigger: "user",
+      });
+      await vi.waitFor(() => {
+        expect(
+          getCurrentThreadWorkAdmission(harness.db, blocked.id),
+        ).toMatchObject({ waitingReason: expect.stringContaining("owns") });
+      });
+
+      await sendThreadMessage(harness.deps, {
+        environment: independentEnvironment,
+        payload: payload("run on independent path"),
+        thread: independent,
+        trigger: "user",
+      });
+      await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "thread.start" &&
+          queued.command.threadId === independent.id,
+      );
+      expect(
+        getCurrentThreadWorkAdmission(harness.db, independent.id),
+      ).toMatchObject({ status: "running" });
+      expect(
+        listQueuedThreadCommands(harness, "thread.start", blocked.id),
+      ).toHaveLength(0);
+    });
+  });
+
+  it("canonicalizes legacy aliases before evaluating shared protection", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-workspace-legacy-alias",
+      });
+      const protectedProject = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/shared-alias-a",
+      }).project;
+      const aliasProject = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/shared-alias-b",
+      }).project;
+      updateProject(harness.db, harness.hub, protectedProject.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const protectedEnvironment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/shared-alias-a",
+        projectId: protectedProject.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const aliasEnvironment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/shared-alias-b",
+        projectId: aliasProject.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      registerTestHostRpcCapture(harness, {
+        canonicalPathByInput: {
+          "/legacy/shared-alias-a": "/canonical/shared-legacy-repo",
+          "/legacy/shared-alias-b": "/canonical/shared-legacy-repo",
+        },
+        hostId: host.id,
+        sessionId: session.id,
+      });
+      const holder = seedThread(harness.deps, {
+        environmentId: protectedEnvironment.id,
+        projectId: protectedProject.id,
+        status: "idle",
+      });
+      const alias = seedThread(harness.deps, {
+        environmentId: aliasEnvironment.id,
+        projectId: aliasProject.id,
+        status: "idle",
+      });
+      const payload = (text: string) => ({
+        input: textInput(text),
+        mode: "start" as const,
+        model: "gpt-5",
+        permissionMode: "full" as const,
+        reasoningLevel: "medium" as const,
+        serviceTier: "default" as const,
+      });
+
+      await sendThreadMessage(harness.deps, {
+        environment: protectedEnvironment,
+        payload: payload("canonical holder"),
+        thread: holder,
+        trigger: "user",
+      });
+      await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "thread.start" &&
+          queued.command.threadId === holder.id,
+      );
+      expect(getEnvironment(harness.db, protectedEnvironment.id)?.path).toBe(
+        "/canonical/shared-legacy-repo",
+      );
+      expect(getEnvironment(harness.db, aliasEnvironment.id)?.path).toBe(
+        "/canonical/shared-legacy-repo",
+      );
+
+      await sendThreadMessage(harness.deps, {
+        environment: aliasEnvironment,
+        payload: payload("legacy alias waiter"),
+        thread: alias,
+        trigger: "user",
+      });
+      await vi.waitFor(() => {
+        expect(
+          getCurrentThreadWorkAdmission(harness.db, alias.id),
+        ).toMatchObject({ waitingReason: expect.stringContaining("owns") });
+      });
+      expect(
+        listQueuedThreadCommands(harness, "thread.start", alias.id),
+      ).toHaveLength(0);
     });
   });
 });

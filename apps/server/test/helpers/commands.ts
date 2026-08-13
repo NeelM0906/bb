@@ -139,6 +139,7 @@ const testAdmissionsByHost = new Map<
 >();
 
 interface RegisterTestHostRpcCaptureArgs {
+  canonicalPathByInput?: Readonly<Record<string, string>>;
   hostId: string;
   sessionId: string;
 }
@@ -371,6 +372,25 @@ export function registerTestHostRpcCapture(
         return;
       }
       if (respondToProviderModelListCommand(deps, args, message)) {
+        return;
+      }
+      if (
+        command.type === "project.inspect" &&
+        args.canonicalPathByInput !== undefined
+      ) {
+        deps.hub.recordHostOnlineRpcResponse({
+          message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+            type: "host-rpc.response",
+            requestId: message.requestId,
+            commandType: command.type,
+            ok: true,
+            result: {
+              path: args.canonicalPathByInput[command.path] ?? command.path,
+              gitRemoteUrl: null,
+            },
+          }),
+          sessionId: args.sessionId,
+        });
         return;
       }
       if (command.type === "host.admission.reserve") {

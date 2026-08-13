@@ -269,9 +269,11 @@ export {
   getEnvironment,
   findProjectEnvironmentByHostPath,
   listEnvironments,
+  listLiveUnmanagedEnvironmentsOnHost,
   findForeignManagedEnvironmentAtHostPath,
   listEnvironmentsByIds,
   listRetiredLoadedEnvironmentIdsOnHost,
+  recordEnvironmentCanonicalPath,
   updateEnvironmentMetadata,
 } from "./environments.js";
 export type {
@@ -581,6 +583,7 @@ export {
   getUnmanagedWorkspaceMutationLease,
   getUnmanagedWorkspaceMutationLeaseForThread,
   getUnmanagedWorkspaceMutationWaitState,
+  hasProtectedUnmanagedWorkspaceOnHost,
   isUnmanagedWorkspaceMutationProtected,
   listUnmanagedWorkspaceMutationLeases,
   listUnmanagedWorkspaceMutationLeaseEvents,

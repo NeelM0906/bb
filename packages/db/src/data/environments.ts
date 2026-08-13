@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, sql, lt } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, ne, sql, lt } from "drizzle-orm";
 import type {
   DiscoveredWorkspaceProperties,
   EnvironmentChangeKind,
@@ -136,6 +136,24 @@ export function listEnvironments(db: DbConnection, projectId?: string) {
       .all();
   }
   return db.select().from(environments).all();
+}
+
+export function listLiveUnmanagedEnvironmentsOnHost(
+  db: EnvironmentReadConnection,
+  hostId: string,
+): EnvironmentRow[] {
+  return db
+    .select()
+    .from(environments)
+    .where(
+      and(
+        eq(environments.hostId, hostId),
+        eq(environments.workspaceProvisionType, "unmanaged"),
+        ne(environments.status, "destroyed"),
+        isNotNull(environments.path),
+      ),
+    )
+    .all();
 }
 
 export function listEnvironmentsByIds(
@@ -298,6 +316,18 @@ export function recordEnvironmentCurrentBranch(
     ...(input.defaultBranch !== undefined
       ? { defaultBranch: input.defaultBranch }
       : {}),
+  });
+}
+
+/** Persist a host-observed canonical path for a legacy unmanaged workspace. */
+export function recordEnvironmentCanonicalPath(
+  db: EnvironmentWriteConnection,
+  notifier: DbNotifier,
+  id: string,
+  canonicalPath: string,
+) {
+  return updateEnvironmentMetadataRecord(db, notifier, id, {
+    path: canonicalPath,
   });
 }
 

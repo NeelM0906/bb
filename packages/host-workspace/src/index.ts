@@ -1,4 +1,5 @@
 export {
+  canonicalizeUnmanagedWorkspacePath,
   getPersonalWorkspaceRoot,
   openWorkspace,
   provisionWorkspace,

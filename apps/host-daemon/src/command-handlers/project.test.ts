@@ -4,7 +4,11 @@ import path from "node:path";
 import { runGit } from "@bb/host-workspace";
 import { afterEach, describe, expect, it } from "vitest";
 import { isExpectedCommandDispatchError } from "../command-dispatch-support.js";
-import { cloneProject, resolveProjectCloneDefaultPath } from "./project.js";
+import {
+  cloneProject,
+  inspectProjectPath,
+  resolveProjectCloneDefaultPath,
+} from "./project.js";
 
 const tempDirs: string[] = [];
 
@@ -46,6 +50,18 @@ afterEach(async () => {
 });
 
 describe("project.clone", () => {
+  it("reports the canonical filesystem path when inspecting a legacy alias", async () => {
+    const root = await tempDir();
+    const target = path.join(root, "target");
+    const alias = path.join(root, "alias");
+    await fs.mkdir(target);
+    await fs.symlink(target, alias, "dir");
+
+    await expect(inspectProjectPath(alias)).resolves.toMatchObject({
+      path: await fs.realpath(target),
+    });
+  });
+
   it("clones a real repository and reports the resolved path and origin", async () => {
     const root = await tempDir();
     const remoteUrl = await createRemoteRepo(root);
@@ -56,7 +72,9 @@ describe("project.clone", () => {
     });
 
     expect(result).toEqual({
-      path: path.join(root, "data", "checkouts", "my-project"),
+      path: await fs.realpath(
+        path.join(root, "data", "checkouts", "my-project"),
+      ),
       gitRemoteUrl: remoteUrl,
     });
     await expect(

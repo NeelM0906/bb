@@ -3,16 +3,20 @@ import {
   acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission,
   cancelUnmanagedWorkspaceMutationWaiter,
   createWorkAdmission,
+  getEnvironment,
   getCurrentThreadWorkAdmission,
+  hasProtectedUnmanagedWorkspaceOnHost,
   getThread,
   getUnmanagedWorkspaceMutationLeaseForThread,
   getUnmanagedWorkspaceMutationWaitState,
   getWorkAdmission,
   listCurrentWorkAdmissions,
+  listLiveUnmanagedEnvironmentsOnHost,
   listUnmanagedWorkspaceMutationLeases,
   listWaitingWorkAdmissions,
   markWaitingWorkAdmissionTerminal,
   markWorkAdmissionTerminal,
+  recordEnvironmentCanonicalPath,
   releaseUnmanagedWorkspaceMutationLease,
   updateWorkAdmissionWaitingReason,
   type WorkAdmissionRow,
@@ -39,6 +43,10 @@ type WorkAdmissionDeps = LoggedWorkSessionDeps;
 
 const promotionWaitersByHost = new Map<string, Set<() => void>>();
 const workspacePromotionWaiters = new Map<string, Set<() => void>>();
+const canonicalizationByDatabase = new WeakMap<
+  WorkAdmissionDeps["db"],
+  Map<string, Promise<void>>
+>();
 
 function workspacePromotionKey(hostId: string, canonicalPath: string): string {
   return `${hostId}\0${canonicalPath}`;
@@ -113,6 +121,86 @@ export function signalHostAdmissionPromotion(hostId: string): void {
   const waiters = promotionWaitersByHost.get(hostId);
   if (!waiters) return;
   for (const waiter of [...waiters]) waiter();
+}
+
+async function canonicalizeLegacyUnmanagedWorkspacePaths(
+  deps: WorkAdmissionDeps,
+  args: { hostId: string; targetEnvironmentId: string },
+): Promise<void> {
+  const environments = listLiveUnmanagedEnvironmentsOnHost(
+    deps.db,
+    args.hostId,
+  );
+  const target = environments.find(
+    (environment) => environment.id === args.targetEnvironmentId,
+  );
+  if (!target) return;
+
+  const canonicalize = async (environment: (typeof environments)[number]) => {
+    if (environment.path === null) return;
+    const result = await callHostRetryableOnlineRpc(deps, {
+      command: { type: "project.inspect", path: environment.path },
+      hostId: args.hostId,
+      timeoutMs: ADMISSION_RPC_TIMEOUT_MS,
+    });
+    recordEnvironmentCanonicalPath(
+      deps.db,
+      deps.hub,
+      environment.id,
+      result.path,
+    );
+  };
+
+  // Fail closed across every live unmanaged environment on an opted-in host:
+  // any one of them may be a legacy alias of the target workspace.
+  await canonicalize(target);
+  await Promise.all(
+    environments
+      .filter((environment) => environment.id !== target.id)
+      .map((environment) => canonicalize(environment)),
+  );
+}
+
+async function ensureLegacyUnmanagedWorkspacePathsCanonical(
+  deps: WorkAdmissionDeps,
+  args: { hostId: string; targetEnvironmentId: string },
+): Promise<void> {
+  const target = getEnvironment(deps.db, args.targetEnvironmentId);
+  if (
+    !target ||
+    target.hostId !== args.hostId ||
+    target.path === null ||
+    target.workspaceProvisionType !== "unmanaged" ||
+    target.status === "destroyed"
+  ) {
+    return;
+  }
+  if (!hasProtectedUnmanagedWorkspaceOnHost(deps.db, args.hostId)) return;
+  let byHost = canonicalizationByDatabase.get(deps.db);
+  if (!byHost) {
+    byHost = new Map();
+    canonicalizationByDatabase.set(deps.db, byHost);
+  }
+  let pending = byHost.get(args.hostId);
+  if (!pending) {
+    pending = canonicalizeLegacyUnmanagedWorkspacePaths(deps, args);
+    byHost.set(args.hostId, pending);
+  }
+  try {
+    await pending;
+  } finally {
+    if (byHost.get(args.hostId) === pending) byHost.delete(args.hostId);
+  }
+}
+
+function firstHostEligibleWaitingAdmission(
+  deps: Pick<WorkAdmissionDeps, "db">,
+  hostId: string,
+): WorkAdmissionRow | undefined {
+  return listWaitingWorkAdmissions(deps.db, { hostId }).find(
+    (candidate) =>
+      getUnmanagedWorkspaceMutationWaitState(deps.db, candidate.id) === null,
+  );
 }
 
 function resolveAdmissionReason(
@@ -233,6 +321,10 @@ export async function awaitThreadWorkAdmission(
     ...(args.reason === undefined ? {} : { explicitReason: args.reason }),
     threadId: args.command.threadId,
   });
+  await ensureLegacyUnmanagedWorkspacePathsCanonical(deps, {
+    hostId: args.hostId,
+    targetEnvironmentId: args.command.environmentId,
+  });
   let row = ensureAdmissionRow(deps, { ...args, reason });
 
   for (;;) {
@@ -263,9 +355,7 @@ export async function awaitThreadWorkAdmission(
     // waiting, stranding runnable work until some unrelated later release.
     const promotion = createHostPromotionWaiter(args.hostId);
     try {
-      const head = listWaitingWorkAdmissions(deps.db, {
-        hostId: args.hostId,
-      })[0];
+      const head = firstHostEligibleWaitingAdmission(deps, args.hostId);
       if (head?.id !== row.id) {
         await promotion.promise;
         row = getWorkAdmission(deps.db, row.id) ?? row;

@@ -1082,6 +1082,9 @@ describe("host-daemon local schemas", () => {
 });
 
 describe("host-daemon command schemas", () => {
+  // Version 120 guarantees project.inspect returns the host filesystem's
+  // canonical path. The server relies on it to serialize legacy unmanaged
+  // aliases, so older daemons must update before provider work is admitted.
   // Version 119 adds host-wide provider-work admission reservations and
   // carries required workspace diff limits and line-stat completeness over
   // the host wire. Older daemons cannot enforce or interpret these fields, so
@@ -1101,8 +1104,8 @@ describe("host-daemon command schemas", () => {
   // against its Pi provider ladder, so enrolled machines must not run that
   // mixed version. Version 113 carried the Devin Desktop open target rename
   // and remains part of the protocol lineage.
-  it("uses protocol version 119 for admission and bounded workspace diffs", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(119);
+  it("uses protocol version 120 for canonical legacy workspace inspection", () => {
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(120);
   });
 
   it("binds Plan cancellation to a required turn id and typed result", () => {

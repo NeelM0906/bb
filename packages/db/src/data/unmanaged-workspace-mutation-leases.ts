@@ -96,6 +96,30 @@ export function isUnmanagedWorkspaceMutationProtected(
   return protectedWorkspaceKey(db, environmentId) !== null;
 }
 
+export function hasProtectedUnmanagedWorkspaceOnHost(
+  db: DbQueryConnection,
+  hostId: string,
+): boolean {
+  return (
+    db
+      .select({ projectId: projects.id })
+      .from(environments)
+      .innerJoin(projects, eq(projects.id, environments.projectId))
+      .where(
+        and(
+          eq(environments.hostId, hostId),
+          eq(environments.workspaceProvisionType, "unmanaged"),
+          ne(environments.status, "destroyed"),
+          isNotNull(environments.path),
+          eq(projects.protectUnmanagedWorkspace, true),
+          isNull(projects.deletedAt),
+        ),
+      )
+      .limit(1)
+      .get() !== undefined
+  );
+}
+
 export function getUnmanagedWorkspaceMutationLease(
   db: DbQueryConnection,
   hostId: string,
