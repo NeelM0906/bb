@@ -1724,6 +1724,24 @@ describe("acp bridge", () => {
     expect(response.error?.message).toMatch(/No active turn/);
   });
 
+  it("settles an ACP prompt failure exactly once", async () => {
+    const { providerThreadId } = await startThread({
+      envVars: { FAKE_ACP_PROMPT_ERROR: "1" },
+    });
+    const turnId = sendRequest("turn/start", {
+      threadId: providerThreadId,
+      input: [{ type: "text", text: "fail once", mentions: [] }],
+    });
+    await waitForResponse(turnId);
+    await waitFor(
+      () => (notifications("error").length === 1 ? true : undefined),
+      "prompt failure notification",
+    );
+
+    expect(notifications("error")).toHaveLength(1);
+    expect(notifications("acp/turn/completed")).toHaveLength(0);
+  });
+
   it("cancels the active turn on thread/stop", async () => {
     const { bbThreadId, providerThreadId } = await startThread();
     const turnId = sendRequest("turn/start", {

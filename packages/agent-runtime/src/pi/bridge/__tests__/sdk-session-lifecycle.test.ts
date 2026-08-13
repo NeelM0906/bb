@@ -46,6 +46,7 @@ async function writeTestSessionFile(
 
 async function createLifecycleFixture(): Promise<{
   cwd: string;
+  lazyMcpStatusPath: string;
   markerPath: string;
   sessionFilePath: string;
 }> {
@@ -54,6 +55,7 @@ async function createLifecycleFixture(): Promise<{
   const agentDir = join(root, "agent");
   const cwd = join(root, "workspace");
   const markerPath = join(root, "lifecycle-events.txt");
+  const lazyMcpStatusPath = join(root, "lazy-mcp-status.json");
 
   await mkdir(join(cwd, ".pi", "extensions"), { recursive: true });
   await mkdir(agentDir, { recursive: true });
@@ -63,7 +65,22 @@ async function createLifecycleFixture(): Promise<{
   );
   await writeFile(
     join(cwd, ".pi", "settings.json"),
-    JSON.stringify({ extensions: ["./extensions/lifecycle.ts"] }),
+    JSON.stringify({
+      extensions: [
+        "./extensions/lifecycle.ts",
+        "./extensions/lazy-mcp-adapter.ts",
+      ],
+    }),
+  );
+  await writeFile(
+    join(cwd, ".pi", "extensions", "lazy-mcp-adapter.ts"),
+    `import { writeFileSync } from "node:fs";
+export default function piMcpAdapter(pi): void {
+  pi.on("session_start", () => {
+    writeFileSync(${JSON.stringify(lazyMcpStatusPath)}, JSON.stringify({ adapter: "pi-mcp-adapter", status: "ready" }), "utf8");
+  });
+}
+`,
   );
   await writeFile(
     join(cwd, ".pi", "extensions", "lifecycle.ts"),
@@ -83,7 +100,7 @@ export default function extension(pi): void {
   const sessionFilePath = join(root, "initial.jsonl");
   await writeTestSessionFile(sessionFilePath, cwd, "initial");
 
-  return { cwd, markerPath, sessionFilePath };
+  return { cwd, lazyMcpStatusPath, markerPath, sessionFilePath };
 }
 
 afterEach(async () => {
@@ -94,6 +111,18 @@ afterEach(async () => {
 });
 
 describe("PiSdkSession extension lifecycle", () => {
+  it("reports lazy pi-mcp-adapter status from session_start without prompting", async () => {
+    const { cwd, lazyMcpStatusPath } = await createLifecycleFixture();
+    const session = new PiSdkSession({ cwd }, vi.fn(), vi.fn());
+
+    await session.start();
+
+    await expect(readFile(lazyMcpStatusPath, "utf8")).resolves.toBe(
+      JSON.stringify({ adapter: "pi-mcp-adapter", status: "ready" }),
+    );
+    await session.closeGracefully(1_000);
+  });
+
   it("starts configured extensions for new and resumed bb threads", async () => {
     const { cwd, markerPath, sessionFilePath } = await createLifecycleFixture();
     const newThread = new PiSdkSession({ cwd }, vi.fn(), vi.fn());
