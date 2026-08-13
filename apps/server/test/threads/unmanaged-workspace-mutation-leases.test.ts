@@ -34,6 +34,7 @@ import {
   seedHostSession,
   seedProjectWithSource,
   seedThread,
+  seedTurnStarted,
 } from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
 
@@ -184,6 +185,117 @@ describe("protected unmanaged workspace dispatch", () => {
       expect(
         getUnmanagedWorkspaceMutationLeaseForThread(harness.db, waiter.id),
       ).toMatchObject({ generation: 2, requestId: "req-deleted-waiter" });
+    });
+  });
+
+  it("retains a deleted runtime lease until the daemon confirms it stopped", async () => {
+    await withTestHarness(async (harness) => {
+      const host = seedHostSession(harness.deps, {
+        id: "host-workspace-active-holder-delete",
+      }).host;
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/active-deleted-holder-repo",
+      });
+      updateProject(harness.db, harness.hub, project.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/active-deleted-holder-repo",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const holder = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "active",
+      });
+      const waiter = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      seedTurnStarted(harness.deps, {
+        environmentId: environment.id,
+        threadId: holder.id,
+        turnId: "turn-active-deleted-holder",
+      });
+      for (const [id, threadId] of [
+        ["req-active-deleted-holder", holder.id],
+        ["req-active-deleted-waiter", waiter.id],
+      ] as const) {
+        createWorkAdmission(harness.db, {
+          commandJson: "{}",
+          hostId: host.id,
+          id,
+          reason: "interactive",
+          threadId,
+          waitingReason: "Awaiting host capacity",
+        });
+      }
+      expect(
+        acquireUnmanagedWorkspaceMutationLease(harness.db, {
+          environmentId: environment.id,
+          requestId: "req-active-deleted-holder",
+          threadId: holder.id,
+        }),
+      ).toMatchObject({ outcome: "acquired", generation: 1 });
+      expect(
+        acquireUnmanagedWorkspaceMutationLease(harness.db, {
+          environmentId: environment.id,
+          requestId: "req-active-deleted-waiter",
+          threadId: waiter.id,
+        }),
+      ).toMatchObject({ outcome: "waiting" });
+
+      const response = await harness.app.request(
+        `/api/v1/threads/${holder.id}`,
+        {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ childThreadsConfirmed: false }),
+        },
+      );
+      expect(response.status).toBe(200);
+      const stopCommand = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.stop" && command.threadId === holder.id,
+      );
+
+      expect(
+        getUnmanagedWorkspaceMutationLeaseForThread(harness.db, holder.id),
+      ).toMatchObject({
+        generation: 1,
+        requestId: "req-active-deleted-holder",
+      });
+      expect(
+        getUnmanagedWorkspaceMutationLeaseForThread(harness.db, waiter.id),
+      ).toBeNull();
+      expect(
+        getUnmanagedWorkspaceMutationWaitState(
+          harness.db,
+          "req-active-deleted-waiter",
+        ),
+      ).toMatchObject({
+        canonicalPath: "/canonical/active-deleted-holder-repo",
+      });
+
+      await reportQueuedCommandSuccess(harness, stopCommand, {
+        providerCheckpointId: null,
+      });
+
+      expect(
+        getUnmanagedWorkspaceMutationLeaseForThread(harness.db, holder.id),
+      ).toBeNull();
+      expect(
+        getUnmanagedWorkspaceMutationLeaseForThread(harness.db, waiter.id),
+      ).toMatchObject({
+        generation: 2,
+        requestId: "req-active-deleted-waiter",
+      });
     });
   });
 

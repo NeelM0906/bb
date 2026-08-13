@@ -227,10 +227,14 @@ describe("live thread start handoff", () => {
           environmentId: fixture.environment.id,
           threadId: fixture.thread.id,
         });
-        expect(getThread(harness.db, fixture.thread.id)).toBeNull();
+        expect(getThread(harness.db, fixture.thread.id)).toMatchObject({
+          deletedAt: expect.any(Number),
+          status: "stopping",
+        });
         await reportQueuedCommandSuccess(harness, stopCommand, {
           providerCheckpointId: null,
         });
+        expect(getThread(harness.db, fixture.thread.id)).toBeNull();
       } finally {
         await failLiveStartRpc({
           harness,

@@ -249,6 +249,7 @@ interface ProvisioningInterruptedThread {
 
 interface FinalizeStoppedThreadArgs {
   providerCheckpointId?: string;
+  runtimeStopped?: boolean;
   threadId: string;
 }
 
@@ -1029,6 +1030,7 @@ export function settleThreadStopCommandResult(
     }
 
     const finalized = finalizeStoppedThreadInTransaction(args.deps, {
+      runtimeStopped: true,
       threadId: args.command.threadId,
     });
     if (finalized) {
@@ -1055,6 +1057,7 @@ export function settleThreadStopCommandResult(
     ...(args.report.result.providerCheckpointId !== null
       ? { providerCheckpointId: args.report.result.providerCheckpointId }
       : {}),
+    runtimeStopped: true,
     threadId: args.command.threadId,
   });
 
@@ -1098,6 +1101,7 @@ export function settleThreadPlanCancelCommandResult(
     return emptyCommandResultSideEffects();
   }
   finalizeStoppedThreadInTransaction(args.deps, {
+    runtimeStopped: true,
     threadId: args.command.threadId,
   });
   return emptyCommandResultSideEffects();
@@ -1372,6 +1376,7 @@ function requestPreStartThreadStop(
       }
 
       const finalized = finalizeStoppedThreadInTransaction(txDeps, {
+        runtimeStopped: true,
         threadId: currentThread.id,
       });
       return { cancelHostId: null, environmentId, finalized };
@@ -1698,6 +1703,18 @@ export function finalizeStoppedThreadInTransaction(
     return true;
   }
 
+  // Deletion requests mark an active runtime as stopping before asking the
+  // daemon to stop it. Keep the thread (and therefore its workspace lease)
+  // until the stop result, a terminal provider event, or reconnect
+  // reconciliation confirms that runtime work has ended.
+  if (
+    currentThread.deletedAt !== null &&
+    currentThread.status === "stopping" &&
+    args.runtimeStopped !== true
+  ) {
+    return false;
+  }
+
   const interruptionReason =
     getLatestThreadInterruptedReason(deps.db, {
       threadId: currentThread.id,
@@ -1862,6 +1879,7 @@ export async function reconcileDaemonReportedThreads(
     }
 
     finalizeStoppedThreadAndRequestCleanupAdvance(deps, {
+      runtimeStopped: true,
       threadId: thread.id,
     });
   }
