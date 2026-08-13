@@ -217,6 +217,7 @@ export async function createTestAppHarness(
     pluginService,
     pluginCatalogService,
     async cleanup(): Promise<void> {
+      hub.shutdown();
       await dbReadWorker.shutdown();
       db.$client.close();
       await rm(dataDir, { recursive: true, force: true });

@@ -141,6 +141,7 @@ export class HostOnlineRpcUnavailableError extends Error {
 }
 
 export class NotificationHub implements DbNotifier {
+  private acceptingDaemonDisconnects = true;
   private readonly clientKeysBySocket = new Map<HubSocket, Set<string>>();
   private readonly clientSocketsByKey = new Map<string, Set<HubSocket>>();
   private readonly daemonSessions = new Map<
@@ -562,6 +563,7 @@ export class NotificationHub implements DbNotifier {
     delayMs: number,
     callback: () => void,
   ): void {
+    if (!this.acceptingDaemonDisconnects) return;
     this.cancelPendingDaemonDisconnectGrace(sessionId);
     const timeout = setTimeout(() => {
       this.pendingDaemonDisconnects.delete(sessionId);
@@ -575,6 +577,7 @@ export class NotificationHub implements DbNotifier {
     delayMs: number,
     callback: () => void,
   ): void {
+    if (!this.acceptingDaemonDisconnects) return;
     this.cancelPendingDaemonActiveWorkDisconnect(sessionId);
     const timeout = setTimeout(() => {
       this.pendingDaemonActiveWorkDisconnects.delete(sessionId);
@@ -604,6 +607,18 @@ export class NotificationHub implements DbNotifier {
   cancelPendingDaemonDisconnect(sessionId: string): void {
     this.cancelPendingDaemonDisconnectGrace(sessionId);
     this.cancelPendingDaemonActiveWorkDisconnect(sessionId);
+  }
+
+  shutdown(): void {
+    this.acceptingDaemonDisconnects = false;
+    for (const timeout of this.pendingDaemonDisconnects.values()) {
+      clearTimeout(timeout);
+    }
+    this.pendingDaemonDisconnects.clear();
+    for (const timeout of this.pendingDaemonActiveWorkDisconnects.values()) {
+      clearTimeout(timeout);
+    }
+    this.pendingDaemonActiveWorkDisconnects.clear();
   }
 
   async waitForThreadEvent(
