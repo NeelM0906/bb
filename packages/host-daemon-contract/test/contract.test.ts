@@ -110,6 +110,7 @@ const WORKSPACE_STATUS_AVAILABLE_RESULT: JsonObject = {
     workingTree: {
       insertions: 3,
       deletions: 1,
+      lineStatsComplete: true,
       files: [
         {
           path: "src/index.ts",
@@ -133,6 +134,7 @@ const WORKSPACE_STATUS_AVAILABLE_RESULT: JsonObject = {
     mergeBase: {
       insertions: 5,
       deletions: 0,
+      lineStatsComplete: true,
       files: [
         {
           path: "README.md",
@@ -1080,9 +1082,10 @@ describe("host-daemon local schemas", () => {
 });
 
 describe("host-daemon command schemas", () => {
-  // Version 119 adds host-wide provider-work admission reservations. Older
-  // daemons can dispatch provider work without enforcing server-issued
-  // capacity ownership, so enrolled machines must update before handling it.
+  // Version 119 adds host-wide provider-work admission reservations and
+  // carries required workspace diff limits and line-stat completeness over
+  // the host wire. Older daemons cannot enforce or interpret these fields, so
+  // enrolled machines must update before handling either operation.
   // Version 118 rejects successful provider update results when the daemon
   // cannot verify a version change. Older daemons can report a no-op Claude
   // update as successful, so enrolled machines must update for honest results.
@@ -1098,7 +1101,7 @@ describe("host-daemon command schemas", () => {
   // against its Pi provider ladder, so enrolled machines must not run that
   // mixed version. Version 113 carried the Devin Desktop open target rename
   // and remains part of the protocol lineage.
-  it("uses protocol version 119 for host admission reservations", () => {
+  it("uses protocol version 119 for admission and bounded workspace diffs", () => {
     expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(119);
   });
 
@@ -1686,6 +1689,7 @@ describe("host-daemon command schemas", () => {
         target: { type: "uncommitted" },
         maxDiffBytes: 1000,
         maxFileListBytes: 1000,
+        maxUntrackedFiles: 5000,
       },
     ];
 
@@ -2829,6 +2833,7 @@ describe("host-daemon command schemas", () => {
           workingTree: {
             insertions: 0,
             deletions: 0,
+            lineStatsComplete: true,
             files: [],
             hasUncommittedChanges: false,
             state: "clean",
