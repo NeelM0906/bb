@@ -13,6 +13,7 @@ import {
   listProjectSourcesByProjectIds,
   listThreadSections,
   reorderProject,
+  ProjectUnmanagedWorkspaceProtectionConflictError,
   updateProject,
   updateProjectSource,
   setProjectGitRemoteUrlIfMissing,
@@ -457,12 +458,20 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
 
   patch(routes.update, async (context, payload) => {
     requirePublicStandardProject(deps.db, context.req.param("id"));
-    const project = updateProject(
-      deps.db,
-      deps.hub,
-      context.req.param("id"),
-      payload,
-    );
+    let project;
+    try {
+      project = updateProject(
+        deps.db,
+        deps.hub,
+        context.req.param("id"),
+        payload,
+      );
+    } catch (error) {
+      if (error instanceof ProjectUnmanagedWorkspaceProtectionConflictError) {
+        throw new ApiError(409, "workspace_protection_conflict", error.message);
+      }
+      throw error;
+    }
     if (!project) {
       throw new ApiError(404, "project_not_found", "Project not found");
     }

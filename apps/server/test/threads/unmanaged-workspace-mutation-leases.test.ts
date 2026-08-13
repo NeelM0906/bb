@@ -379,6 +379,7 @@ describe("protected unmanaged workspace dispatch", () => {
           "/legacy/shared-alias-a": "/canonical/shared-legacy-repo",
           "/legacy/shared-alias-b": "/canonical/shared-legacy-repo",
         },
+        deferProjectInspectForPaths: new Set(["/legacy/shared-alias-a"]),
         hostId: host.id,
         sessionId: session.id,
       });
@@ -406,6 +407,22 @@ describe("protected unmanaged workspace dispatch", () => {
         payload: payload("canonical holder"),
         thread: holder,
         trigger: "user",
+      });
+      const pendingCanonicalization = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "project.inspect" &&
+          queued.command.path === "/legacy/shared-alias-a",
+      );
+      expect(
+        getCurrentThreadWorkAdmission(harness.db, holder.id),
+      ).toMatchObject({ status: "waiting" });
+      if (pendingCanonicalization.command.type !== "project.inspect") {
+        throw new Error("Expected deferred project inspection");
+      }
+      await reportQueuedCommandSuccess(harness, pendingCanonicalization, {
+        path: "/canonical/shared-legacy-repo",
+        gitRemoteUrl: null,
       });
       await waitForQueuedCommand(
         harness,

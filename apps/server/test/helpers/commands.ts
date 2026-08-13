@@ -141,6 +141,7 @@ const testAdmissionsByHost = new Map<
 interface RegisterTestHostRpcCaptureArgs {
   canonicalPathByInput?: Readonly<Record<string, string>>;
   deferAdmissionReserveForThreadIds?: ReadonlySet<string>;
+  deferProjectInspectForPaths?: ReadonlySet<string>;
   hostId: string;
   sessionId: string;
 }
@@ -377,7 +378,8 @@ export function registerTestHostRpcCapture(
       }
       if (
         command.type === "project.inspect" &&
-        args.canonicalPathByInput !== undefined
+        args.canonicalPathByInput !== undefined &&
+        !args.deferProjectInspectForPaths?.has(command.path)
       ) {
         deps.hub.recordHostOnlineRpcResponse({
           message: hostDaemonOnlineRpcResponseMessageSchema.parse({

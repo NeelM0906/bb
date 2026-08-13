@@ -312,11 +312,14 @@ export async function awaitThreadWorkAdmission(
     ...(args.reason === undefined ? {} : { explicitReason: args.reason }),
     threadId: args.command.threadId,
   });
+  // Persist before the first awaited host operation. If the server exits while
+  // canonicalization is in flight, reconnect recovery can still resume this
+  // command from the durable admission queue.
+  let row = ensureAdmissionRow(deps, { ...args, reason });
   await ensureLegacyUnmanagedWorkspacePathsCanonical(deps, {
     hostId: args.hostId,
     targetEnvironmentId: args.command.environmentId,
   });
-  let row = ensureAdmissionRow(deps, { ...args, reason });
 
   for (;;) {
     if (row.status === "terminal") {

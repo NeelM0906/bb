@@ -11,9 +11,17 @@ import {
   releaseUnmanagedWorkspaceMutationLease,
 } from "../../src/data/unmanaged-workspace-mutation-leases.js";
 import { upsertHost } from "../../src/data/hosts.js";
-import { createProject, updateProject } from "../../src/data/projects.js";
+import {
+  createProject,
+  getProject,
+  ProjectUnmanagedWorkspaceProtectionConflictError,
+  updateProject,
+} from "../../src/data/projects.js";
 import { createThread } from "../../src/data/threads.js";
-import { createWorkAdmission } from "../../src/data/work-admissions.js";
+import {
+  createWorkAdmission,
+  markWorkAdmissionRunning,
+} from "../../src/data/work-admissions.js";
 import { getWorkAdmission } from "../../src/data/work-admissions.js";
 import { migrate } from "../../src/migrate.js";
 import { noopNotifier } from "../../src/notifier.js";
@@ -87,6 +95,51 @@ function setup() {
 }
 
 describe("unmanaged workspace mutation leases", () => {
+  it("rejects enabling protection while unmanaged work is already running", () => {
+    const db = createConnection(":memory:");
+    migrate(db);
+    const host = upsertHost(db, noopNotifier, {
+      name: "transition-host",
+      type: "persistent",
+    });
+    const project = createProject(db, noopNotifier, {
+      name: "transition-project",
+      source: { type: "local_path", hostId: host.id, path: "/transition" },
+    }).project;
+    const environment = createEnvironment(db, noopNotifier, {
+      hostId: host.id,
+      path: "/transition",
+      projectId: project.id,
+      status: "ready",
+      workspaceProvisionType: "unmanaged",
+    });
+    const thread = createThread(db, noopNotifier, {
+      environmentId: environment.id,
+      projectId: project.id,
+      providerId: "codex",
+    });
+    createWorkAdmission(db, {
+      commandJson: "{}",
+      hostId: host.id,
+      id: "req-transition",
+      reason: "interactive",
+      threadId: thread.id,
+      waitingReason: "Awaiting host capacity",
+    });
+    markWorkAdmissionRunning(db, {
+      id: "req-transition",
+      reservationGeneration: 1,
+      reservationToken: "transition-token",
+    });
+
+    expect(() =>
+      updateProject(db, noopNotifier, project.id, {
+        protectUnmanagedWorkspace: true,
+      }),
+    ).toThrow(ProjectUnmanagedWorkspaceProtectionConflictError);
+    expect(getProject(db, project.id)?.protectUnmanagedWorkspace).toBe(false);
+  });
+
   it("atomically acquires workspace ownership and starts the durable admission", () => {
     const { db, firstEnvironment, firstThread, host } = setup();
 

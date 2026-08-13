@@ -8,6 +8,7 @@ export {
   listProjects,
   listPublicProjects,
   markProjectDeleted,
+  ProjectUnmanagedWorkspaceProtectionConflictError,
   reorderProject,
   setProjectGitRemoteUrlIfMissing,
   updateProject,
