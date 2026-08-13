@@ -1,6 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { runGit, WorkspaceError } from "@bb/host-workspace";
+import {
+  canonicalizeUnmanagedWorkspacePath,
+  runGit,
+  WorkspaceError,
+} from "@bb/host-workspace";
 import { ExpectedCommandDispatchError } from "../command-dispatch-support.js";
 
 const PROJECT_CLONE_TIMEOUT_MS = 20 * 60 * 1000;
@@ -47,7 +51,7 @@ export async function inspectProjectPath(projectPath: string): Promise<{
   path: string;
   gitRemoteUrl: string | null;
 }> {
-  const resolvedPath = path.resolve(projectPath);
+  const resolvedPath = await canonicalizeUnmanagedWorkspacePath(projectPath);
   const result = await runGit(["remote", "get-url", "origin"], {
     cwd: resolvedPath,
     allowFailure: true,

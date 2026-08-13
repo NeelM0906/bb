@@ -46,6 +46,7 @@ import { SIDEBAR_MORE_ACTION_TRIGGER_CLASS } from "@/components/sidebar/sidebarR
 import {
   SIDEBAR_HOVER_ACTIONS_CLASS,
   SIDEBAR_HOVER_ACTIONS_FADE_CLASS,
+  SIDEBAR_HOVER_ACTIONS_MOBILE_ALWAYS_VALUE,
   SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
 } from "@/components/ui/sidebar-hover-actions";
 import { useSidebarSortable } from "@/components/sidebar/sortableMotion";
@@ -122,7 +123,7 @@ export function PluginNavSidebarItems({
 }: {
   onNavigate?: () => void;
   splitEnabled?: boolean;
-  /** Omit to drop the built-in Extensions row, e.g. when its experiment is off. */
+  /** Omit when a host surface should render plugin rows without Extensions. */
   toolsRoutePath?: string;
 }) {
   const { navPanels } = usePluginSlots();
@@ -393,6 +394,25 @@ function PluginNavRowVisibilityMenuItem({
 }
 
 /**
+ * The Extensions row's glyph. Resting is the toolbox; hovering (or focusing)
+ * the row swaps in the tool case.
+ *
+ * Both glyphs are always rendered into one grid cell and only their opacity
+ * changes, so the icon box is the same size in both states and the swap cannot
+ * shift the row's text. The trigger is the shared row-hover CSS the sidebar's
+ * other affordances already use rather than React hover state, so it stays a
+ * paint-only change and matches keyboard focus for free.
+ */
+function ToolsNavSidebarItemIcon() {
+  return (
+    <span className="bb-sidebar-row-icon-swap shrink-0" aria-hidden="true">
+      <Icon name="Toolbox" className="bb-sidebar-row-icon-rest" />
+      <Icon name="ToolCase" className="bb-sidebar-row-icon-hover" />
+    </span>
+  );
+}
+
+/**
  * The Extensions row. It has no split-pane content kind, so it navigates in
  * place and draws no mini-map; everything else matches a plugin row.
  */
@@ -410,7 +430,7 @@ function ToolsNavSidebarItem({
       {...props}
       rowKey={getPluginNavPanelKey(row)}
       title={row.title}
-      icon={<Icon name="Toolbox" />}
+      icon={<ToolsNavSidebarItemIcon />}
       // Never active: AppLayout swaps AppSidebar out for ToolsSidebar on every
       // Extensions route, so this row is only on screen while Extensions is
       // closed.
@@ -597,6 +617,9 @@ function SidebarNavRowChrome({
           ) : null}
           <div
             data-sidebar-hover-actions-open={isActionsOpen ? "true" : undefined}
+            data-sidebar-hover-actions-mobile={
+              SIDEBAR_HOVER_ACTIONS_MOBILE_ALWAYS_VALUE
+            }
             className={cn(
               SIDEBAR_HOVER_ACTIONS_CLASS,
               // right-0 (not right-1): the trigger's own m-1 supplies the inset,

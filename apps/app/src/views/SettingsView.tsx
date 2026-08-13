@@ -38,11 +38,8 @@ import {
 import { useHostDaemon } from "@/hooks/useHostDaemon";
 import { UsageLimitsSettingsSection } from "@/components/settings/UsageLimitsSettingsSection";
 import { SidebarThreadListSetting } from "@/components/settings/SidebarThreadListSetting";
-import {
-  PluginSettingsDetailSection,
-  PluginsSettingsSection,
-} from "@/components/settings/PluginsSettingsSection";
 import { useSettingsNavState } from "@/components/settings/settings-nav";
+import { PluginSettingsPage } from "@/components/plugin/PluginSettings";
 import { FileOpenersSettingsSection } from "@/components/settings/FileOpenersSettingsSection";
 import { VoiceInputSettingsSection } from "@/components/settings/VoiceInputSettingsSection";
 import { CommunitySettingsSection } from "@/components/settings/CommunitySettingsSection";
@@ -216,8 +213,6 @@ export interface ExperimentsSettingsSectionProps {
   onClaudeCodeMockCliTrafficEnabledChange: (enabled: boolean) => void;
   onEditMessagesEnabledChange: (enabled: boolean) => void;
   onNewOnboardingEnabledChange: (enabled: boolean) => void;
-  onToolsHubEnabledChange: (enabled: boolean) => void;
-  toolsHubEnabled: boolean;
 }
 
 const THEME_PREFERENCE_OPTIONS: ReadonlyArray<ThemePreferenceOption> = [
@@ -264,7 +259,7 @@ const SETTINGS_DROPDOWN_CONTENT_CLASS =
 const CREATE_CUSTOM_PALETTE_PROMPT =
   "Create a custom bb palette. First run `bb theme dir` to find the custom theme directory. Ask me for the palette name and visual direction, then create `<theme-dir>/<name>/theme.css` with light and dark theme variables compatible with bb's theme tokens.";
 const PALETTE_SETTING_DESCRIPTION =
-  "Palettes change bb's colors across light and dark mode. Choose a built-in palette or create one from a prompt.";
+  "Palettes change bb's colors, including syntax colors in diffs and file previews. Choose a built-in palette or create one from a prompt.";
 
 // Renders the favicon glyph itself in the candidate color by using the
 // favicon image as a CSS mask, so the preview matches the resulting tab icon.
@@ -957,7 +952,6 @@ export function ProviderSettingsSection({
 const CLAUDE_CODE_MOCK_CLI_TRAFFIC_EXPERIMENT_LABEL = "Mock CLI Traffic";
 const EDIT_MESSAGES_EXPERIMENT_LABEL = "Edit messages";
 const NEW_ONBOARDING_EXPERIMENT_LABEL = "New onboarding";
-const EXTENSIONS_EXPERIMENT_LABEL = "Extensions";
 export function ExperimentsSettingsSection({
   claudeCodeMockCliTrafficEnabled,
   disabled,
@@ -966,8 +960,6 @@ export function ExperimentsSettingsSection({
   onClaudeCodeMockCliTrafficEnabledChange,
   onEditMessagesEnabledChange,
   onNewOnboardingEnabledChange,
-  onToolsHubEnabledChange,
-  toolsHubEnabled,
 }: ExperimentsSettingsSectionProps) {
   return (
     <SettingsSection
@@ -1011,18 +1003,6 @@ export function ExperimentsSettingsSection({
             aria-label={NEW_ONBOARDING_EXPERIMENT_LABEL}
           />
         </SettingsWithControl>
-
-        <SettingsWithControl
-          label={EXTENSIONS_EXPERIMENT_LABEL}
-          description="Enable Extensions for managing skills and plugins. Automations stay in the Plugins section beside threads, and installed skills and plugin runtimes keep working while it is off."
-        >
-          <Switch
-            checked={toolsHubEnabled}
-            disabled={disabled}
-            onCheckedChange={onToolsHubEnabledChange}
-            aria-label={EXTENSIONS_EXPERIMENT_LABEL}
-          />
-        </SettingsWithControl>
       </div>
     </SettingsSection>
   );
@@ -1037,8 +1017,9 @@ export function SettingsView() {
     enabled: hasDaemon,
   });
   const [directoryTargetId, setDirectoryTargetId] =
-    useWorkspaceOpenTargetPreference();
-  const [fileTargetId, setFileTargetId] = useFileOpenTargetPreference();
+    useWorkspaceOpenTargetPreference(workspaceOpenTargets);
+  const [fileTargetId, setFileTargetId] =
+    useFileOpenTargetPreference(workspaceOpenTargets);
   const [openLinksInAppBrowser, setOpenLinksInAppBrowser] =
     useOpenLinksInAppBrowserPreference();
   const [rewriteLocalhostLinks, setRewriteLocalhostLinks] =
@@ -1064,7 +1045,7 @@ export function SettingsView() {
 
   let content: ReactNode = null;
   if (activePluginId !== null) {
-    content = <PluginSettingsDetailSection pluginId={activePluginId} />;
+    content = <PluginSettingsPage pluginId={activePluginId} />;
   } else if (activeProviderId !== null) {
     const isCodex = activeProviderId === "codex";
     content = (
@@ -1194,17 +1175,8 @@ export function SettingsView() {
             newOnboarding: enabled,
           })
         }
-        onToolsHubEnabledChange={(enabled) =>
-          updateExperimentsMutation.mutate({
-            ...experiments,
-            toolsHub: enabled,
-          })
-        }
-        toolsHubEnabled={experiments.toolsHub}
       />
     );
-  } else if (activeSection === "plugins") {
-    content = <PluginsSettingsSection />;
   } else if (activeSection === "community") {
     content = <CommunitySettingsSection />;
   } else if (activeSection === "archived") {

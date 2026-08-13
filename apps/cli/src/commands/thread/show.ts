@@ -364,8 +364,12 @@ export function registerShowCommand(
               console.log(`  Branch:   ${ws.branch.currentBranch}`);
             }
             console.log(`  Changed files: ${ws.workingTree.files.length}`);
-            console.log(`  Insertions:    +${ws.workingTree.insertions}`);
-            console.log(`  Deletions:     -${ws.workingTree.deletions}`);
+            if (ws.workingTree.lineStatsComplete) {
+              console.log(`  Insertions:    +${ws.workingTree.insertions}`);
+              console.log(`  Deletions:     -${ws.workingTree.deletions}`);
+            } else {
+              console.log("  Line stats: unavailable for untracked files");
+            }
             if (ws.mergeBase) {
               console.log(`  Merge base:   ${ws.mergeBase.mergeBaseBranch}`);
               console.log(
@@ -505,6 +509,11 @@ function printThreadStatus(
     console.log(
       `  Admission: waiting on ${thread.admission.hostId} (${thread.admission.waitingReason})`,
     );
+    if (thread.admission.workspace !== null) {
+      console.log(
+        `  Workspace: ${thread.admission.workspace.canonicalPath} (owned by ${thread.admission.workspace.holderThreadId})`,
+      );
+    }
   }
   if (thread.title) {
     console.log(`  Title: ${thread.title}`);

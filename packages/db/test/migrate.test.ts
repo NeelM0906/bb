@@ -81,7 +81,6 @@ interface MigratedManagerCleanupThreadRow {
 }
 
 interface MigratedThreadProvenanceRow {
-  childOrigin: string | null;
   id: string;
   originKind: string | null;
   parentThreadId: string | null;
@@ -242,6 +241,33 @@ const latestMigrationWhen = Math.max(
   ).entries.map((entry) => entry.when),
 );
 
+function dropWorkspaceSafetySchema(db: DbConnection): void {
+  db.$client
+    .prepare("DROP TABLE IF EXISTS environment_path_canonicalizations")
+    .run();
+  db.$client
+    .prepare("DROP TABLE IF EXISTS unmanaged_workspace_mutation_waiters")
+    .run();
+  db.$client
+    .prepare("DROP TABLE IF EXISTS unmanaged_workspace_mutation_leases")
+    .run();
+  db.$client
+    .prepare("DROP TABLE IF EXISTS unmanaged_workspace_mutation_lease_events")
+    .run();
+  const projectColumns = db.$client
+    .prepare<[], TableInfoRow>("PRAGMA table_info(projects)")
+    .all();
+  if (
+    projectColumns.some(
+      (column) => column.name === "protect_unmanaged_workspace",
+    )
+  ) {
+    db.$client
+      .prepare("ALTER TABLE projects DROP COLUMN protect_unmanaged_workspace")
+      .run();
+  }
+}
+
 function restoreWideExperimentsTable(db: DbConnection): void {
   const columns = db.$client
     .prepare<[], TableInfoRow>("PRAGMA table_info(system_experiments)")
@@ -294,6 +320,8 @@ function dropRewindAddedTables(db: DbConnection): void {
   db.$client.prepare("DROP TABLE IF EXISTS plugin_kv").run();
   db.$client.prepare("DROP TABLE IF EXISTS plugin_settings").run();
   db.$client.prepare("DROP TABLE IF EXISTS plugin_schedules").run();
+  db.$client.prepare("DROP TABLE IF EXISTS work_admissions").run();
+  dropWorkspaceSafetySchema(db);
   db.$client
     .prepare("ALTER TABLE hosts DROP COLUMN last_rejected_protocol_version")
     .run();
@@ -380,6 +408,10 @@ const legacyExperimentsMigrationWhen = 1781299832942;
 const eventLargeValuesMigrationWhen = 1781403656069;
 const environmentArchiveGraceMigrationWhen = 1786416023798;
 const threadSearchSourceSeqIndexMigrationWhen = 1786468375011;
+const workAdmissionsMigrationWhen = 1786564115037;
+const threadChildOriginCleanupMigrationWhen = 1786634486955;
+const workspaceSafetyMigrationWhen = 1786634688958;
+const environmentPathCanonicalizationMigrationWhen = 1786647920313;
 const farFutureBranchMigrationWhen = 9_999_999_999_999;
 const eventLargeValuesRestoreMigrationWhen = 1781557200000;
 const cleanupModeDropMigrationWhen = 1781557300000;
@@ -488,6 +520,20 @@ function dropSideChatPluginExperimentColumn(db: DbConnection): void {
   }
 }
 
+// Current schemas no longer have the legacy provenance column. Replay tests
+// that clear later migration rows must reconstruct the historical schema so
+// older migrations can run before 0093 removes the column again.
+function restoreLegacyThreadOriginColumn(db: DbConnection): void {
+  const columns = db.$client
+    .prepare<[], TableInfoRow>("PRAGMA table_info(threads)")
+    .all();
+  if (!columns.some((column) => column.name === "child_origin")) {
+    db.$client
+      .prepare("ALTER TABLE threads ADD COLUMN child_origin text")
+      .run();
+  }
+}
+
 // Migration 0082 drops the `plugins` experiment column. Rewind scenarios that
 // clear its migration row must restore the column before replaying the
 // migration, since ALTER TABLE DROP COLUMN is not re-appliable.
@@ -586,6 +632,7 @@ function dropOnboardingCompletedAtColumn(db: DbConnection): void {
 // real upgrade, where thread-search is repaired before later migrations apply.
 // NOTE: when adding a migration after thread-search, drop its schema here too.
 function resetMigrationsAfterThreadSearch(db: DbConnection): void {
+  restoreLegacyThreadOriginColumn(db);
   dropRewindAddedTables(db);
   db.$client
     .prepare<[number]>("DELETE FROM __drizzle_migrations WHERE created_at > ?")
@@ -741,8 +788,13 @@ function restorePre0022ThreadTypeSchema(db: DbConnection): void {
     DROP INDEX IF EXISTS threads_source_origin_idx;
     ALTER TABLE threads DROP COLUMN source_thread_id;
     ALTER TABLE threads DROP COLUMN origin_kind;
-    ALTER TABLE threads DROP COLUMN child_origin;
   `);
+  const threadColumns = db.$client
+    .prepare<[], TableInfoRow>("PRAGMA table_info(threads)")
+    .all();
+  if (threadColumns.some((row) => row.name === "child_origin")) {
+    db.$client.prepare("ALTER TABLE threads DROP COLUMN child_origin").run();
+  }
 }
 
 function readIndexNames(args: ReadIndexNamesArgs): string[] {
@@ -858,7 +910,12 @@ function markEventLargeValuesMigrationUnapplied(db: DbConnection): void {
     .prepare("ALTER TABLE `threads` DROP COLUMN `source_thread_id`")
     .run();
   db.$client.prepare("ALTER TABLE `threads` DROP COLUMN `origin_kind`").run();
-  db.$client.prepare("ALTER TABLE `threads` DROP COLUMN `child_origin`").run();
+  const threadColumns = db.$client
+    .prepare<[], TableInfoRow>("PRAGMA table_info(threads)")
+    .all();
+  if (threadColumns.some((row) => row.name === "child_origin")) {
+    db.$client.prepare("ALTER TABLE threads DROP COLUMN child_origin").run();
+  }
   db.$client.exec(`
     DROP TRIGGER IF EXISTS thread_search_segments_after_text_update;
     DROP TRIGGER IF EXISTS thread_search_segments_after_delete;
@@ -1379,6 +1436,8 @@ describe("migrate", () => {
         [number]
       >("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
       .run(onboardingMigrationWhen);
+    db.$client.prepare("DROP TABLE work_admissions").run();
+    dropWorkspaceSafetySchema(db);
     db.$client
       .prepare(
         "INSERT INTO projects (id, name, created_at, updated_at, sort_key, kind) VALUES ('proj_a','app',1,1,'V','standard')",
@@ -1388,6 +1447,7 @@ describe("migrate", () => {
     // existing user can have projects without one.
     db.$client.prepare("DELETE FROM app_settings").run();
 
+    restoreLegacyThreadOriginColumn(db);
     migrate(db);
 
     const row = db.$client
@@ -1476,6 +1536,7 @@ describe("migrate", () => {
         "DROP INDEX IF EXISTS `threads_origin_plugin_archived_idx`",
       );
       restoreSideChatPluginExperimentColumn(db);
+      restoreLegacyThreadOriginColumn(db);
       runMigrationFile({ db, migrationPath: sideChatPluginOnlyMigrationPath });
 
       const rows = db.$client
@@ -1653,6 +1714,8 @@ describe("migrate", () => {
           "DELETE FROM __drizzle_migrations WHERE created_at >= ?",
         )
         .run(permissionModesMigrationWhen);
+      db.$client.prepare("DROP TABLE work_admissions").run();
+      dropWorkspaceSafetySchema(db);
       dropSideChatPluginExperimentColumn(db);
       dropToolsHubExperimentColumn(db);
       restorePluginsExperimentColumn(db);
@@ -1662,6 +1725,7 @@ describe("migrate", () => {
       dropHostMaxPermissionModeColumn(db);
       dropEnvironmentRetireRequestedAtColumn(db);
 
+      restoreLegacyThreadOriginColumn(db);
       migrate(db);
 
       expect(
@@ -2052,6 +2116,8 @@ describe("migrate", () => {
           "DELETE FROM __drizzle_migrations WHERE created_at >= ?",
         )
         .run(threadSectionsRepairMigrationWhen);
+      db.$client.prepare("DROP TABLE work_admissions").run();
+      dropWorkspaceSafetySchema(db);
       dropSideChatPluginExperimentColumn(db);
       dropToolsHubExperimentColumn(db);
       restorePluginsExperimentColumn(db);
@@ -2061,6 +2127,7 @@ describe("migrate", () => {
       dropHostMaxPermissionModeColumn(db);
       dropEnvironmentRetireRequestedAtColumn(db);
 
+      restoreLegacyThreadOriginColumn(db);
       expect(
         db.$client
           .prepare<[number], MigrationCountRow>(
@@ -2148,6 +2215,8 @@ describe("migrate", () => {
           "DELETE FROM __drizzle_migrations WHERE created_at >= ?",
         )
         .run(threadSectionsRepairMigrationWhen);
+      db.$client.prepare("DROP TABLE work_admissions").run();
+      dropWorkspaceSafetySchema(db);
       dropSideChatPluginExperimentColumn(db);
       dropToolsHubExperimentColumn(db);
       restorePluginsExperimentColumn(db);
@@ -2157,6 +2226,7 @@ describe("migrate", () => {
       dropHostMaxPermissionModeColumn(db);
       dropEnvironmentRetireRequestedAtColumn(db);
 
+      restoreLegacyThreadOriginColumn(db);
       expect(() => migrate(db)).not.toThrow();
 
       expect(readTableNames(db)).toContain("thread_sections");
@@ -2368,6 +2438,7 @@ describe("migrate", () => {
       db.$client
         .prepare("ALTER TABLE `threads` DROP COLUMN `origin_kind`")
         .run();
+      restoreLegacyThreadOriginColumn(db);
       db.$client
         .prepare<DeleteMigrationParameters>(
           `
@@ -2471,8 +2542,7 @@ describe("migrate", () => {
                 id,
                 parent_thread_id AS parentThreadId,
                 source_thread_id AS sourceThreadId,
-                origin_kind AS originKind,
-                child_origin AS childOrigin
+                origin_kind AS originKind
               FROM threads
               WHERE id IN ('thr_delegated_child', 'thr_fork', 'thr_side_chat')
               ORDER BY id
@@ -2485,14 +2555,12 @@ describe("migrate", () => {
           parentThreadId: "thr_source",
           sourceThreadId: null,
           originKind: null,
-          childOrigin: null,
         },
         {
           id: "thr_fork",
           parentThreadId: null,
           sourceThreadId: "thr_source",
           originKind: "fork",
-          childOrigin: null,
         },
         {
           // 0038 moves the provenance, then 0084 hands the side chat to the
@@ -2501,9 +2569,14 @@ describe("migrate", () => {
           parentThreadId: null,
           sourceThreadId: "thr_source",
           originKind: "fork",
-          childOrigin: null,
         },
       ]);
+      expect(
+        db.$client
+          .prepare<[], TableInfoRow>("PRAGMA table_info(threads)")
+          .all()
+          .some((column) => column.name === "child_origin"),
+      ).toBe(false);
     } finally {
       closeConnection(db);
     }
@@ -4018,16 +4091,15 @@ describe("migrate", () => {
 
     try {
       migrate(db);
-      db.$client.exec(`
-        DROP INDEX thread_search_segments_thread_source_seq_idx;
-        CREATE INDEX thread_search_segments_thread_idx
-          ON thread_search_segments (thread_id);
-      `);
+      dropWorkspaceSafetySchema(db);
       db.$client
-        .prepare<DeleteMigrationParameters>(
-          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
-        )
-        .run(threadSearchSourceSeqIndexMigrationWhen);
+        .prepare<
+          [number, number]
+        >("DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?)")
+        .run(
+          workspaceSafetyMigrationWhen,
+          environmentPathCanonicalizationMigrationWhen,
+        );
       db.$client
         .prepare<InsertMigrationParameters>(
           "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
@@ -4037,11 +4109,17 @@ describe("migrate", () => {
       expect(() => migrate(db)).not.toThrow();
 
       expect(readAppliedMigrationCreatedAts(db)).toContain(
-        threadSearchSourceSeqIndexMigrationWhen,
+        workspaceSafetyMigrationWhen,
       );
-      expect(
-        readIndexNames({ db, tableName: "thread_search_segments" }),
-      ).toContain("thread_search_segments_thread_source_seq_idx");
+      expect(readAppliedMigrationCreatedAts(db)).toContain(
+        environmentPathCanonicalizationMigrationWhen,
+      );
+      expect(readTableNames(db)).toContain(
+        "unmanaged_workspace_mutation_leases",
+      );
+      expect(readTableNames(db)).toContain(
+        "environment_path_canonicalizations",
+      );
     } finally {
       closeConnection(db);
     }
@@ -4057,14 +4135,21 @@ describe("migrate", () => {
         DROP INDEX thread_search_segments_thread_source_seq_idx;
         CREATE INDEX thread_search_segments_thread_idx
           ON thread_search_segments (thread_id);
+        DROP TABLE work_admissions;
+        ALTER TABLE threads ADD COLUMN child_origin text;
       `);
+      dropWorkspaceSafetySchema(db);
       db.$client
-        .prepare<[number, number]>(
-          "DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?)",
-        )
+        .prepare<
+          [number, number, number, number, number, number]
+        >("DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?, ?, ?, ?, ?)")
         .run(
           environmentArchiveGraceMigrationWhen,
           threadSearchSourceSeqIndexMigrationWhen,
+          workAdmissionsMigrationWhen,
+          threadChildOriginCleanupMigrationWhen,
+          workspaceSafetyMigrationWhen,
+          environmentPathCanonicalizationMigrationWhen,
         );
       db.$client
         .prepare<InsertMigrationParameters>(
@@ -4078,6 +4163,10 @@ describe("migrate", () => {
         expect.arrayContaining([
           environmentArchiveGraceMigrationWhen,
           threadSearchSourceSeqIndexMigrationWhen,
+          workAdmissionsMigrationWhen,
+          threadChildOriginCleanupMigrationWhen,
+          workspaceSafetyMigrationWhen,
+          environmentPathCanonicalizationMigrationWhen,
         ]),
       );
       expect(
@@ -4089,6 +4178,19 @@ describe("migrate", () => {
       expect(
         readIndexNames({ db, tableName: "thread_search_segments" }),
       ).toContain("thread_search_segments_thread_source_seq_idx");
+      expect(readTableNames(db)).toContain("work_admissions");
+      expect(readTableNames(db)).toContain(
+        "unmanaged_workspace_mutation_leases",
+      );
+      expect(readTableNames(db)).toContain(
+        "environment_path_canonicalizations",
+      );
+      expect(
+        db.$client
+          .prepare<[], TableInfoRow>("PRAGMA table_info(threads)")
+          .all()
+          .map((column) => column.name),
+      ).not.toContain("child_origin");
     } finally {
       closeConnection(db);
     }
@@ -4132,9 +4234,10 @@ describe("migrate", () => {
       );
       expect(
         db.$client
-          .prepare<[number, string], MigrationCountRow>(
-            "SELECT COUNT(*) AS count FROM __drizzle_migrations WHERE created_at = ? AND hash = ?",
-          )
+          .prepare<
+            [number, string],
+            MigrationCountRow
+          >("SELECT COUNT(*) AS count FROM __drizzle_migrations WHERE created_at = ? AND hash = ?")
           .get(threadSearchSourceSeqIndexMigrationWhen, "wrong-canonical-hash"),
       ).toEqual({ count: 1 });
     } finally {
@@ -4172,13 +4275,18 @@ describe("migrate", () => {
 
     try {
       migrate(db);
+      dropWorkspaceSafetySchema(db);
       db.$client
-        .prepare<[number, number]>(
-          "DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?)",
-        )
+        .prepare<
+          [number, number, number, number, number, number]
+        >("DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?, ?, ?, ?, ?)")
         .run(
           environmentArchiveGraceMigrationWhen,
           threadSearchSourceSeqIndexMigrationWhen,
+          workAdmissionsMigrationWhen,
+          threadChildOriginCleanupMigrationWhen,
+          workspaceSafetyMigrationWhen,
+          environmentPathCanonicalizationMigrationWhen,
         );
       db.$client
         .prepare<InsertMigrationParameters>(
@@ -4194,6 +4302,18 @@ describe("migrate", () => {
       );
       expect(readAppliedMigrationCreatedAts(db)).not.toContain(
         threadSearchSourceSeqIndexMigrationWhen,
+      );
+      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
+        workAdmissionsMigrationWhen,
+      );
+      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
+        threadChildOriginCleanupMigrationWhen,
+      );
+      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
+        workspaceSafetyMigrationWhen,
+      );
+      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
+        environmentPathCanonicalizationMigrationWhen,
       );
     } finally {
       closeConnection(db);
@@ -4649,7 +4769,8 @@ describe("migrate", () => {
         providerId: "codex",
         originKind: "fork",
       });
-      const childOriginSideChat = createThread(db, noopNotifier, {
+      restoreLegacyThreadOriginColumn(db);
+      const legacyOriginSideChat = createThread(db, noopNotifier, {
         projectId: project.id,
         providerId: "codex",
       });
@@ -4663,7 +4784,7 @@ describe("migrate", () => {
         .run(originKindSideChat.id);
       db.$client
         .prepare("UPDATE threads SET child_origin = 'side-chat' WHERE id = ?")
-        .run(childOriginSideChat.id);
+        .run(legacyOriginSideChat.id);
 
       // The merged 0079 also ADDs the experiment column; drop it first so the
       // ALTER re-applies cleanly and the backfill UPDATE runs on seeded rows.
@@ -4680,7 +4801,7 @@ describe("migrate", () => {
           )
           .all()
           .filter((row) =>
-            [originKindSideChat.id, childOriginSideChat.id, fork.id].includes(
+            [originKindSideChat.id, legacyOriginSideChat.id, fork.id].includes(
               row.id,
             ),
           )
@@ -4688,7 +4809,7 @@ describe("migrate", () => {
       ).toEqual(
         [
           { id: originKindSideChat.id, visibility: "hidden" },
-          { id: childOriginSideChat.id, visibility: "hidden" },
+          { id: legacyOriginSideChat.id, visibility: "hidden" },
           { id: fork.id, visibility: "visible" },
         ].sort((left, right) => left.id.localeCompare(right.id)),
       );

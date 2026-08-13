@@ -245,6 +245,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       });
       await closeWebSockets();
       await closeServer;
+      hub.shutdown();
       await dbReadWorker.shutdown();
       db.$client.close();
     })();

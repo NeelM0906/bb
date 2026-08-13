@@ -7,6 +7,7 @@ import {
   type LocalPathProjectSource,
 } from "@bb/domain";
 import { Button } from "@bb/shared-ui/button";
+import { Switch } from "@bb/shared-ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -27,11 +28,13 @@ import { MachineStatusDot } from "@/components/machines/MachineStatusDot";
 import {
   SettingsRowList,
   SettingsSection,
+  SettingsWithControl,
 } from "@/components/ui/settings-section.js";
 import { ProjectSourceRow } from "@/views/project-settings/ProjectSourceRow";
 import {
   useAddLocalProjectSource,
   useDeleteLocalProjectSource,
+  useUpdateProject,
   useUpdateLocalProjectSource,
 } from "@/hooks/mutations/project-mutations";
 import {
@@ -66,6 +69,7 @@ export function ProjectSettingsView() {
   const deleteSource = useDeleteLocalProjectSource();
   const addLocalSource = useAddLocalProjectSource();
   const updateLocalSource = useUpdateLocalProjectSource();
+  const updateProject = useUpdateProject();
 
   const project = projects?.find((p) => p.id === projectId);
   const projectSources = project?.sources;
@@ -227,6 +231,28 @@ export function ProjectSettingsView() {
   return (
     <PageShell contentClassName="pt-4 md:pt-5">
       <div className="mx-auto w-full max-w-3xl space-y-6">
+        <SettingsSection
+          title="Workspace Safety"
+          description="Control mutation concurrency for unmanaged project folders."
+        >
+          <SettingsWithControl
+            label="Protect unmanaged workspaces"
+            description="Allow only one thread or automation at a time to mutate a shared physical folder, including aliases used by other projects."
+          >
+            <Switch
+              aria-label="Protect unmanaged workspaces"
+              checked={project?.protectUnmanagedWorkspace ?? false}
+              disabled={!project || updateProject.isPending}
+              onCheckedChange={(protectUnmanagedWorkspace) => {
+                if (!project) return;
+                updateProject.mutate({
+                  id: project.id,
+                  protectUnmanagedWorkspace,
+                });
+              }}
+            />
+          </SettingsWithControl>
+        </SettingsSection>
         <SettingsSection title="Project Sources">
           {isLoading ? (
             <p className="text-sm text-muted-foreground">Loading…</p>

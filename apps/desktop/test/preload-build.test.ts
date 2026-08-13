@@ -117,6 +117,11 @@ async function startDesktopSmokeServer(
             customCss: null,
             faviconColor: "default",
             themeId: "default",
+            resolvedCodeTheme: {
+              dark: "pierre-dark",
+              light: "pierre-light",
+              files: {},
+            },
           },
           customThemes: [],
           pluginThemes: [],
@@ -125,7 +130,6 @@ async function startDesktopSmokeServer(
             claudeCodeMockCliTraffic: false,
             editMessages: false,
             newOnboarding: false,
-            toolsHub: false,
           },
           featureFlags: {
             placeholder: false,

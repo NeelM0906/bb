@@ -2,8 +2,12 @@ import type {
   HostDaemonEnvironmentChangePayload,
   HostDaemonEnvironmentMetadataChangePayload,
 } from "@bb/host-daemon-contract";
-import { getEnvironment, type DbNotifier } from "@bb/db";
-import { recordProvisionedEnvironmentWorkspace } from "@bb/db/internal-environment-lifecycle";
+import {
+  getEnvironment,
+  getEnvironmentCanonicalPath,
+  type DbNotifier,
+} from "@bb/db";
+import { recordObservedEnvironmentWorkspaceMetadata } from "@bb/db/internal-environment-lifecycle";
 import type { AppDeps } from "../types.js";
 
 interface EnvironmentChangeNotificationDeps {
@@ -58,12 +62,12 @@ export function recordDaemonEnvironmentMetadataChange(
     !environment ||
     environment.hostId !== args.hostId ||
     environment.status === "destroyed" ||
-    environment.path !== args.workspace.path
+    getEnvironmentCanonicalPath(deps.db, environment.id) !== args.workspace.path
   ) {
     return;
   }
 
-  recordProvisionedEnvironmentWorkspace(
+  recordObservedEnvironmentWorkspaceMetadata(
     deps.db,
     deps.hub,
     environment.id,

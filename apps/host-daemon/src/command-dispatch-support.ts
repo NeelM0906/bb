@@ -16,7 +16,10 @@ import type {
   ProviderCliStatus,
   WorkspaceContext,
 } from "@bb/host-daemon-contract";
-import { getPersonalWorkspaceRoot } from "@bb/host-workspace";
+import {
+  canonicalizeUnmanagedWorkspacePath,
+  getPersonalWorkspaceRoot,
+} from "@bb/host-workspace";
 import type { InteractiveResolveCommandInput } from "./interactive-request-registry.js";
 import { RuntimeManager, type RuntimeEntry } from "./runtime-manager.js";
 import type { TerminalManager } from "./terminals/terminal-manager.js";
@@ -95,7 +98,10 @@ export function isExpectedCommandDispatchError(
   return error instanceof ExpectedCommandDispatchError;
 }
 
-const EXPECTED_ONLINE_RPC_FAILURE_CODES = new Set(["provision_cancelled"]);
+const EXPECTED_ONLINE_RPC_FAILURE_CODES = new Set([
+  "file_too_large",
+  "provision_cancelled",
+]);
 
 export function isExpectedOnlineRpcFailureError(error: unknown): boolean {
   return (
@@ -225,7 +231,22 @@ export async function requireWorkspaceEnvironment(
 ): Promise<RuntimeEntry> {
   const existing = await runtimeManager.getOrAwait(args.environmentId);
   if (existing) {
-    if (existing.path !== args.workspaceContext.workspacePath) {
+    let requestedWorkspacePath = args.workspaceContext.workspacePath;
+    if (
+      existing.path !== requestedWorkspacePath &&
+      args.workspaceContext.workspaceProvisionType === "unmanaged"
+    ) {
+      try {
+        requestedWorkspacePath = await canonicalizeUnmanagedWorkspacePath(
+          requestedWorkspacePath,
+        );
+      } catch {
+        // Preserve the established mismatch contract below. A stale or
+        // inaccessible alias must evict the resident runtime and retry from a
+        // fresh provision, just like any other path mismatch.
+      }
+    }
+    if (existing.path !== requestedWorkspacePath) {
       await runtimeManager.forgetEnvironment(args.environmentId);
       throw new ExpectedCommandDispatchError(
         "workspace_type_mismatch",

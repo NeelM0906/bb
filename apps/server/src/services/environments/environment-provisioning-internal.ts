@@ -639,6 +639,7 @@ export function settleEnvironmentProvisionCommandResult(
     for (const thread of boundThreads) {
       if (thread.deletedAt !== null) {
         const finalized = finalizeStoppedThreadInTransaction(args.deps, {
+          runtimeStopped: true,
           threadId: thread.id,
         });
         if (finalized) {
@@ -662,6 +663,7 @@ export function settleEnvironmentProvisionCommandResult(
             },
             run: (deps) => {
               finalizeStoppedThreadAndRequestCleanupAdvance(deps, {
+                runtimeStopped: true,
                 threadId: thread.id,
               });
             },
@@ -857,6 +859,7 @@ export function settleEnvironmentProvisionCancelCommandResult(
   for (const thread of stoppedThreads) {
     finalizedThread =
       finalizeStoppedThreadInTransaction(args.deps, {
+        runtimeStopped: true,
         threadId: thread.id,
       }) || finalizedThread;
   }

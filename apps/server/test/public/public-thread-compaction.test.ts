@@ -1,8 +1,5 @@
-import { describe, expect, it } from "vitest";
-import {
-  getLatestThreadSequence,
-  listQueuedThreadMessages,
-} from "@bb/db";
+import { describe, expect, it, vi } from "vitest";
+import { getLatestThreadSequence, listQueuedThreadMessages } from "@bb/db";
 import {
   createStandaloneBuiltinCompactCommandInput,
   turnScope,
@@ -59,6 +56,23 @@ function registerSuccessfulTurnResponder(
   return registerHostRpcResponder(harness, {
     ...args,
     handle: ({ command }): HostRpcHandlerResult => {
+      if (command.type === "host.admission.reserve") {
+        return {
+          ok: true,
+          result: {
+            outcome: "reserved",
+            reservation: {
+              generation: 1,
+              hostId: args.hostId,
+              reason: command.reason,
+              token: `test-admission:${command.threadId}`,
+            },
+          },
+        };
+      }
+      if (command.type === "host.admission.release") {
+        return { ok: true, result: { released: true } };
+      }
       if (command.type === "host.list_files") {
         return { ok: true, result: { files: [], truncated: false } };
       }
@@ -125,6 +139,13 @@ describe("public thread compaction", () => {
         response.status,
         JSON.stringify(await readJson(response.clone())),
       ).toBe(200);
+      await vi.waitFor(() => {
+        expect(
+          responder.requests.some(
+            ({ command }) => command.type === "turn.submit",
+          ),
+        ).toBe(true);
+      });
       const turnSubmitRequests = responder.requests.filter(
         ({ command }) => command.type === "turn.submit",
       );
@@ -157,9 +178,15 @@ describe("public thread compaction", () => {
         { method: "POST" },
       );
       expect(compactResponse.status).toBe(200);
-      const compactRequest = responder.requests.find(
+      let compactRequest = responder.requests.find(
         ({ command }) => command.type === "turn.submit",
       );
+      await vi.waitFor(() => {
+        compactRequest = responder.requests.find(
+          ({ command }) => command.type === "turn.submit",
+        );
+        expect(compactRequest).toBeDefined();
+      });
       if (!compactRequest || compactRequest.command.type !== "turn.submit") {
         throw new Error("Expected compaction turn.submit request");
       }
@@ -242,12 +269,14 @@ describe("public thread compaction", () => {
         }),
       ).toBe(true);
       expect(listQueuedThreadMessages(harness.db, thread.id)).toHaveLength(0);
-      await expect.poll(
-        () =>
-          responder.requests.filter(
-            ({ command }) => command.type === "turn.submit",
-          ).length,
-      ).toBe(2);
+      await expect
+        .poll(
+          () =>
+            responder.requests.filter(
+              ({ command }) => command.type === "turn.submit",
+            ).length,
+        )
+        .toBe(2);
     });
   });
 

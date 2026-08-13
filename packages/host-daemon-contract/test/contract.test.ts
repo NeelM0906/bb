@@ -1,5 +1,5 @@
 import { collectOptionalFieldPaths } from "@bb/test-helpers";
-import { threadScope, type JsonObject } from "@bb/domain";
+import { threadScope, turnScope, type JsonObject } from "@bb/domain";
 import { describe, expect, it } from "vitest";
 import * as contract from "../src/index.js";
 import {
@@ -110,6 +110,7 @@ const WORKSPACE_STATUS_AVAILABLE_RESULT: JsonObject = {
     workingTree: {
       insertions: 3,
       deletions: 1,
+      lineStatsComplete: true,
       files: [
         {
           path: "src/index.ts",
@@ -133,6 +134,7 @@ const WORKSPACE_STATUS_AVAILABLE_RESULT: JsonObject = {
     mergeBase: {
       insertions: 5,
       deletions: 0,
+      lineStatsComplete: true,
       files: [
         {
           path: "README.md",
@@ -519,7 +521,7 @@ const SETTLED_RESPONSE_RESULT_FIXTURES: SettledResponseResultFixtures = {
   "turn.submit": {
     appliedAs: "new-turn",
   },
-  "thread.stop": {},
+  "thread.stop": { providerCheckpointId: null },
   "thread.goal.clear": { cleared: true },
   "thread.plan.cancel": { cancelled: true },
   "thread.rename": {},
@@ -706,6 +708,8 @@ function terminalDataBase64(byteLength: number): string {
 }
 
 const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
+  "hostDaemonOnlineRpcCommandSchema.retryableRequestId":
+    "host.admission.release omits retryableRequestId for terminal releases; temporary capacity releases nominate only the durable admission request that may retry.",
   "hostDaemonCommandSchema.acpLaunchSpec":
     "thread.start and turn.submit include an ACP launch spec only for dynamic ACP providers; built-ins resolve from daemon-side profiles.",
   "hostDaemonCommandSchema.acpLaunchSpec.cwd":
@@ -1080,10 +1084,30 @@ describe("host-daemon local schemas", () => {
 });
 
 describe("host-daemon command schemas", () => {
-  // Version 107 coordinates provider-exit reconciliation and host admission.
-  // Older daemons cannot preserve either lifecycle invariant.
-  it("uses protocol version 107 for lifecycle and admission reconciliation", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(107);
+  // Version 120 guarantees project.inspect returns the host filesystem's
+  // canonical path. The server relies on it to serialize legacy unmanaged
+  // aliases, so older daemons must update before provider work is admitted.
+  // Version 119 adds host-wide provider-work admission reservations and
+  // carries required workspace diff limits and line-stat completeness over
+  // the host wire. Older daemons cannot enforce or interpret these fields, so
+  // enrolled machines must update before handling either operation.
+  // Version 118 rejects successful provider update results when the daemon
+  // cannot verify a version change. Older daemons can report a no-op Claude
+  // update as successful, so enrolled machines must update for honest results.
+  // Version 117 adds thread/context/cleared to the provider event wire model.
+  // Version 116 reports provider exits that happen while a turn start is
+  // pending. Older daemons can leave the server thread active until the live
+  // command timeout, so enrolled machines must update before handling turns.
+  // Version 115 settles zero-work provider prompts with a complete synthetic
+  // turn lifecycle. Older daemons can leave locally handled prompts active
+  // indefinitely, so enrolled machines must update for reliable completion.
+  // Version 114 lets the daemon report `none` in Pi model reasoning efforts.
+  // A version 113 server accepts that value on the wire but rejects it later
+  // against its Pi provider ladder, so enrolled machines must not run that
+  // mixed version. Version 113 carried the Devin Desktop open target rename
+  // and remains part of the protocol lineage.
+  it("uses protocol version 120 for canonical legacy workspace inspection", () => {
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(120);
   });
 
   it("binds Plan cancellation to a required turn id and typed result", () => {
@@ -1670,6 +1694,7 @@ describe("host-daemon command schemas", () => {
         target: { type: "uncommitted" },
         maxDiffBytes: 1000,
         maxFileListBytes: 1000,
+        maxUntrackedFiles: 5000,
       },
     ];
 
@@ -2813,6 +2838,7 @@ describe("host-daemon command schemas", () => {
           workingTree: {
             insertions: 0,
             deletions: 0,
+            lineStatsComplete: true,
             files: [],
             hasUncommittedChanges: false,
             state: "clean",
@@ -3047,6 +3073,31 @@ describe("host-daemon session schemas", () => {
       eventGroups: [
         {
           threadId: "thr_123",
+        },
+      ],
+    });
+
+    expect(
+      hostDaemonEventBatchRequestSchema.parse({
+        sessionId: "session_123",
+        eventGroups: [
+          {
+            threadId: "thr_123",
+            events: [
+              {
+                type: "thread/context/cleared",
+                threadId: "thr_123",
+                providerThreadId: "provider-thread-123",
+                scope: turnScope("turn_123"),
+              },
+            ],
+          },
+        ],
+      }),
+    ).toMatchObject({
+      eventGroups: [
+        {
+          events: [{ type: "thread/context/cleared" }],
         },
       ],
     });

@@ -23,7 +23,6 @@ export function makeThreadResponse(
     parentThreadId: null,
     sourceThreadId: null,
     originKind: null,
-    childOrigin: null,
     originPluginId: null,
     visibility: "visible",
     archivedAt: null,
@@ -35,6 +34,7 @@ export function makeThreadResponse(
     updatedAt: 0,
     runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null },
     activeBackgroundAgentCount: 0,
+    admission: null,
     canSpawnChild: true,
     ...overrides,
   };

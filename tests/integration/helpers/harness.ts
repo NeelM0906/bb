@@ -20,6 +20,7 @@ import {
   type HostDaemonApp,
 } from "@bb/host-daemon/test";
 import { createHostDaemonClient } from "@bb/host-daemon-contract";
+import { createDbReadWorkerService } from "../../../apps/server/src/db-read-worker/service.js";
 import { initDb } from "../../../apps/server/src/db.js";
 import { createLifecycleDedupers } from "../../../apps/server/src/lifecycle-dedupers.js";
 import { createApp } from "../../../apps/server/src/server.js";
@@ -215,7 +216,10 @@ async function startIntegrationServer(
     targetPath: builtinSkillsRootPath,
   });
 
-  const db = initDb(":memory:");
+  const databasePath = path.join(serverDataDir, "bb.sqlite");
+  const db = initDb(databasePath);
+  const dbReadWorker = createDbReadWorkerService({ databasePath });
+  await dbReadWorker.ready();
   const hub = new NotificationHub();
   const sharedPorts = new HostSharedPortCoordinator({ db, hub });
   const watchInterests = new WatchInterestCoordinator({ db, hub });
@@ -287,6 +291,7 @@ async function startIntegrationServer(
     bbAppManagedConfig,
     config,
     db,
+    dbReadWorker,
     hub,
     lifecycleDedupers,
     logger: testLogger,
@@ -340,6 +345,9 @@ async function startIntegrationServer(
           resolve();
         });
       });
+      hub.shutdown();
+      await dbReadWorker.shutdown();
+      db.$client.close();
     },
   };
 }
@@ -430,9 +438,11 @@ export async function createIntegrationHarness(
   const daemonDataDir = path.join(tmpRoot, "daemon-data");
   const threadStorageRootPath = path.join(daemonDataDir, "thread-storage");
   await fs.mkdir(threadStorageRootPath, { recursive: true });
-  const repoDir = await createTestGitRepo({
-    repoDir: path.join(reposRoot, "test-project"),
-  });
+  const repoDir = await fs.realpath(
+    await createTestGitRepo({
+      repoDir: path.join(reposRoot, "test-project"),
+    }),
+  );
 
   let server: RunningTestServer | null = null;
   let daemonResources: HarnessDaemonResources | null = null;

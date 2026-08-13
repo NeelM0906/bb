@@ -188,7 +188,7 @@ export class PiSdkSession {
   private autoRetryInProgress = false;
   private disposingSession: AgentSession | undefined;
   private sessionDisposalPromise: Promise<void> | undefined;
-  private sessionClosePromise: Promise<void> | undefined;
+  private sessionClosePromise: Promise<string | undefined> | undefined;
   private terminalSteerSettlementTimeout:
     | ReturnType<typeof setTimeout>
     | undefined;
@@ -279,7 +279,22 @@ export class PiSdkSession {
     this.session = session;
 
     try {
-      await session.bindExtensions({ mode: "rpc" });
+      await session.bindExtensions({
+        mode: "rpc",
+        abortHandler: () => {
+          void session.abort();
+        },
+        shutdownHandler: () => {
+          this.onDone();
+        },
+        onError: (error) => {
+          this.onDone(
+            new Error(
+              `Pi extension error (${error.extensionPath}, ${error.event}): ${error.error}`,
+            ),
+          );
+        },
+      });
       this.ensureCustomToolsActive();
 
       // Subscribe to session events
@@ -375,15 +390,15 @@ export class PiSdkSession {
     );
     this.detach();
     const session = this.session;
+    this.session = undefined;
     if (session) {
       void this.disposeSession(session).catch(() => undefined);
     }
   }
 
-  async closeGracefully(timeoutMs: number): Promise<void> {
+  async closeGracefully(timeoutMs: number): Promise<string | undefined> {
     if (this.sessionClosePromise) {
-      await this.sessionClosePromise;
-      return;
+      return this.sessionClosePromise;
     }
 
     const session = this.session;
@@ -393,7 +408,7 @@ export class PiSdkSession {
     this.detach();
     if (!session) {
       await this.sessionDisposalPromise;
-      return;
+      return undefined;
     }
 
     this.session = undefined;
@@ -401,7 +416,7 @@ export class PiSdkSession {
     const closePromise = this.closeSessionGracefully(session, timeoutMs);
     this.sessionClosePromise = closePromise;
     try {
-      await closePromise;
+      return await closePromise;
     } finally {
       if (this.sessionClosePromise === closePromise) {
         this.sessionClosePromise = undefined;
@@ -412,14 +427,16 @@ export class PiSdkSession {
   private async closeSessionGracefully(
     session: AgentSession,
     timeoutMs: number,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    let providerCheckpointId: string | undefined;
     try {
       const abortCompleted = session.abort().catch(() => undefined);
       const timeoutReached = new Promise<void>((resolve) => {
         timeout = setTimeout(resolve, timeoutMs);
       });
       await Promise.race([abortCompleted, timeoutReached]);
+      providerCheckpointId = session.sessionManager.getLeafId() ?? undefined;
       await this.disposeSession(session, timeoutReached);
     } finally {
       if (timeout) {
@@ -428,6 +445,7 @@ export class PiSdkSession {
       this.isProcessing = false;
       this.isCompacting = false;
     }
+    return providerCheckpointId;
   }
 
   private disposeSession(

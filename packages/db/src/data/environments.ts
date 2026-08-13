@@ -1,4 +1,13 @@
-import { and, eq, inArray, ne, sql, lt } from "drizzle-orm";
+import {
+  and,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  sql,
+  lt,
+} from "drizzle-orm";
 import type {
   DiscoveredWorkspaceProperties,
   EnvironmentChangeKind,
@@ -10,7 +19,10 @@ import type {
 import { evaluateEnvironmentLifecycleEvent } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
 import type { DbNotifier } from "../notifier.js";
-import { environments } from "../schema.js";
+import {
+  environmentPathCanonicalizations,
+  environments,
+} from "../schema.js";
 import { createEnvironmentId } from "../ids.js";
 
 type EnvironmentReadConnection = DbConnection | DbTransaction;
@@ -136,6 +148,72 @@ export function listEnvironments(db: DbConnection, projectId?: string) {
       .all();
   }
   return db.select().from(environments).all();
+}
+
+export function listUncanonicalizedLiveUnmanagedEnvironmentsOnHost(
+  db: EnvironmentReadConnection,
+  hostId: string,
+): EnvironmentRow[] {
+  return db
+    .select({ environment: environments })
+    .from(environments)
+    .leftJoin(
+      environmentPathCanonicalizations,
+      and(
+        eq(environmentPathCanonicalizations.environmentId, environments.id),
+        eq(environmentPathCanonicalizations.path, environments.path),
+      ),
+    )
+    .where(
+      and(
+        eq(environments.hostId, hostId),
+        eq(environments.workspaceProvisionType, "unmanaged"),
+        ne(environments.status, "destroyed"),
+        isNotNull(environments.path),
+        isNull(environmentPathCanonicalizations.environmentId),
+      ),
+    )
+    .all()
+    .map((row) => row.environment);
+}
+
+export function clearEnvironmentPathCanonicalizationsForHost(
+  db: EnvironmentWriteConnection,
+  hostId: string,
+): string[] {
+  const environmentIds = db
+    .select({ id: environments.id })
+    .from(environments)
+    .where(eq(environments.hostId, hostId))
+    .all()
+    .map((environment) => environment.id);
+  if (environmentIds.length === 0) return [];
+  db.delete(environmentPathCanonicalizations)
+    .where(
+      inArray(environmentPathCanonicalizations.environmentId, environmentIds),
+    )
+    .run();
+  return environmentIds;
+}
+
+export function getEnvironmentCanonicalPath(
+  db: EnvironmentReadConnection,
+  environmentId: string,
+): string | null {
+  const environment = getEnvironment(db, environmentId);
+  if (!environment || environment.path === null) return null;
+  return (
+    db
+      .select({ canonicalPath: environmentPathCanonicalizations.canonicalPath })
+      .from(environmentPathCanonicalizations)
+      .where(
+        and(
+          eq(environmentPathCanonicalizations.environmentId, environment.id),
+          eq(environmentPathCanonicalizations.path, environment.path),
+        ),
+      )
+      .get()?.canonicalPath ?? environment.path
+  );
 }
 
 export function listEnvironmentsByIds(
@@ -301,6 +379,41 @@ export function recordEnvironmentCurrentBranch(
   });
 }
 
+/** Persist a host-observed canonical path for a legacy unmanaged workspace. */
+export function recordEnvironmentCanonicalPath(
+  db: EnvironmentWriteConnection,
+  notifier: DbNotifier,
+  id: string,
+  canonicalPath: string,
+) {
+  void notifier;
+  const environment = getEnvironment(db, id);
+  if (!environment || environment.path === null) return null;
+  recordEnvironmentPathCanonicalization(
+    db,
+    environment.id,
+    environment.path,
+    canonicalPath,
+  );
+  return environment;
+}
+
+function recordEnvironmentPathCanonicalization(
+  db: EnvironmentWriteConnection,
+  environmentId: string,
+  path: string,
+  canonicalPath: string,
+): void {
+  const confirmedAt = Date.now();
+  db.insert(environmentPathCanonicalizations)
+    .values({ canonicalPath, confirmedAt, environmentId, path })
+    .onConflictDoUpdate({
+      target: environmentPathCanonicalizations.environmentId,
+      set: { canonicalPath, confirmedAt, path },
+    })
+    .run();
+}
+
 export interface RecordProvisionedEnvironmentWorkspaceInput extends DiscoveredWorkspaceProperties {
   baseBranch?: string | null;
   mergeBaseBranch?: string | null;
@@ -317,7 +430,7 @@ export function recordProvisionedEnvironmentWorkspace(
   id: string,
   input: RecordProvisionedEnvironmentWorkspaceInput,
 ) {
-  return updateEnvironmentMetadataRecord(db, notifier, id, {
+  const updated = updateEnvironmentMetadataRecord(db, notifier, id, {
     path: input.path,
     isGitRepo: input.isGitRepo,
     isWorktree: input.isWorktree,
@@ -328,6 +441,42 @@ export function recordProvisionedEnvironmentWorkspace(
       ? { mergeBaseBranch: input.mergeBaseBranch }
       : {}),
   });
+  if (!updated) return null;
+  recordEnvironmentPathCanonicalization(
+    db,
+    updated.id,
+    input.path,
+    input.path,
+  );
+  return updated;
+}
+
+export function recordObservedEnvironmentWorkspaceMetadata(
+  db: EnvironmentWriteConnection,
+  notifier: DbNotifier,
+  id: string,
+  input: RecordProvisionedEnvironmentWorkspaceInput,
+) {
+  const existing = getEnvironment(db, id);
+  if (!existing || existing.path === null) return null;
+  const updated = updateEnvironmentMetadataRecord(db, notifier, id, {
+    isGitRepo: input.isGitRepo,
+    isWorktree: input.isWorktree,
+    branchName: input.branchName,
+    defaultBranch: input.defaultBranch,
+    ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
+    ...(input.mergeBaseBranch !== undefined
+      ? { mergeBaseBranch: input.mergeBaseBranch }
+      : {}),
+  });
+  if (!updated) return null;
+  recordEnvironmentPathCanonicalization(
+    db,
+    updated.id,
+    existing.path,
+    input.path,
+  );
+  return updated;
 }
 
 export interface ListStaleDestroyingManagedEnvironmentsArgs {

@@ -298,7 +298,7 @@ type ExpectedPluginsKey =
   | "token"
   | "updateSettings";
 
-type ExpectedPluginCatalogKey = "install" | "search" | "status";
+type ExpectedPluginCatalogKey = "install" | "search" | "status" | "submission";
 
 type ExpectedProjectsKey =
   | "attachments"
@@ -372,6 +372,7 @@ type ExpectedThreadsKey =
   | "queuedMessages"
   | "rateLimitRecovery"
   | "reorderPinned"
+  | "resolveMentions"
   | "search"
   | "send"
   | "spawn"

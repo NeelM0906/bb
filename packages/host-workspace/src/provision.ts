@@ -447,7 +447,7 @@ async function canonicalizeFromWorkspaceCwd(
   return stdout;
 }
 
-async function canonicalizeExistingDirectoryPath(
+export async function canonicalizeUnmanagedWorkspacePath(
   existingPath: string,
 ): Promise<string> {
   try {
@@ -828,7 +828,7 @@ async function provisionUnmanaged(
     }
     isGitRepo = await detectGitRepo(opts.path);
   }
-  const canonicalPath = await canonicalizeExistingDirectoryPath(opts.path);
+  const canonicalPath = await canonicalizeUnmanagedWorkspacePath(opts.path);
   const isWorktree = isGitRepo ? await detectWorktree(canonicalPath) : false;
 
   return new ProvisionedHostWorkspace({

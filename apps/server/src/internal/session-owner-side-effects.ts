@@ -19,8 +19,6 @@ import {
   reconcileDaemonReportedThreads,
 } from "../services/threads/thread-lifecycle.js";
 import { settleDanglingBackgroundTasks } from "../services/threads/background-task-reconciliation.js";
-import { reconcileHostWorkAdmissions } from "../services/threads/work-admission.js";
-import { recoverDurableWorkAdmissions } from "../services/hosts/live-command.js";
 
 const DAEMON_RESTARTED_PENDING_INTERACTION_REASON =
   "Host daemon restarted while awaiting user interaction; retry the thread to continue";
@@ -131,8 +129,6 @@ export async function handleHostSessionOpened(
     activeThreadIds: args.activeThreads.map((thread) => thread.threadId),
     hostId: args.hostId,
   });
-  await reconcileHostWorkAdmissions(deps, { hostId: args.hostId });
-  recoverDurableWorkAdmissions(deps, { hostId: args.hostId });
 }
 
 export function handleDaemonSocketClosed(

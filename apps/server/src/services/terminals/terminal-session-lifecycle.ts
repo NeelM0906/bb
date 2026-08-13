@@ -799,7 +799,10 @@ export class TerminalSessionLifecycle {
           this.options.db,
           target.environmentId,
         );
-        const workspaceTarget = requireWorkspaceCommandTarget(environment);
+        const workspaceTarget = requireWorkspaceCommandTarget(
+          this.options.db,
+          environment,
+        );
         return {
           daemonTarget: {
             kind: "workspace",

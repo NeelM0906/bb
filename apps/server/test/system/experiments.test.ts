@@ -6,16 +6,15 @@ import { readJson } from "../helpers/json.js";
 import { withTestHarness } from "../helpers/test-app.js";
 
 describe("experiments settings", () => {
-  it("defaults experiments to off in /system/config", async () => {
+  it("serves the shipped experiment defaults in /system/config", async () => {
     await withTestHarness(async (harness) => {
       const response = await harness.app.request("/api/v1/system/config");
       expect(response.status).toBe(200);
       const body = systemConfigResponseSchema.parse(await readJson(response));
       expect(body.experiments).toEqual({
         claudeCodeMockCliTraffic: false,
-        editMessages: false,
+        editMessages: true,
         newOnboarding: false,
-        toolsHub: false,
       });
     });
   });
@@ -29,7 +28,6 @@ describe("experiments settings", () => {
           claudeCodeMockCliTraffic: true,
           editMessages: true,
           newOnboarding: true,
-          toolsHub: true,
         }),
       });
       expect(put.status).toBe(200);
@@ -37,13 +35,11 @@ describe("experiments settings", () => {
         claudeCodeMockCliTraffic: true,
         editMessages: true,
         newOnboarding: true,
-        toolsHub: true,
       });
       expect(getExperiments(harness.db)).toEqual({
         claudeCodeMockCliTraffic: true,
         editMessages: true,
         newOnboarding: true,
-        toolsHub: true,
       });
 
       const config = await harness.app.request("/api/v1/system/config");
@@ -53,7 +49,6 @@ describe("experiments settings", () => {
         claudeCodeMockCliTraffic: true,
         editMessages: true,
         newOnboarding: true,
-        toolsHub: true,
       });
     });
   });
@@ -70,7 +65,6 @@ describe("experiments settings", () => {
           claudeCodeMockCliTraffic: false,
           editMessages: false,
           newOnboarding: false,
-          toolsHub: false,
         }),
       });
       expect(put.status).toBe(200);

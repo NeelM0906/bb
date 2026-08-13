@@ -426,6 +426,56 @@ describe("WatchManager", () => {
     expect(refreshWorkspace).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes aliased workspace metadata through the canonical resident path", async () => {
+    let watchWorkspaceArgs: WatchWorkspaceArgs | undefined;
+    const plainWorkspace = createFakeWorkspace("/canonical/env-watch", false);
+    const gitWorkspace = createFakeWorkspace("/canonical/env-watch");
+    const refreshWorkspace = vi
+      .fn<NonNullable<WatchManagerOptions["refreshWorkspace"]>>()
+      .mockResolvedValue(gitWorkspace);
+    const { hostWatcher } = createFakeHostWatcher({
+      watchWorkspaceImplementation: (args) => {
+        watchWorkspaceArgs = args;
+        return () => undefined;
+      },
+    });
+    const manager = new WatchManager({
+      hostWatcher,
+      provisionWorkspace: vi.fn(async () => plainWorkspace),
+      refreshWorkspace,
+    });
+
+    await manager.replaceWatchSet({
+      generation: 1,
+      workspaceTargets: [
+        {
+          environmentId: "env-watch-alias",
+          workspaceContext: {
+            workspacePath: "/legacy/env-watch-alias",
+            workspaceProvisionType: "unmanaged",
+          },
+        },
+      ],
+      threadStorageTargets: [],
+    });
+    watchWorkspaceArgs?.onChange({
+      changedPaths: ["/canonical/env-watch/.git"],
+      changeKinds: ["workspace-git-repository-created"],
+      kind: "workspace-status-changed",
+      environmentId: "env-watch-alias",
+    });
+
+    await vi.waitFor(() => expect(refreshWorkspace).toHaveBeenCalledTimes(1));
+    expect(refreshWorkspace).toHaveBeenCalledWith({
+      environmentId: "env-watch-alias",
+      provision: {
+        workspaceProvisionType: "unmanaged",
+        path: "/canonical/env-watch",
+      },
+      workspacePath: "/canonical/env-watch",
+    });
+  });
+
   it("suppresses git metadata notifications when the local fingerprint is unchanged", async () => {
     let watchWorkspaceArgs: WatchWorkspaceArgs | undefined;
     const workspace = createFakeWorkspace("/tmp/env-watch");

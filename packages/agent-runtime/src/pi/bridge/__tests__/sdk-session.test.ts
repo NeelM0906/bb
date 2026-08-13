@@ -57,7 +57,6 @@ interface MockCreateBashToolDefinition {
 
 const {
   mockGetActiveToolNames,
-  mockHasExtensionHandlers,
   mockSetActiveToolsByName,
   mockCreateBashToolDefinition,
   mockDefineTool,
@@ -65,13 +64,15 @@ const {
   mockInMemory,
   mockCreateAgentSessionServices,
   mockCreateAgentSession,
+  mockBindExtensions,
   mockSessionState,
   mockSessionEventListeners,
   mockSubscribe,
   mockAbort,
-  mockBindExtensions,
   mockCompact,
   mockDispose,
+  mockExtensionEmit,
+  mockHasExtensionHandlers,
   mockPrompt,
   mockGetModel,
   mockGetModels,
@@ -79,7 +80,6 @@ const {
   mockModelRuntime,
   mockGetShellCommandPrefix,
   mockGetShellPath,
-  mockExtensionEmit,
 } = vi.hoisted(() => {
   const mockSessionEventListeners: MockAgentSessionEventListener[] = [];
   const mockSubscribe = vi.fn<MockSubscribe>((listener) => {
@@ -94,16 +94,15 @@ const {
   const mockSessionState = { isStreaming: false };
   const mockPrompt = vi.fn();
   const mockAbort = vi.fn(async () => {});
-  const mockBindExtensions = vi.fn(async () => {});
   const mockCompact = vi.fn(async () => {});
+  const mockBindExtensions = vi.fn(async () => {});
   const mockDispose = vi.fn();
+  const mockGetLeafId = vi.fn(() => "pi-entry-checkpoint");
+  const mockExtensionEmit = vi.fn(async () => {});
+  const mockHasExtensionHandlers = vi.fn(() => false);
   const mockGetSessionStats = vi.fn();
   const mockGetContextUsage = vi.fn();
   const mockGetActiveToolNames = vi.fn<() => string[]>(() => []);
-  const mockHasExtensionHandlers = vi.fn<(eventType: string) => boolean>(
-    () => false,
-  );
-  const mockExtensionEmit = vi.fn(async () => undefined);
   const mockSetActiveToolsByName = vi.fn<(toolNames: string[]) => void>();
   const mockOpen = vi.fn((path: string) => ({ kind: "open", path }));
   const mockInMemory = vi.fn((cwd?: string) => ({ kind: "in-memory", cwd }));
@@ -138,12 +137,13 @@ const {
       subscribe: mockSubscribe,
       prompt: mockPrompt,
       dispose: mockDispose,
+      extensionRunner: { emit: mockExtensionEmit },
       getSessionStats: mockGetSessionStats,
       getContextUsage: mockGetContextUsage,
       getActiveToolNames: mockGetActiveToolNames,
       hasExtensionHandlers: mockHasExtensionHandlers,
-      extensionRunner: { emit: mockExtensionEmit },
       setActiveToolsByName: mockSetActiveToolsByName,
+      sessionManager: { getLeafId: mockGetLeafId },
       get isStreaming() {
         return mockSessionState.isStreaming;
       },
@@ -182,7 +182,6 @@ const {
 
   return {
     mockGetActiveToolNames,
-    mockHasExtensionHandlers,
     mockSetActiveToolsByName,
     mockCreateBashToolDefinition,
     mockDefineTool,
@@ -190,13 +189,15 @@ const {
     mockInMemory,
     mockCreateAgentSessionServices,
     mockCreateAgentSession,
+    mockBindExtensions,
     mockSessionState,
     mockSessionEventListeners,
     mockSubscribe,
     mockAbort,
-    mockBindExtensions,
     mockCompact,
     mockDispose,
+    mockExtensionEmit,
+    mockHasExtensionHandlers,
     mockPrompt,
     mockGetModel,
     mockGetModels,
@@ -204,7 +205,6 @@ const {
     mockModelRuntime,
     mockGetShellCommandPrefix,
     mockGetShellPath,
-    mockExtensionEmit,
   };
 });
 
@@ -316,12 +316,17 @@ describe("PiSdkSession", () => {
     });
   });
 
-  it("binds extensions in RPC mode before tools and event subscriptions", async () => {
+  it("binds lifecycle handlers for extensions", async () => {
     const session = new PiSdkSession({ cwd: "/tmp/project" }, vi.fn(), vi.fn());
 
     await session.start();
 
-    expect(mockBindExtensions).toHaveBeenCalledWith({ mode: "rpc" });
+    expect(mockBindExtensions).toHaveBeenCalledWith({
+      mode: "rpc",
+      abortHandler: expect.any(Function),
+      shutdownHandler: expect.any(Function),
+      onError: expect.any(Function),
+    });
     expect(mockBindExtensions.mock.invocationCallOrder[0]).toBeLessThan(
       mockGetActiveToolNames.mock.invocationCallOrder[0] ?? Infinity,
     );
@@ -1024,10 +1029,41 @@ describe("PiSdkSession", () => {
       throw new Error("Expected Pi abort promise to be pending");
     }
     resolveAbort();
-    await closePromise;
+    await expect(closePromise).resolves.toBe("pi-entry-checkpoint");
 
     expect(mockDispose).toHaveBeenCalledTimes(1);
     expect(session.getIsProcessing()).toBe(false);
+  });
+
+  it("bounds extension shutdown by the graceful-close timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      mockHasExtensionHandlers.mockReturnValue(true);
+      mockExtensionEmit.mockImplementation(() => new Promise(() => {}));
+      const session = new PiSdkSession(
+        { cwd: "/tmp/project" },
+        vi.fn(),
+        vi.fn(),
+      );
+
+      await session.start();
+      const closePromise = session.closeGracefully(1_000);
+      await flushAsyncWork();
+
+      expect(mockExtensionEmit).toHaveBeenCalledWith({
+        type: "session_shutdown",
+        reason: "quit",
+      });
+      expect(mockDispose).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(closePromise).resolves.toBe("pi-entry-checkpoint");
+
+      expect(mockDispose).toHaveBeenCalledTimes(1);
+      await expect(session.closeGracefully(1_000)).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("waits for concurrent graceful closes to finish the same shutdown", async () => {
@@ -1058,9 +1094,8 @@ describe("PiSdkSession", () => {
     await flushAsyncWork();
 
     expect(secondCloseSettled).toBe(false);
-    if (!resolveAbort) {
+    if (!resolveAbort)
       throw new Error("Expected Pi abort promise to be pending");
-    }
     resolveAbort();
     await flushAsyncWork();
 
@@ -1071,37 +1106,7 @@ describe("PiSdkSession", () => {
     resolveShutdown();
     await Promise.all([firstClose, secondClose]);
 
+    expect(mockExtensionEmit).toHaveBeenCalledOnce();
     expect(mockDispose).toHaveBeenCalledOnce();
-  });
-
-  it("bounds extension shutdown by the graceful-close timeout", async () => {
-    vi.useFakeTimers();
-    try {
-      mockHasExtensionHandlers.mockReturnValue(true);
-      mockExtensionEmit.mockImplementation(() => new Promise(() => {}));
-      const session = new PiSdkSession(
-        { cwd: "/tmp/project" },
-        vi.fn(),
-        vi.fn(),
-      );
-
-      await session.start();
-      const closePromise = session.closeGracefully(1_000);
-      await flushAsyncWork();
-
-      expect(mockExtensionEmit).toHaveBeenCalledWith({
-        type: "session_shutdown",
-        reason: "quit",
-      });
-      expect(mockDispose).not.toHaveBeenCalled();
-
-      await vi.advanceTimersByTimeAsync(1_000);
-      await closePromise;
-
-      expect(mockDispose).toHaveBeenCalledOnce();
-      await expect(session.closeGracefully(1_000)).resolves.toBeUndefined();
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });

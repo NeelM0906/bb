@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
 import {
+  createWorkAdmission,
   ensurePersonalProject,
+  markWorkAdmissionRunning,
   listPublicProjects,
   setExperiments,
 } from "@bb/db";
@@ -33,6 +35,58 @@ const projectResponseSchema = z.object({
 });
 
 describe("public project local host routes", () => {
+  it("returns a conflict when protection is enabled during unmanaged work", async () => {
+    await withTestHarness(async (harness) => {
+      const host = seedHost(harness.deps, {
+        id: "host-protection-transition",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/protection-transition",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/protection-transition",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const thread = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "active",
+      });
+      createWorkAdmission(harness.db, {
+        commandJson: "{}",
+        hostId: host.id,
+        id: "req-protection-transition",
+        reason: "interactive",
+        threadId: thread.id,
+        waitingReason: "Awaiting host capacity",
+      });
+      markWorkAdmissionRunning(harness.db, {
+        id: "req-protection-transition",
+        reservationGeneration: 1,
+        reservationToken: "protection-transition-token",
+      });
+
+      const response = await harness.app.request(
+        `/api/v1/projects/${project.id}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ protectUnmanagedWorkspace: true }),
+        },
+      );
+
+      expect(response.status).toBe(409);
+      await expect(readJson(response)).resolves.toMatchObject({
+        code: "workspace_protection_conflict",
+        message: expect.stringContaining("unmanaged work is active or queued"),
+      });
+    });
+  });
+
   it("creates a project when a personal thread already uses its folder", async () => {
     await withTestHarness(async (harness) => {
       const offlinePrimary = seedHost(harness.deps, {

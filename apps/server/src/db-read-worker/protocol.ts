@@ -1,4 +1,4 @@
-import { threadChildOriginSchema, threadOriginKindSchema } from "@bb/domain";
+import { threadOriginKindSchema } from "@bb/domain";
 import {
   threadConversationOutlineResponseSchema,
   threadListResponseSchema,
@@ -73,7 +73,6 @@ export const timelineSnapshotInputSchema = z.discriminatedUnion("kind", [
 const threadListOptionsSchema = z
   .object({
     archived: z.boolean().optional(),
-    childOrigin: threadChildOriginSchema.optional(),
     hasParent: z.boolean().optional(),
     includeHidden: z.boolean().optional(),
     limit: z.number().int().positive().optional(),

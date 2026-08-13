@@ -51,12 +51,14 @@ export function isTimelineSummaryCountedMessage(
   );
 }
 
-export function isSingletonContextCompaction(
+export function isSingletonContextManagementOperation(
   messages: readonly EventProjectionMessage[],
 ): boolean {
   const onlyMessage = messages.length === 1 ? messages[0] : undefined;
   return (
-    onlyMessage?.kind === "operation" && onlyMessage.opType === "compaction"
+    onlyMessage?.kind === "operation" &&
+    (onlyMessage.opType === "compaction" ||
+      onlyMessage.opType === "context-clear")
   );
 }
 

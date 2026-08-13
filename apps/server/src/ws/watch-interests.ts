@@ -1,4 +1,9 @@
-import { getEnvironment, getThread, type DbConnection } from "@bb/db";
+import {
+  getEnvironment,
+  getEnvironmentCanonicalPath,
+  getThread,
+  type DbConnection,
+} from "@bb/db";
 import {
   realtimeSubscriptionTargetKey,
   type ChangedMessage,
@@ -61,19 +66,30 @@ function isWatchableSubscriptionTarget(
   RealtimeSubscriptionTarget,
   { kind: "environment-detail" | "thread-detail" }
 > {
-  return target.kind === "environment-detail" || target.kind === "thread-detail";
+  return (
+    target.kind === "environment-detail" || target.kind === "thread-detail"
+  );
 }
 
 export class WatchInterestCoordinator {
-  private readonly interestsBySocket = new Map<WatchInterestSocket, Set<string>>();
+  private readonly interestsBySocket = new Map<
+    WatchInterestSocket,
+    Set<string>
+  >();
   private readonly socketsByInterest = new Map<
     string,
     Set<WatchInterestSocket>
   >();
-  private readonly targetsByInterest = new Map<string, RealtimeSubscriptionTarget>();
+  private readonly targetsByInterest = new Map<
+    string,
+    RealtimeSubscriptionTarget
+  >();
   private readonly generationByHost = new Map<string, number>();
   private readonly lastWatchTargetFingerprintByHost = new Map<string, string>();
-  private readonly lastResolvedHostIdsByInterest = new Map<string, Set<string>>();
+  private readonly lastResolvedHostIdsByInterest = new Map<
+    string,
+    Set<string>
+  >();
 
   constructor(private readonly deps: WatchInterestCoordinatorDeps) {
     this.deps.hub.onChangedMessage((message) => {
@@ -378,7 +394,9 @@ export class WatchInterestCoordinator {
         ) {
           return null;
         }
-        const workspacePath = environment.path;
+        const workspacePath =
+          getEnvironmentCanonicalPath(this.deps.db, environment.id) ??
+          environment.path;
         return {
           hostId: environment.hostId,
           workspaceTarget: {

@@ -68,12 +68,25 @@ vi.mock("@/components/project/ProjectActionsProvider", () => ({
   }),
 }));
 
+vi.mock("@/components/thread/ThreadActionsProvider", () => ({
+  useThreadActions: () => ({
+    renameThread: vi.fn(),
+    requestRename: vi.fn(),
+    requestDelete: vi.fn(),
+    archiveThreadAndChildren: vi.fn(),
+    unarchiveThread: vi.fn(),
+    togglePin: vi.fn(),
+    toggleRead: vi.fn(),
+  }),
+}));
+
 function makeProject(): ProjectResponse {
   return {
     id: "proj_test",
     kind: "standard",
     name: "Test project",
     gitRemoteUrl: null,
+    protectUnmanagedWorkspace: false,
     sources: [],
     createdAt: 0,
     updatedAt: 0,
@@ -95,7 +108,6 @@ function makeThread(overrides: Partial<ThreadListEntry> = {}): ThreadListEntry {
     originKind: null,
     originPluginId: null,
     visibility: "visible",
-    childOrigin: null,
     archivedAt: null,
     pinnedAt: null,
     pinSortKey: null,
@@ -180,6 +192,9 @@ describe("ProjectRow interactions", () => {
     const threadLink = result.container.querySelector(
       '[data-sidebar-thread-id="thr_test"]',
     );
+    const projectGroup = result.container.querySelector(
+      "[data-sidebar-sticky-project-item]",
+    );
 
     expect(
       label.compareDocumentPosition(disclosure) &
@@ -188,6 +203,10 @@ describe("ProjectRow interactions", () => {
     expect(
       (threadLink?.parentElement as HTMLElement | null)?.style.paddingLeft,
     ).toBe("8px");
+    expect(projectGroup?.getAttribute("data-sidebar-project-id")).toBe(
+      "proj_test",
+    );
+    expect(projectGroup?.hasAttribute("data-sidebar-section-id")).toBe(false);
   });
 
   it("shows generic runtime activity before a named workflow rollup", () => {
@@ -324,6 +343,13 @@ describe("ProjectRow interactions", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Collapse Active work section" }),
     );
+
+    expect(
+      screen
+        .getByTitle("Active work")
+        .closest("[data-sidebar-sticky-group]")
+        ?.getAttribute("data-sidebar-section-id"),
+    ).toBe(sectionId);
 
     expect(screen.queryByText("Test thread")).toBeNull();
     expect(screen.getAllByLabelText("Plan mode active")).not.toHaveLength(0);

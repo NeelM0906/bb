@@ -106,6 +106,37 @@ interface LiveHostCommandBaseLogFields {
 }
 
 const EXPECTED_LIVE_HOST_COMMAND_ERROR_CODES = new Set(["provision_cancelled"]);
+const activeWorkAdmissionTasksByDatabase = new WeakMap<
+  CommandResultSideEffectsDeps["db"],
+  Map<string, number>
+>();
+
+function registerActiveWorkAdmissionTask(
+  deps: Pick<CommandResultSideEffectsDeps, "db">,
+  requestId: string,
+): () => void {
+  let active = activeWorkAdmissionTasksByDatabase.get(deps.db);
+  if (!active) {
+    active = new Map();
+    activeWorkAdmissionTasksByDatabase.set(deps.db, active);
+  }
+  active.set(requestId, (active.get(requestId) ?? 0) + 1);
+  return () => {
+    const count = active.get(requestId) ?? 0;
+    if (count <= 1) active.delete(requestId);
+    else active.set(requestId, count - 1);
+    if (active.size === 0) activeWorkAdmissionTasksByDatabase.delete(deps.db);
+  };
+}
+
+function hasActiveWorkAdmissionTask(
+  deps: Pick<CommandResultSideEffectsDeps, "db">,
+  requestId: string,
+): boolean {
+  return (
+    (activeWorkAdmissionTasksByDatabase.get(deps.db)?.get(requestId) ?? 0) > 0
+  );
+}
 
 function commandFailureCode(error: Error): string {
   if (error instanceof ApiError) {
@@ -223,29 +254,39 @@ export async function runLiveHostCommand<
 ): Promise<HostDaemonCommandResult<TType>> {
   const execution =
     args.execution ?? createLiveHostCommandExecution(args.hostId);
-  const providerWorkCommand = isProviderWorkCommand(args.command)
-    ? args.command
-    : null;
+  let command = args.command;
+  let providerWorkCommand = isProviderWorkCommand(command) ? command : null;
+  const unregisterActiveTask =
+    providerWorkCommand === null
+      ? null
+      : registerActiveWorkAdmissionTask(deps, providerWorkCommand.requestId);
   if (providerWorkCommand !== null) {
-    await awaitThreadWorkAdmission(deps, {
-      command: providerWorkCommand,
-      hostId: args.hostId,
-      ...(args.admissionReason === undefined
-        ? {}
-        : { reason: args.admissionReason }),
-    });
+    try {
+      const admitted = await awaitThreadWorkAdmission(deps, {
+        command: providerWorkCommand,
+        hostId: args.hostId,
+        ...(args.admissionReason === undefined
+          ? {}
+          : { reason: args.admissionReason }),
+      });
+      command = admitted.command;
+      providerWorkCommand = admitted.command;
+    } catch (error) {
+      unregisterActiveTask?.();
+      throw error;
+    }
   }
   try {
     const result = await callHostOnlineRpc(deps, {
-      command: args.command,
+      command,
       hostId: args.hostId,
       timeoutMs: args.timeoutMs,
     });
     await applyLiveHostCommandReport(deps, {
-      command: args.command,
+      command,
       execution,
       report: buildLiveHostCommandSuccessReport({
-        command: args.command,
+        command,
         completedAt: Date.now(),
         execution,
         result,
@@ -256,14 +297,14 @@ export async function runLiveHostCommand<
     const normalized =
       error instanceof Error ? error : new Error(String(error));
     const failureReport = buildLiveHostCommandFailureReport({
-      command: args.command,
+      command,
       completedAt: Date.now(),
       error: normalized,
       execution,
     });
     try {
       await applyLiveHostCommandReport(deps, {
-        command: args.command,
+        command,
         execution,
         report: failureReport,
       });
@@ -271,7 +312,7 @@ export async function runLiveHostCommand<
       deps.logger.error(
         {
           err: settlementError,
-          commandType: args.command.type,
+          commandType: command.type,
           originalError: normalized,
         },
         "Live command failure settlement failed",
@@ -298,6 +339,7 @@ export async function runLiveHostCommand<
         });
       }
     }
+    unregisterActiveTask?.();
   }
 }
 
@@ -306,6 +348,11 @@ export function recoverDurableWorkAdmissions(
   args: { hostId?: string } = {},
 ): void {
   for (const entry of listRecoverableWorkAdmissionCommands(deps, args)) {
+    // The daemon can reconnect while the original in-memory task is waiting
+    // for durable workspace promotion (and therefore has no socket RPC to
+    // reject). Starting a second loop for the same request would let both
+    // share one idempotent reservation and race its release.
+    if (hasActiveWorkAdmissionTask(deps, entry.command.requestId)) continue;
     startLiveHostCommand(deps, {
       admissionReason: entry.reason,
       command: entry.command,

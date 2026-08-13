@@ -26,6 +26,7 @@ import {
 import {
   getJsonRpcStringParam,
   ignoredJsonRpcResultSchema,
+  JsonRpcResponseError,
   type JsonRpcObject,
   parseJsonRpcLine,
   type SendJsonRpcRequestArgs,
@@ -33,6 +34,10 @@ import {
   sendJsonRpcRequest,
   settleJsonRpcResponse,
 } from "./runtime-json-rpc.js";
+import {
+  ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_CODE,
+  ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_MESSAGE,
+} from "./acp/bridge-protocol.js";
 import {
   handleRuntimeProviderRequest,
   type ResolveRuntimeProviderRequestThreadIdArgs,
@@ -85,6 +90,13 @@ interface RunThreadOperationArgs<TResult> {
   work: () => Promise<TResult>;
 }
 
+const staleSteerResultSchema = z
+  .object({
+    status: z.literal("stale"),
+    activeTurnId: z.string().nullable(),
+  })
+  .strict();
+
 function normalizeExecutionOptions(args: {
   adapter: ProviderAdapter;
   options: AgentRuntimeExecutionOptions;
@@ -122,11 +134,6 @@ interface ReapIdleProviderSessionCandidate {
   threadId: string;
   runtimeConfig: ThreadRuntimeConfig;
 }
-
-const acpStaleSteerResultSchema = z.object({
-  activeTurnId: z.null(),
-  status: z.literal("stale"),
-});
 
 interface FindReapableIdleProviderSessionArgs {
   idleForMs: number;
@@ -170,6 +177,12 @@ interface ResolveThreadStoragePathArgs {
   options: AgentRuntimeInternalOptions;
   threadId: string;
 }
+
+const providerThreadStopResultSchema = z
+  .object({
+    providerCheckpointId: z.string().min(1).nullable().optional(),
+  })
+  .passthrough();
 
 function defaultBridgeNodeEnv(): Record<string, string> | undefined {
   if (process.versions.electron === undefined) {
@@ -245,6 +258,51 @@ const CODEX_ACCOUNT_RESTART_PROVIDER_ERROR_TEXT_PATTERN =
   /\b(?:40[19]|429|auth(?:entication|orization)?|credits?|quota|rate[-\s]?limit(?:ed)?|unauthori[sz]ed|usage limit)\b/i;
 const CODEX_ARCHIVED_SESSION_ERROR_PATTERN =
   /\b(?:session|thread)\s+\S+\s+is archived\b/i;
+const CODEX_EMPTY_ROLLOUT_RENAME_ERROR_PATTERN = /\brollout at .+ is empty\b/i;
+const CODEX_RENAME_RETRY_DELAYS_MS = [50, 200] as const;
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+interface SendRenameWithRolloutRetriesArgs {
+  onStderr: AgentRuntimeOptions["onStderr"];
+  providerId: string;
+  send: () => Promise<void>;
+  threadId: string;
+}
+
+/**
+ * A brand-new Codex rollout file can exist before its first record is written,
+ * and a rename landing in that window fails until Codex flushes. Retry only
+ * that error, backing off after each attempt, then make one final attempt
+ * whose failure propagates. Every other error fails immediately.
+ */
+async function sendRenameWithRolloutRetries(
+  args: SendRenameWithRolloutRetriesArgs,
+): Promise<void> {
+  for (const retryDelayMs of CODEX_RENAME_RETRY_DELAYS_MS) {
+    try {
+      await args.send();
+      return;
+    } catch (error) {
+      if (
+        args.providerId !== CODEX_PROVIDER_ID ||
+        !(error instanceof Error) ||
+        !CODEX_EMPTY_ROLLOUT_RENAME_ERROR_PATTERN.test(error.message)
+      ) {
+        throw error;
+      }
+      args.onStderr?.(
+        `Codex session rollout is not ready; retrying rename for thread "${args.threadId}" in ${retryDelayMs}ms.`,
+      );
+      await delay(retryDelayMs);
+    }
+  }
+  await args.send();
+}
 
 function resolveThreadStoragePath(
   args: ResolveThreadStoragePathArgs,
@@ -1916,24 +1974,35 @@ function createAgentRuntimeInternal(
             plan: proc.adapter.buildCommandPlan(adapterCommand),
             providerId: pid,
           });
-          const result = await sendCommand({
-            proc,
-            message: cmd,
-            resultSchema: ignoredJsonRpcResultSchema,
-            recovery: {
-              providerId: pid,
-              providerThreadId: adapterCommand.providerThreadId,
-              threadId,
-            },
-          });
-          const staleAcpSteerResult = isAcpProviderId(pid)
-            ? acpStaleSteerResultSchema.safeParse(result)
-            : null;
-          if (staleAcpSteerResult?.success) {
-            if (turnState.getActiveTurnId(threadId) === expectedTurnId) {
+          try {
+            const result = await sendCommand({
+              proc,
+              message: cmd,
+              resultSchema: ignoredJsonRpcResultSchema,
+              recovery: {
+                providerId: pid,
+                providerThreadId: adapterCommand.providerThreadId,
+                threadId,
+              },
+            });
+            const staleResult = staleSteerResultSchema.safeParse(result);
+            if (isAcpProviderId(pid) && staleResult.success) {
               turnState.clearThread(threadId);
+              proc.adapter.clearActiveTurnState?.(threadId);
+              return staleResult.data;
             }
-            return staleAcpSteerResult.data;
+          } catch (error) {
+            if (
+              error instanceof JsonRpcResponseError &&
+              isAcpProviderId(pid) &&
+              error.code === ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_CODE &&
+              error.message === ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_MESSAGE
+            ) {
+              turnState.clearThread(threadId);
+              proc.adapter.clearActiveTurnState?.(threadId);
+              return { status: "stale", activeTurnId: null };
+            }
+            throw error;
           }
           emitAcceptedCommandEvents({
             command: adapterCommand,
@@ -1969,13 +2038,13 @@ function createAgentRuntimeInternal(
             }
             forgetThreadRuntimeState(proc, threadId);
             await shutdownThreadScopedCodexProcessIfIdle(proc);
-            return;
+            return { providerCheckpointId: null };
           }
 
-          await sendCommand({
+          const result = await sendCommand({
             proc,
             message: cmd,
-            resultSchema: ignoredJsonRpcResultSchema,
+            resultSchema: providerThreadStopResultSchema,
           });
           emitAcceptedCommandEvents({
             command: adapterCommand,
@@ -1984,6 +2053,9 @@ function createAgentRuntimeInternal(
           });
           forgetThreadRuntimeState(proc, threadId);
           await shutdownThreadScopedCodexProcessIfIdle(proc);
+          return {
+            providerCheckpointId: result.providerCheckpointId ?? null,
+          };
         },
       });
     },
@@ -2049,10 +2121,17 @@ function createAgentRuntimeInternal(
             plan: proc.adapter.buildCommandPlan(adapterCommand),
             providerId: pid,
           });
-          await sendCommand({
-            proc,
-            message: cmd,
-            resultSchema: ignoredJsonRpcResultSchema,
+          await sendRenameWithRolloutRetries({
+            onStderr: options.onStderr,
+            providerId: pid,
+            send: async () => {
+              await sendCommand({
+                proc,
+                message: cmd,
+                resultSchema: ignoredJsonRpcResultSchema,
+              });
+            },
+            threadId,
           });
           emitAcceptedCommandEvents({
             command: adapterCommand,

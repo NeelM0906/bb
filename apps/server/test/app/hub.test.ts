@@ -286,6 +286,36 @@ describe("NotificationHub", () => {
     }
   });
 
+  it("cancels every pending daemon disconnect timer during shutdown", async () => {
+    vi.useFakeTimers();
+    try {
+      const hub = new NotificationHub();
+      const disconnectCallback = vi.fn();
+      const activeWorkCallback = vi.fn();
+
+      hub.scheduleDaemonDisconnect("session-1", 1_000, disconnectCallback);
+      hub.scheduleDaemonActiveWorkDisconnect(
+        "session-2",
+        1_000,
+        activeWorkCallback,
+      );
+
+      hub.shutdown();
+      hub.scheduleDaemonDisconnect("session-3", 1_000, disconnectCallback);
+      hub.scheduleDaemonActiveWorkDisconnect(
+        "session-4",
+        1_000,
+        activeWorkCallback,
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(disconnectCallback).not.toHaveBeenCalled();
+      expect(activeWorkCallback).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("sends host RPC requests to the active daemon and resolves responses", async () => {
     const hub = new NotificationHub();
     const socket = createMockHubSocket();

@@ -8,6 +8,7 @@ export {
   listProjects,
   listPublicProjects,
   markProjectDeleted,
+  ProjectUnmanagedWorkspaceProtectionConflictError,
   reorderProject,
   setProjectGitRemoteUrlIfMissing,
   updateProject,
@@ -98,6 +99,7 @@ export {
   listActiveVisiblePinnedThreadRoots,
   listActiveVisiblePinnedThreadRootsWithPendingInteractionState,
   listLiveThreadsInEnvironment,
+  listThreadMentionRowsByIds,
   listNonDeletedChildThreads,
   listThreadEnvironmentAssignmentsOnHost,
   listUnarchivedAssignedChildThreads,
@@ -146,6 +148,7 @@ export type {
   ReorderPinnedThreadArgs,
   ReorderPinnedThreadResult,
   ThreadEnvironmentAssignmentRow,
+  ThreadMentionRow,
   ThreadSearchHighlightRange,
   ThreadSearchMatch,
   ThreadSearchResult,
@@ -264,12 +267,17 @@ export type {
 
 export {
   createEnvironment,
+  clearEnvironmentPathCanonicalizationsForHost,
   getEnvironment,
+  getEnvironmentCanonicalPath,
   findProjectEnvironmentByHostPath,
   listEnvironments,
+  listUncanonicalizedLiveUnmanagedEnvironmentsOnHost,
   findForeignManagedEnvironmentAtHostPath,
   listEnvironmentsByIds,
   listRetiredLoadedEnvironmentIdsOnHost,
+  recordEnvironmentCanonicalPath,
+  recordObservedEnvironmentWorkspaceMetadata,
   updateEnvironmentMetadata,
 } from "./environments.js";
 export type {
@@ -344,6 +352,7 @@ export {
   listStoredTimelineWindowEventRows,
   listStoredToolCallRowsByItemIds,
   listStoredTurnInputAcceptedRowsByClientRequestIds,
+  listStoredTurnRejectedRowsByClientRequestIds,
   listStoredTurnCompletedRowsByTurnIds,
   listStoredTurnStartedKeys,
   listStoredTurnStartedRowsByTurnIdsUpToSequence,
@@ -499,12 +508,14 @@ export {
 export {
   createWorkAdmission,
   getCurrentThreadWorkAdmission,
+  getFirstHostEligibleWaitingAdmission,
   getWorkAdmission,
   listCurrentWorkAdmissions,
   listWaitingWorkAdmissions,
   markWorkAdmissionRunning,
   markWorkAdmissionTerminal,
   markWaitingWorkAdmissionTerminal,
+  updateCurrentWorkAdmissionCommand,
   updateWorkAdmissionWaitingReason,
 } from "./work-admissions.js";
 export type {
@@ -514,6 +525,7 @@ export type {
   MarkWorkAdmissionRunningArgs,
   MarkWorkAdmissionTerminalArgs,
   MarkWaitingWorkAdmissionTerminalArgs,
+  UpdateCurrentWorkAdmissionCommandArgs,
   UpdateWorkAdmissionWaitingReasonArgs,
   WorkAdmissionRow,
 } from "./work-admissions.js";
@@ -571,6 +583,28 @@ export {
   shouldCompactDatabase,
   shouldRunIncrementalVacuum,
 } from "./maintenance.js";
+export {
+  acquireUnmanagedWorkspaceMutationLease,
+  acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission,
+  cancelUnmanagedWorkspaceMutationWaiter,
+  getUnmanagedWorkspaceMutationLease,
+  getUnmanagedWorkspaceMutationLeaseForThread,
+  isPromotedUnmanagedWorkspaceMutationLease,
+  getUnmanagedWorkspaceMutationWaitState,
+  hasProtectedUnmanagedWorkspaceOnHost,
+  isUnmanagedWorkspaceMutationProtected,
+  listUnmanagedWorkspaceMutationLeases,
+  listUnmanagedWorkspaceMutationLeaseEvents,
+  releaseUnmanagedWorkspaceMutationLease,
+  releaseUnmanagedWorkspaceMutationLeaseInTransaction,
+} from "./unmanaged-workspace-mutation-leases.js";
+export type {
+  AcquireUnmanagedWorkspaceMutationLeaseResult,
+  AcquireUnmanagedWorkspaceMutationLeaseAndStartResult,
+  ReleaseUnmanagedWorkspaceMutationLeaseResult,
+  UnmanagedWorkspaceMutationLeaseEventRow,
+  UnmanagedWorkspaceMutationLeaseRow,
+} from "./unmanaged-workspace-mutation-leases.js";
 export type {
   CompactDatabaseResult,
   DatabaseAutoVacuumMode,

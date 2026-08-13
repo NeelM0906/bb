@@ -3,6 +3,7 @@ import { threadScope } from "@bb/domain";
 import {
   countLiveThreadsInEnvironment,
   getEnvironment,
+  getEnvironmentCanonicalPath,
   hasPendingThreadShutdownInEnvironment,
   hasRevivableArchivedThreadInEnvironment,
   listLiveThreadsInEnvironment,
@@ -269,7 +270,12 @@ function dispatchEnvironmentDestroy(
     command: {
       type: "environment.destroy",
       environmentId: environment.id,
-      workspaceContext: workspaceContextFromPath(environment),
+      workspaceContext: workspaceContextFromPath({
+        ...environment,
+        path:
+          getEnvironmentCanonicalPath(deps.db, environment.id) ??
+          environment.path,
+      }),
     },
     execution,
     hostId: environment.hostId,

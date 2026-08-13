@@ -118,7 +118,10 @@ export class HostAdmissionController {
     return { outcome: "reserved", reservation };
   }
 
-  release(reservation: HostAdmissionReservation): { released: boolean } {
+  release(
+    reservation: HostAdmissionReservation,
+    args: { retryableRequestId?: string } = {},
+  ): { released: boolean } {
     const record = this.reservationsByToken.get(reservation.token);
     if (
       !record ||
@@ -131,7 +134,9 @@ export class HostAdmissionController {
     this.tokenByThreadId.delete(record.threadId);
     for (const requestId of record.requestIds) {
       this.tokenByRequestId.delete(requestId);
-      this.releasedRequestIds.add(requestId);
+      if (requestId !== args.retryableRequestId) {
+        this.releasedRequestIds.add(requestId);
+      }
     }
     return { released: true };
   }

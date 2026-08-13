@@ -1,7 +1,15 @@
-import { getEnvironment, hostDaemonSessions } from "@bb/db";
+import {
+  getEnvironment,
+  getEnvironmentCanonicalPath,
+  hostDaemonSessions,
+  recordEnvironmentCanonicalPath,
+} from "@bb/db";
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
-import { onDaemonSocketMessage } from "../../src/ws/daemon-protocol.js";
+import {
+  onDaemonSocketMessage,
+  onDaemonSocketOpen,
+} from "../../src/ws/daemon-protocol.js";
 import {
   seedEnvironment,
   seedHostSession,
@@ -22,6 +30,43 @@ function createTestDaemonSocket(): TestDaemonSocket {
 }
 
 describe("internal environment change websocket hints", () => {
+  it("invalidates confirmed workspace paths when a new daemon socket opens", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-canonical-path-revalidation",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/env-canonical-path-alias",
+        workspaceProvisionType: "unmanaged",
+        status: "ready",
+      });
+      recordEnvironmentCanonicalPath(
+        harness.db,
+        harness.hub,
+        environment.id,
+        "/private/tmp/env-canonical-path-target",
+      );
+      expect(getEnvironmentCanonicalPath(harness.db, environment.id)).toBe(
+        "/private/tmp/env-canonical-path-target",
+      );
+
+      onDaemonSocketOpen(harness.deps, {
+        hostId: host.id,
+        sessionId: session.id,
+        socket: createTestDaemonSocket(),
+      });
+
+      expect(getEnvironmentCanonicalPath(harness.db, environment.id)).toBe(
+        "/tmp/env-canonical-path-alias",
+      );
+    });
+  });
+
   it("renews an active session from a late heartbeat after lease expiry", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {
@@ -210,6 +255,59 @@ describe("internal environment change websocket hints", () => {
       expect(notifyEnvironmentSpy).toHaveBeenCalledWith(environment.id, [
         "metadata-changed",
       ]);
+    });
+  });
+
+  it("records canonical watcher metadata without replacing an unmanaged alias", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-env-aliased-metadata-change",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/env-metadata-alias",
+        workspaceProvisionType: "unmanaged",
+        status: "ready",
+        isGitRepo: false,
+      });
+      recordEnvironmentCanonicalPath(
+        harness.db,
+        harness.hub,
+        environment.id,
+        "/private/tmp/env-metadata-canonical",
+      );
+      const socket = createTestDaemonSocket();
+
+      onDaemonSocketMessage(harness.deps, {
+        hostId: host.id,
+        sessionId: session.id,
+        socket,
+        raw: JSON.stringify({
+          type: "environment-metadata-change",
+          environmentId: environment.id,
+          workspace: {
+            path: "/private/tmp/env-metadata-canonical",
+            isGitRepo: true,
+            isWorktree: false,
+            branchName: "main",
+            defaultBranch: "main",
+          },
+        }),
+      });
+
+      expect(socket.close).not.toHaveBeenCalled();
+      expect(getEnvironment(harness.db, environment.id)).toMatchObject({
+        path: "/tmp/env-metadata-alias",
+        isGitRepo: true,
+        branchName: "main",
+      });
+      expect(getEnvironmentCanonicalPath(harness.db, environment.id)).toBe(
+        "/private/tmp/env-metadata-canonical",
+      );
     });
   });
 

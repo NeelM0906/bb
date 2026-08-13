@@ -2,6 +2,7 @@ import {
   getEnvironment,
   getLatestSessionForHost,
   getCurrentThreadWorkAdmission,
+  getUnmanagedWorkspaceMutationWaitState,
   getSessionById,
   listActiveBackgroundTaskCountsByThreadIds,
   listLatestGoalEventRowsByThreadIds,
@@ -154,7 +155,6 @@ function toPublicThread(thread: Thread): Thread {
     parentThreadId: thread.parentThreadId,
     sourceThreadId: thread.sourceThreadId,
     originKind: thread.originKind,
-    childOrigin: thread.originKind ?? thread.childOrigin,
     originPluginId: thread.originPluginId,
     visibility: thread.visibility,
     archivedAt: thread.archivedAt,
@@ -256,6 +256,10 @@ export function toThreadResponseFromThread(
     environmentHostId: resolveThreadEnvironmentHostId(deps, args.thread),
   });
   const admission = getCurrentThreadWorkAdmission(deps.db, args.thread.id);
+  const workspaceWait =
+    admission?.status === "waiting"
+      ? getUnmanagedWorkspaceMutationWaitState(deps.db, admission.id)
+      : null;
   return {
     ...threadWithRuntime,
     activeBackgroundAgentCount:
@@ -269,6 +273,13 @@ export function toThreadResponseFromThread(
             queuedAt: admission.createdAt,
             reason: admission.reason,
             waitingReason: admission.waitingReason,
+            workspace:
+              workspaceWait?.holder === null || workspaceWait === null
+                ? null
+                : {
+                    canonicalPath: workspaceWait.canonicalPath,
+                    holderThreadId: workspaceWait.holder.threadId,
+                  },
           }
         : null,
     canSpawnChild: canThreadSpawnChild(deps, { thread: args.thread }),

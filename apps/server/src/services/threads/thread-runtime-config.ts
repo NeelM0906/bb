@@ -1,4 +1,9 @@
-import { getEnvironment, getHost, getProject } from "@bb/db";
+import {
+  getEnvironment,
+  getEnvironmentCanonicalPath,
+  getHost,
+  getProject,
+} from "@bb/db";
 import type {
   DynamicTool,
   InstructionMode,
@@ -136,7 +141,10 @@ function resolveDynamicTools(
 export function resolvePermissionEscalation(
   args: ResolvePermissionEscalationArgs,
 ): PermissionEscalation {
-  if (args.initiator !== "user" || args.thread.parentThreadId !== null) {
+  // System turns (parent notifications, recovery) must not prompt. A
+  // user-started turn asks even on a delegated child so a sandbox-blocked
+  // action can surface on the parent instead of failing in silence.
+  if (args.initiator !== "user") {
     return "deny";
   }
 
@@ -177,6 +185,8 @@ export async function resolveThreadRuntimeCommandConfig(
   }
 
   const { workspaceProvisionType } = args.environment;
+  const executionWorkspacePath =
+    getEnvironmentCanonicalPath(deps.db, args.environment.id) ?? workspacePath;
   const [projectSkillSources, sharedSkills, workspaceAgentInstructions] =
     await Promise.all([
       resolveWorkspaceProjectSkills(deps, {
@@ -221,7 +231,7 @@ export async function resolveThreadRuntimeCommandConfig(
       host: { id: host.id, name: host.name },
       provider: { id: args.thread.providerId, model: args.model },
       origin: {
-        kind: args.thread.originKind ?? args.thread.childOrigin,
+        kind: args.thread.originKind,
         pluginId: args.thread.originPluginId,
       },
     },
@@ -321,7 +331,7 @@ export async function resolveThreadRuntimeCommandConfig(
     projectId: args.thread.projectId,
     providerId: args.thread.providerId,
     threadStoragePath,
-    workspacePath,
+    workspacePath: executionWorkspacePath,
     workspaceProvisionType,
   };
 }

@@ -139,6 +139,9 @@ const testAdmissionsByHost = new Map<
 >();
 
 interface RegisterTestHostRpcCaptureArgs {
+  canonicalPathByInput?: Readonly<Record<string, string>>;
+  deferAdmissionReserveForThreadIds?: ReadonlySet<string>;
+  deferProjectInspectForPaths?: ReadonlySet<string>;
   hostId: string;
   sessionId: string;
 }
@@ -373,6 +376,26 @@ export function registerTestHostRpcCapture(
       if (respondToProviderModelListCommand(deps, args, message)) {
         return;
       }
+      if (
+        command.type === "project.inspect" &&
+        args.canonicalPathByInput !== undefined &&
+        !args.deferProjectInspectForPaths?.has(command.path)
+      ) {
+        deps.hub.recordHostOnlineRpcResponse({
+          message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+            type: "host-rpc.response",
+            requestId: message.requestId,
+            commandType: command.type,
+            ok: true,
+            result: {
+              path: args.canonicalPathByInput[command.path] ?? command.path,
+              gitRemoteUrl: null,
+            },
+          }),
+          sessionId: args.sessionId,
+        });
+        return;
+      }
       if (command.type === "host.admission.reserve") {
         const reservations = testAdmissionsByHost.get(args.hostId) ?? new Map();
         const existing = reservations.get(command.threadId);
@@ -389,17 +412,19 @@ export function registerTestHostRpcCapture(
         entry.requestIds.add(command.requestId);
         reservations.set(command.threadId, entry);
         testAdmissionsByHost.set(args.hostId, reservations);
-        deps.hub.recordHostOnlineRpcResponse({
-          message: hostDaemonOnlineRpcResponseMessageSchema.parse({
-            type: "host-rpc.response",
-            requestId: message.requestId,
-            commandType: command.type,
-            ok: true,
-            result: { outcome: "reserved", reservation: entry.reservation },
-          }),
-          sessionId: args.sessionId,
-        });
-        return;
+        if (!args.deferAdmissionReserveForThreadIds?.has(command.threadId)) {
+          deps.hub.recordHostOnlineRpcResponse({
+            message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+              type: "host-rpc.response",
+              requestId: message.requestId,
+              commandType: command.type,
+              ok: true,
+              result: { outcome: "reserved", reservation: entry.reservation },
+            }),
+            sessionId: args.sessionId,
+          });
+          return;
+        }
       }
       if (command.type === "host.admission.release") {
         const reservations = testAdmissionsByHost.get(args.hostId);

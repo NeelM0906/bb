@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { AgentRuntime, AgentRuntimeOptions } from "@bb/agent-runtime";
 import type { ThreadEvent } from "@bb/domain";
-import { turnScope } from "@bb/domain";
+import { threadScope, turnScope } from "@bb/domain";
 import type { HostDaemonInjectedSkillSource } from "@bb/host-daemon-contract";
 import type { HostWatcher } from "@bb/host-watcher";
 import {
@@ -15,6 +15,7 @@ import {
 } from "@bb/host-workspace";
 import { makeWorkspaceMergeBase, makeWorkspaceStatus } from "@bb/test-helpers";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { requireWorkspaceEnvironment } from "./command-dispatch-support.js";
 import {
   RuntimeManager,
   SkillCatalogConflictError,
@@ -268,7 +269,9 @@ function createFakeRuntime() {
     steerTurn: vi.fn(async (_args: SteerTurnArgs) => ({
       status: "steered" as const,
     })),
-    stopThread: vi.fn(async (_args: StopThreadArgs) => undefined),
+    stopThread: vi.fn(async (_args: StopThreadArgs) => ({
+      providerCheckpointId: null,
+    })),
     clearThreadGoal: vi.fn(async () => ({ cleared: true })),
     renameThread: vi.fn(async (_args: RenameThreadArgs) => undefined),
     archiveThread: vi.fn(async () => undefined),
@@ -341,6 +344,39 @@ describe("RuntimeManager", () => {
     expect(entry.path).toBe("/tmp/env-1");
   });
 
+  it("reuses a resident unmanaged runtime when a queued command carries an alias", async () => {
+    const root = await makeTempDir("bb-runtime-alias-");
+    const workspaceDirectory = path.join(root, "workspace");
+    const aliasPath = path.join(root, "workspace-alias");
+    await fs.mkdir(workspaceDirectory);
+    await fs.symlink(workspaceDirectory, aliasPath, "dir");
+    const canonicalPath = await fs.realpath(workspaceDirectory);
+    const provisionWorkspace = createProvisionWorkspaceMock(canonicalPath);
+    const manager = new RuntimeManager({
+      provisionWorkspace,
+      createRuntime: () => createFakeRuntime(),
+    });
+    const resident = await manager.ensureEnvironment({
+      environmentId: "env-aliased-command",
+      workspacePath: canonicalPath,
+      workspaceProvisionType: "unmanaged",
+    });
+
+    const resolved = await requireWorkspaceEnvironment(
+      {
+        environmentId: "env-aliased-command",
+        workspaceContext: {
+          workspacePath: aliasPath,
+          workspaceProvisionType: "unmanaged",
+        },
+      },
+      manager,
+    );
+
+    expect(resolved).toBe(resident);
+    expect(provisionWorkspace).toHaveBeenCalledTimes(1);
+  });
+
   it("refreshes the workspace on the resident runtime entry", async () => {
     const plainWorkspace = createFakeWorkspace("/tmp/env-refresh", false);
     const gitWorkspace = createFakeWorkspace("/tmp/env-refresh");
@@ -370,6 +406,36 @@ describe("RuntimeManager", () => {
     expect(entry.workspace).toBe(gitWorkspace);
     expect(manager.get("env-refresh")?.workspace).toBe(gitWorkspace);
     expect(provisionWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes an unmanaged alias through the resident canonical path", async () => {
+    const plainWorkspace = createFakeWorkspace("/canonical/env-refresh", false);
+    const gitWorkspace = createFakeWorkspace("/canonical/env-refresh");
+    const provisionWorkspace = vi
+      .fn<(options: ProvisionWorkspaceArgs) => Promise<HostWorkspace>>()
+      .mockResolvedValueOnce(plainWorkspace)
+      .mockResolvedValueOnce(gitWorkspace);
+    const manager = new RuntimeManager({
+      provisionWorkspace,
+      createRuntime: () => createFakeRuntime(),
+    });
+    const entry = await manager.ensureEnvironment({
+      environmentId: "env-refresh-alias",
+      workspacePath: "/legacy/env-refresh-alias",
+    });
+
+    const refreshed = await manager.refreshEnvironmentWorkspace({
+      environmentId: "env-refresh-alias",
+      provision: {
+        workspaceProvisionType: "unmanaged",
+        path: "/legacy/env-refresh-alias",
+      },
+      workspacePath: "/legacy/env-refresh-alias",
+    });
+
+    expect(refreshed).toBe(gitWorkspace);
+    expect(entry.path).toBe("/canonical/env-refresh");
+    expect(entry.workspace).toBe(gitWorkspace);
   });
 
   it("reaps idle provider sessions from loaded runtimes", async () => {
@@ -2029,7 +2095,7 @@ describe("RuntimeManager", () => {
     expect(emittedEvents).toEqual([]);
   });
 
-  it("emits one thread-scoped error for a provider exit before turn start", async () => {
+  it("emits a thread failure when a provider exits before turn/started", async () => {
     const emittedEvents: Array<{
       environmentId: string;
       event: ThreadEvent;
@@ -2040,25 +2106,27 @@ describe("RuntimeManager", () => {
       | undefined;
     const manager = new RuntimeManager({
       provisionWorkspace: createProvisionWorkspaceMock(
-        "/tmp/env-pending-exit",
-      ).mockResolvedValue(createFakeWorkspace("/tmp/env-pending-exit")),
+        "/tmp/env-pending-turn-exit",
+      ).mockResolvedValue(createFakeWorkspace("/tmp/env-pending-turn-exit")),
       createRuntime: vi.fn((options) => {
         onProcessExit = options.onProcessExit;
         return runtime;
       }),
-      onEvent: (event) => emittedEvents.push(event),
+      onEvent: (event) => {
+        emittedEvents.push(event);
+      },
     });
 
     await manager.ensureEnvironment({
-      environmentId: "env-pending-exit",
-      workspacePath: "/tmp/env-pending-exit",
+      environmentId: "env-pending-turn-exit",
+      workspacePath: "/tmp/env-pending-turn-exit",
     });
     if (!onProcessExit) {
-      throw new Error("Expected runtime callback to be captured");
+      throw new Error("Expected runtime callbacks to be captured");
     }
 
     onProcessExit({
-      providerId: "acp-cursor",
+      providerId: "claude-code",
       threads: [
         {
           threadId: "thread-pending",
@@ -2070,18 +2138,19 @@ describe("RuntimeManager", () => {
       code: 1,
       expected: false,
       signal: null,
-      stderr: null,
+      stderr: "provider failed before acknowledging the turn",
     });
 
     expect(emittedEvents).toEqual([
       {
-        environmentId: "env-pending-exit",
+        environmentId: "env-pending-turn-exit",
         event: {
           type: "system/error",
           threadId: "thread-pending",
-          scope: { kind: "thread" },
+          scope: threadScope(),
           code: "provider_process_exited",
-          message: 'Provider "acp-cursor" exited unexpectedly with code 1',
+          message: 'Provider "claude-code" exited unexpectedly with code 1',
+          detail: "stderr:\nprovider failed before acknowledging the turn",
         },
       },
     ]);

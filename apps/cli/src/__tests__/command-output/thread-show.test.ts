@@ -157,6 +157,7 @@ describe("bb thread show command output", () => {
         queuedAt: 123,
         reason: "interactive" as const,
         waitingReason: "Host capacity limit reached",
+        workspace: null,
       },
     };
     stubServerApi({

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import type {
   DbConnection,
@@ -6,7 +6,13 @@ import type {
   DbTransaction,
 } from "../connection.js";
 import type { DbNotifier } from "../notifier.js";
-import { projects, projectSources } from "../schema.js";
+import {
+  environments,
+  projects,
+  projectSources,
+  threads,
+  workAdmissions,
+} from "../schema.js";
 import { createProjectId, createProjectSourceId } from "../ids.js";
 import { toProjectSource } from "./project-sources.js";
 import { createOrderKeyAfter, createOrderKeyBetween } from "./order-keys.js";
@@ -273,6 +279,65 @@ export function listPublicProjects(db: DbConnection) {
 
 export interface UpdateProjectInput {
   name?: string;
+  protectUnmanagedWorkspace?: boolean;
+}
+
+export class ProjectUnmanagedWorkspaceProtectionConflictError extends Error {
+  constructor() {
+    super(
+      "Cannot enable unmanaged workspace protection while unmanaged work is active or queued on the same host. Wait for active and queued runs to finish and try again.",
+    );
+    this.name = "ProjectUnmanagedWorkspaceProtectionConflictError";
+  }
+}
+
+function assertUnmanagedWorkspaceProtectionCanBeEnabled(
+  tx: DbTransaction,
+  project: ProjectRow,
+  input: UpdateProjectInput,
+): void {
+  if (
+    project.protectUnmanagedWorkspace ||
+    input.protectUnmanagedWorkspace !== true
+  ) {
+    return;
+  }
+  const hostIds = tx
+    .selectDistinct({ hostId: environments.hostId })
+    .from(environments)
+    .where(
+      and(
+        eq(environments.projectId, project.id),
+        eq(environments.workspaceProvisionType, "unmanaged"),
+        ne(environments.status, "destroyed"),
+      ),
+    )
+    .all()
+    .map(({ hostId }) => hostId);
+  if (hostIds.length === 0) return;
+
+  // Legacy environments may still use different spellings for the same path.
+  // Conservatively reject the rare opt-in transition while any unmanaged run
+  // is active on an affected host; subsequent admissions are protected once
+  // the setting is committed.
+  const current = tx
+    .select({ id: workAdmissions.id })
+    .from(workAdmissions)
+    .innerJoin(threads, eq(threads.id, workAdmissions.threadId))
+    .innerJoin(environments, eq(environments.id, threads.environmentId))
+    .where(
+      and(
+        inArray(workAdmissions.status, ["waiting", "running"]),
+        inArray(environments.hostId, hostIds),
+        eq(environments.workspaceProvisionType, "unmanaged"),
+        ne(environments.status, "destroyed"),
+      ),
+    )
+    .limit(1)
+    .get();
+  if (current) {
+    throw new ProjectUnmanagedWorkspaceProtectionConflictError();
+  }
 }
 
 export function setProjectGitRemoteUrlIfMissing(
@@ -305,16 +370,30 @@ export function updateProject(
   input: UpdateProjectInput,
 ) {
   const now = Date.now();
-  const updated = db
-    .update(projects)
-    .set({ ...input, updatedAt: now })
-    .where(eq(projects.id, id))
-    .returning()
-    .get();
+  const updated = db.transaction(
+    (tx) => {
+      const project = tx
+        .select()
+        .from(projects)
+        .where(eq(projects.id, id))
+        .get();
+      if (!project) return null;
+      assertUnmanagedWorkspaceProtectionCanBeEnabled(tx, project, input);
+      return (
+        tx
+          .update(projects)
+          .set({ ...input, updatedAt: now })
+          .where(eq(projects.id, id))
+          .returning()
+          .get() ?? null
+      );
+    },
+    { behavior: "immediate" },
+  );
   if (updated) {
     notifier.notifyProject(id, ["project-updated"]);
   }
-  return updated ?? null;
+  return updated;
 }
 
 export function markProjectDeleted(

@@ -1,11 +1,18 @@
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate } from "react-router-dom";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import type { NewThreadComposerProps, NewThreadRequest } from "@bb/plugin-sdk";
 import type { CreateExecutionInputSources } from "@bb/server-contract";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { NewThreadPromptBox } from "@/components/promptbox/NewThreadPromptBox";
-import { withAutomationPromptAction } from "@/components/promptbox/PromptBoxActionsMenu";
+import { withAppPromptActions } from "@/components/promptbox/PromptBoxActionsMenu";
 import { buildProviderPromptActionProps } from "@/components/promptbox/mentions/command-trigger";
 import type { PromptBoxHandle } from "@/components/promptbox/PromptBoxInternal";
 import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
@@ -50,8 +57,7 @@ import { useScopedBranchSelection } from "@/views/root-compose-branch-selection"
 import { resolveRootComposeThreadEnvironment } from "@/views/root-compose-thread-environment";
 import {
   buildReuseThreadOptions,
-  isProjectSourceWorktreeUnavailable,
-  PROJECT_SOURCE_WORKTREE_DISABLED_REASON,
+  resolveProjectSourceWorktreeDisabledReason,
   resolveRootComposeEffectiveEnvironmentValue,
   resolveRootComposeProjectRouting,
   resolveRootComposeProviderRouting,
@@ -105,9 +111,8 @@ export function PluginNewThreadComposer({
   const [pickedProjectId, setPickedProjectId] = useState<string | null>(
     defaultProjectId ?? null,
   );
-  const [seededDefaultProjectId, setSeededDefaultProjectId] = useState(
-    defaultProjectId,
-  );
+  const [seededDefaultProjectId, setSeededDefaultProjectId] =
+    useState(defaultProjectId);
   // Re-seed during render (not in an effect) so a new `defaultProjectId` never
   // paints one frame of the previous project's environment options.
   if (seededDefaultProjectId !== defaultProjectId) {
@@ -175,8 +180,10 @@ export function PluginNewThreadComposer({
   const hostsQuery = useHosts();
   const systemConfigQuery = useSystemConfig();
   const primaryHostId =
-    selectPrimaryHost(hostsQuery.data, systemConfigQuery.data?.primaryHostId ?? null)
-      ?.id ?? null;
+    selectPrimaryHost(
+      hostsQuery.data,
+      systemConfigQuery.data?.primaryHostId ?? null,
+    )?.id ?? null;
   const knownHostIds = useMemo(
     () => new Set((hostsQuery.data ?? []).map((host) => host.id)),
     [hostsQuery.data],
@@ -410,9 +417,10 @@ export function PluginNewThreadComposer({
       selectedBranch: selectedBranch?.name ?? "",
     },
   );
-  const projectSourceWorktreeUnavailable = isProjectSourceWorktreeUnavailable(
-    branchesQuery.data,
-  );
+  const projectSourceWorktreeDisabledReason =
+    resolveProjectSourceWorktreeDisabledReason(branchesQuery.data);
+  const projectSourceWorktreeUnavailable =
+    projectSourceWorktreeDisabledReason !== null;
   const requestsManagedWorktree =
     isHostMode && parsedEnvironment.mode === "worktree";
   const managedWorktreeAvailabilityPending =
@@ -596,7 +604,7 @@ export function PluginNewThreadComposer({
     [selectedProviderComposerActions],
   );
   const promptActions = useMemo(
-    () => withAutomationPromptAction(providerPromptActions.promptActions),
+    () => withAppPromptActions(providerPromptActions.promptActions),
     [providerPromptActions.promptActions],
   );
   const commandSuggestions = useCommandSuggestions({
@@ -813,9 +821,7 @@ export function PluginNewThreadComposer({
             onChange: setEnvironmentSelectionValue,
             sources: projectSources,
             reuseDisabled: reuseThreadOptions.length === 0,
-            worktreeDisabledReason: projectSourceWorktreeUnavailable
-              ? PROJECT_SOURCE_WORKTREE_DISABLED_REASON
-              : null,
+            worktreeDisabledReason: projectSourceWorktreeDisabledReason,
           },
           branch: {
             value:

@@ -33,6 +33,7 @@ export type {
   StartThreadResult,
   SteerTurnArgs,
   StopThreadArgs,
+  StopThreadResult,
   WaitForActiveTurnArgs,
 } from "./types.js";
 export type {

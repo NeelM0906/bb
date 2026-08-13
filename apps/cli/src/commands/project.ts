@@ -68,6 +68,7 @@ function addProjectWorkspaceRoutingOptions(command: Command): Command {
 
 interface ProjectUpdateCommandOptions {
   name?: string;
+  protectUnmanagedWorkspace?: boolean;
   json?: boolean;
 }
 
@@ -530,16 +531,32 @@ export function registerProjectCommands(
     .command("update <id>")
     .description("Update a project")
     .option("--name <name>", "Set the project name")
+    .option(
+      "--protect-unmanaged-workspace <true|false>",
+      "Serialize mutations in shared unmanaged workspaces",
+      (value: string) => {
+        if (value === "true") return true;
+        if (value === "false") return false;
+        throw new Error("--protect-unmanaged-workspace must be true or false.");
+      },
+    )
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(async (id: string, opts: ProjectUpdateCommandOptions) => {
-        if (!opts.name) {
-          throw new Error("No changes requested. Provide --name.");
+        if (!opts.name && opts.protectUnmanagedWorkspace === undefined) {
+          throw new Error(
+            "No changes requested. Provide --name or --protect-unmanaged-workspace.",
+          );
         }
         const sdk = createCliBbSdk(getUrl());
         const updated = await sdk.projects.update({
           projectId: id,
-          name: opts.name,
+          ...(opts.name === undefined ? {} : { name: opts.name }),
+          ...(opts.protectUnmanagedWorkspace === undefined
+            ? {}
+            : {
+                protectUnmanagedWorkspace: opts.protectUnmanagedWorkspace,
+              }),
         });
         if (outputJson(opts, updated)) return;
         console.log(`Project ${updated.id} updated`);
@@ -684,6 +701,9 @@ function printProject(project: ProjectResponse): void {
   console.log("");
   console.log(`  ID:       ${project.id}`);
   console.log(`  Name:     ${project.name}`);
+  console.log(
+    `  Protect unmanaged workspace: ${project.protectUnmanagedWorkspace ? "yes" : "no"}`,
+  );
   console.log(`  Created:  ${new Date(project.createdAt).toLocaleString()}`);
   console.log(`  Updated:  ${new Date(project.updatedAt).toLocaleString()}`);
   if (project.sources.length > 0) {

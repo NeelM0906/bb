@@ -1,4 +1,7 @@
-import { heartbeatSession } from "@bb/db";
+import {
+  clearEnvironmentPathCanonicalizationsForHost,
+  heartbeatSession,
+} from "@bb/db";
 import {
   hasHostDaemonWebSocketProtocol,
   hostDaemonDaemonWsMessageSchema,
@@ -7,6 +10,8 @@ import { ApiError } from "../errors.js";
 import { verifyAuthenticatedDaemon } from "../internal/auth.js";
 import type { AppDeps } from "../types.js";
 import { runtimeErrorLogFields } from "../services/lib/error-log-fields.js";
+import { recoverDurableWorkAdmissions } from "../services/hosts/live-command.js";
+import { reconcileHostWorkAdmissions } from "../services/threads/work-admission.js";
 import { schedulePrimaryHostCaffeinateReconciliation } from "../services/system/app-settings.js";
 import {
   getInactiveSessionLogFields,
@@ -17,6 +22,7 @@ import {
   notifyDaemonEnvironmentChange,
   recordDaemonEnvironmentMetadataChange,
 } from "../internal/environment-changes.js";
+import { runEventLoopWorkSync } from "../services/system/event-loop-work.js";
 import { decodeSocketPayload } from "./decode-payload.js";
 
 interface DaemonSocket {
@@ -87,6 +93,7 @@ export function onDaemonSocketOpen(
     { sessionId: args.sessionId, hostId: args.hostId },
     "Daemon WebSocket opened",
   );
+  clearEnvironmentPathCanonicalizationsForHost(deps.db, args.hostId);
   deps.hub.registerDaemon(args.sessionId, args.hostId, args.socket);
   deps.sharedPorts.pushCurrentSharedPortsForHost(args.hostId);
   deps.terminalSessions.expireDisconnectedHostTerminals({
@@ -96,6 +103,16 @@ export function onDaemonSocketOpen(
   schedulePrimaryHostCaffeinateReconciliation(deps, {
     reason: "daemon-open",
   });
+  void reconcileHostWorkAdmissions(deps, { hostId: args.hostId })
+    .then(() => {
+      recoverDurableWorkAdmissions(deps, { hostId: args.hostId });
+    })
+    .catch((error: unknown) => {
+      deps.logger.warn(
+        { err: error, hostId: args.hostId },
+        "Failed to reconcile host work admissions after daemon connection",
+      );
+    });
 }
 
 export function onDaemonSocketMessage(
@@ -120,69 +137,77 @@ export function onDaemonSocketMessage(
   }
 
   try {
-    const session = requireAuthorizedOpenSession(deps.db, {
-      hostId: args.hostId,
-      sessionId: args.sessionId,
-    });
-    heartbeatSession(
-      deps.db,
-      session.id,
-      Math.max(Date.now() + session.leaseTimeoutMs, session.leaseExpiresAt + 1),
-    );
-    if (result.data.type === "environment-change") {
-      notifyDaemonEnvironmentChange(deps, {
+    runEventLoopWorkSync(`ws:daemon ${result.data.type}`, () => {
+      const session = requireAuthorizedOpenSession(deps.db, {
         hostId: args.hostId,
-        environmentId: result.data.environmentId,
-        change: result.data.change,
-      });
-      return;
-    }
-    if (result.data.type === "environment-metadata-change") {
-      recordDaemonEnvironmentMetadataChange(deps, {
-        hostId: args.hostId,
-        environmentId: result.data.environmentId,
-        workspace: result.data.workspace,
-      });
-      return;
-    }
-    if (result.data.type === "host-rpc.response") {
-      const disposition = deps.hub.recordHostOnlineRpcResponse({
-        message: result.data,
         sessionId: args.sessionId,
       });
-      if (!disposition.handled && disposition.reason === "session_mismatch") {
-        deps.logger.warn(
-          {
-            commandType: result.data.commandType,
-            expectedSessionId: disposition.expectedSessionId,
-            requestId: result.data.requestId,
-            sessionId: args.sessionId,
-          },
-          "Ignoring host RPC response from mismatched daemon session",
-        );
-      } else if (!disposition.handled) {
-        deps.logger.debug(
-          {
-            commandType: result.data.commandType,
-            requestId: result.data.requestId,
-            sessionId: args.sessionId,
-          },
-          "Ignoring stale host RPC response",
-        );
+      heartbeatSession(
+        deps.db,
+        session.id,
+        Math.max(
+          Date.now() + session.leaseTimeoutMs,
+          session.leaseExpiresAt + 1,
+        ),
+      );
+      if (result.data.type === "environment-change") {
+        notifyDaemonEnvironmentChange(deps, {
+          hostId: args.hostId,
+          environmentId: result.data.environmentId,
+          change: result.data.change,
+        });
+        return;
       }
-      return;
-    }
-    if (result.data.type === "connect-tunnel.identity") {
-      deps.sharedPorts.recordTunnelIdentity(args.hostId, result.data.identity);
-      return;
-    }
-    if (result.data.type !== "heartbeat") {
-      deps.terminalSessions.handleDaemonTerminalMessage({
-        hostId: args.hostId,
-        message: result.data,
-        sessionId: args.sessionId,
-      });
-    }
+      if (result.data.type === "environment-metadata-change") {
+        recordDaemonEnvironmentMetadataChange(deps, {
+          hostId: args.hostId,
+          environmentId: result.data.environmentId,
+          workspace: result.data.workspace,
+        });
+        return;
+      }
+      if (result.data.type === "host-rpc.response") {
+        const disposition = deps.hub.recordHostOnlineRpcResponse({
+          message: result.data,
+          sessionId: args.sessionId,
+        });
+        if (!disposition.handled && disposition.reason === "session_mismatch") {
+          deps.logger.warn(
+            {
+              commandType: result.data.commandType,
+              expectedSessionId: disposition.expectedSessionId,
+              requestId: result.data.requestId,
+              sessionId: args.sessionId,
+            },
+            "Ignoring host RPC response from mismatched daemon session",
+          );
+        } else if (!disposition.handled) {
+          deps.logger.debug(
+            {
+              commandType: result.data.commandType,
+              requestId: result.data.requestId,
+              sessionId: args.sessionId,
+            },
+            "Ignoring stale host RPC response",
+          );
+        }
+        return;
+      }
+      if (result.data.type === "connect-tunnel.identity") {
+        deps.sharedPorts.recordTunnelIdentity(
+          args.hostId,
+          result.data.identity,
+        );
+        return;
+      }
+      if (result.data.type !== "heartbeat") {
+        deps.terminalSessions.handleDaemonTerminalMessage({
+          hostId: args.hostId,
+          message: result.data,
+          sessionId: args.sessionId,
+        });
+      }
+    });
   } catch (error) {
     if (error instanceof ApiError && error.body.code === "inactive_session") {
       deps.logger.info(

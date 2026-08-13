@@ -27,6 +27,11 @@ A project maps to a code repository. All threads belong to a project.
   bb project show <id>                    Show project details
   bb project update <id>                  Update a project
     --name <name>                         New name
+    --protect-unmanaged-workspace <true|false>
+                                          Serialize shared-folder mutations
+
+  Unmanaged workspace protection defaults to false. If any project attached
+  to the same canonical folder enables it, work is serialized across projects.
 
   bb project delete <id>                  Delete project and all threads
     --yes                                 Skip confirmation

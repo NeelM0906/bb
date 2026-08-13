@@ -1,6 +1,11 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
-import type { DbConnection, DbQueryConnection } from "../connection.js";
+import { and, asc, desc, eq, inArray, notExists } from "drizzle-orm";
+import type {
+  DbConnection,
+  DbQueryConnection,
+  DbTransaction,
+} from "../connection.js";
 import {
+  unmanagedWorkspaceMutationWaiters,
   workAdmissions,
   type WorkAdmissionReason,
 } from "../schema.js";
@@ -43,6 +48,11 @@ export interface MarkWaitingWorkAdmissionTerminalArgs {
 export interface UpdateWorkAdmissionWaitingReasonArgs {
   id: string;
   waitingReason: string;
+}
+
+export interface UpdateCurrentWorkAdmissionCommandArgs {
+  commandJson: string;
+  id: string;
 }
 
 export function createWorkAdmission(
@@ -120,6 +130,36 @@ export function listWaitingWorkAdmissions(
     .all();
 }
 
+export function getFirstHostEligibleWaitingAdmission(
+  db: DbQueryConnection,
+  hostId: string,
+): WorkAdmissionRow | null {
+  const workspaceWait = db
+    .select({ requestId: unmanagedWorkspaceMutationWaiters.requestId })
+    .from(unmanagedWorkspaceMutationWaiters)
+    .where(
+      and(
+        eq(unmanagedWorkspaceMutationWaiters.requestId, workAdmissions.id),
+        eq(unmanagedWorkspaceMutationWaiters.state, "waiting"),
+      ),
+    );
+  return (
+    db
+      .select()
+      .from(workAdmissions)
+      .where(
+        and(
+          eq(workAdmissions.status, "waiting"),
+          eq(workAdmissions.hostId, hostId),
+          notExists(workspaceWait),
+        ),
+      )
+      .orderBy(asc(workAdmissions.createdAt), asc(workAdmissions.id))
+      .limit(1)
+      .get() ?? null
+  );
+}
+
 export function listCurrentWorkAdmissions(
   db: DbQueryConnection,
   args: ListCurrentWorkAdmissionsArgs = {},
@@ -140,7 +180,7 @@ export function listCurrentWorkAdmissions(
 }
 
 export function markWorkAdmissionRunning(
-  db: DbConnection,
+  db: DbConnection | DbTransaction,
   args: MarkWorkAdmissionRunningArgs,
 ): boolean {
   return (
@@ -225,6 +265,24 @@ export function updateWorkAdmissionWaitingReason(
         and(
           eq(workAdmissions.id, args.id),
           eq(workAdmissions.status, "waiting"),
+        ),
+      )
+      .run().changes === 1
+  );
+}
+
+export function updateCurrentWorkAdmissionCommand(
+  db: DbConnection,
+  args: UpdateCurrentWorkAdmissionCommandArgs,
+): boolean {
+  return (
+    db
+      .update(workAdmissions)
+      .set({ commandJson: args.commandJson, updatedAt: Date.now() })
+      .where(
+        and(
+          eq(workAdmissions.id, args.id),
+          inArray(workAdmissions.status, ["waiting", "running"]),
         ),
       )
       .run().changes === 1
