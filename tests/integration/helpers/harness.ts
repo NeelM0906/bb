@@ -345,6 +345,7 @@ async function startIntegrationServer(
           resolve();
         });
       });
+      hub.shutdown();
       await dbReadWorker.shutdown();
       db.$client.close();
     },
@@ -437,9 +438,11 @@ export async function createIntegrationHarness(
   const daemonDataDir = path.join(tmpRoot, "daemon-data");
   const threadStorageRootPath = path.join(daemonDataDir, "thread-storage");
   await fs.mkdir(threadStorageRootPath, { recursive: true });
-  const repoDir = await createTestGitRepo({
-    repoDir: path.join(reposRoot, "test-project"),
-  });
+  const repoDir = await fs.realpath(
+    await createTestGitRepo({
+      repoDir: path.join(reposRoot, "test-project"),
+    }),
+  );
 
   let server: RunningTestServer | null = null;
   let daemonResources: HarnessDaemonResources | null = null;
