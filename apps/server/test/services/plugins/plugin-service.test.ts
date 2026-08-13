@@ -1,6 +1,13 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createConnection, migrate, type DbConnection } from "@bb/db";
 import type { SystemChangeKind } from "@bb/domain";
@@ -608,6 +615,31 @@ describe("plugin service", () => {
       status: "running",
     });
     expect(service.getApi("reinstalled")).toBeDefined();
+  });
+
+  it("refuses path plugins inside managed workspaces unless explicitly allowed", async () => {
+    const managedRoot = join(
+      workDir,
+      "data",
+      "personal-workspaces",
+      "env_test",
+      "bb-plugin-managed",
+    );
+    const written = await writePlugin(workDir, {
+      name: "bb-plugin-managed",
+      serverSource: `export default function plugin() {}`,
+    });
+    await mkdir(dirname(managedRoot), { recursive: true });
+    await rename(written, managedRoot);
+
+    await expect(service.installPath(managedRoot)).rejects.toThrow(
+      "will be deleted when that environment is destroyed",
+    );
+    await expect(
+      service.installPath(managedRoot, {
+        allowManagedWorkspaceSource: true,
+      }),
+    ).resolves.toMatchObject({ id: "managed" });
   });
 });
 

@@ -683,10 +683,20 @@ export function registerPluginCommands(
       "Install a bundled official plugin by name, Git repository URL, local path, builtin:<name>, git:<url>[@<ref>], or npm:<name>@<version> (managed sources validate engines ranges and build artifacts; bundled plugin ids are reserved)",
     )
     .option("--yes", "Skip the confirmation prompt")
+    .option(
+      "--allow-managed-workspace-source",
+      "Allow a path plugin whose source will be deleted with its BB-managed workspace",
+    )
     .option("--json", "Output JSON")
     .action(
       action(
-        async (source: string, opts: JsonOutputOptions & { yes?: boolean }) => {
+        async (
+          source: string,
+          opts: JsonOutputOptions & {
+            yes?: boolean;
+            allowManagedWorkspaceSource?: boolean;
+          },
+        ) => {
           const intent = await resolveInstallIntent(getUrl(), source);
           // Catalog entries split by source kind: `builtin:` plugins ship
           // inside the app, git-catalog entries install from their pinned,
@@ -744,6 +754,8 @@ export function registerPluginCommands(
             intent.kind === "source"
               ? await createCliBbSdk(getUrl()).plugins.install({
                   source: intent.source,
+                  allowManagedWorkspaceSource:
+                    opts.allowManagedWorkspaceSource === true,
                 })
               : await createCliBbSdk(getUrl()).plugins.catalog.install({
                   entryId: intent.entry.entryId,

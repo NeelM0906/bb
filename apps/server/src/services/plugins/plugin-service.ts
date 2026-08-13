@@ -89,7 +89,10 @@ import {
   createManagedPluginArtifacts,
   type RegisterInstalledArgs,
 } from "./managed-plugin-artifacts.js";
-import { createPluginRegistration } from "./plugin-registration.js";
+import {
+  createPluginRegistration,
+  type PluginPathInstallOptions,
+} from "./plugin-registration.js";
 import { createPluginRuntime, forgetMutableRoot } from "./plugin-runtime.js";
 import { createPluginUpdates } from "./plugin-updates.js";
 
@@ -168,7 +171,10 @@ export interface PluginService {
    * hard-fail on an engines.bb mismatch and refuse already-registered ids;
    * use update for an existing managed plugin.
    */
-  install(source: string): Promise<PluginListEntry>;
+  install(
+    source: string,
+    options?: PluginPathInstallOptions,
+  ): Promise<PluginListEntry>;
   /**
    * Install a bundled official plugin by its registry name (store install).
    * Registers with catalog provenance so the opt-in survives reconciliation.
@@ -185,7 +191,10 @@ export interface PluginService {
     pluginId: string;
     source: string;
   }): Promise<PluginListEntry>;
-  installPath(path: string): Promise<PluginListEntry>;
+  installPath(
+    path: string,
+    options?: PluginPathInstallOptions,
+  ): Promise<PluginListEntry>;
   checkForUpdates(id?: string): Promise<PluginUpdateCheckEntry[]>;
   listUpdateResults(): PluginUpdateCheckEntry[];
   getSource(id: string): Promise<PluginSourceView | undefined>;
@@ -1453,7 +1462,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
 
     list,
 
-    async install(source) {
+    async install(source, options) {
       return withPluginOperationLock(REGISTRATION_MUTATION_KEY, async () => {
         const parsed = parsePluginSource(source);
         if (parsed.kind === "builtin") return installBuiltinSource(parsed);
@@ -1462,7 +1471,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
           refuseBuiltinShadow(derivePluginId(parsed.name));
           return installNpmSource(parsed, source);
         }
-        return installPathSource(parsed.path);
+        return installPathSource(parsed.path, options);
       });
     },
 
@@ -1493,9 +1502,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       });
     },
 
-    installPath: (path) =>
+    installPath: (path, options) =>
       withPluginOperationLock(REGISTRATION_MUTATION_KEY, () =>
-        installPathSource(path),
+        installPathSource(path, options),
       ),
 
     ...pluginUpdates,

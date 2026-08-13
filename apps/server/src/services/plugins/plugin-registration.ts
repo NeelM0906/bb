@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { isBbManagedWorkspacePath } from "../threads/worktree-paths.js";
 import {
   getInstalledPlugin,
   getInstalledPluginRegistration,
@@ -50,6 +51,10 @@ export interface PluginRegistrationContext {
   syncCliSkill: () => Promise<void>;
   notifyPluginsChanged: () => void;
   list: () => PluginListEntry[];
+}
+
+export interface PluginPathInstallOptions {
+  allowManagedWorkspaceSource?: boolean;
 }
 
 export function createPluginRegistration(context: PluginRegistrationContext) {
@@ -263,9 +268,22 @@ export function createPluginRegistration(context: PluginRegistrationContext) {
 
   async function installPathSource(
     path: string,
+    options: PluginPathInstallOptions = {},
     context: InstallContext = directInstallContext,
   ): Promise<PluginListEntry> {
     const rootDir = resolve(path);
+    if (isBbManagedWorkspacePath({ dataDir: deps.dataDir, path: rootDir })) {
+      const warning =
+        `plugin "${rootDir}" is installed from inside a bb-managed workspace; ` +
+        "its source will be deleted when that environment is destroyed (for example, when the owning thread is archived). " +
+        "Move it to a stable path outside the managed workspace.";
+      if (options.allowManagedWorkspaceSource !== true) {
+        throw new Error(
+          `${warning} Re-run with the explicit managed-workspace source override only if this data loss is intentional.`,
+        );
+      }
+      logger.warn(warning);
+    }
     return registerInstalled({
       rootDir,
       source: `path:${rootDir}`,

@@ -743,7 +743,10 @@ them by mixing ink into canvas), the `--primary` accent, the secondary text tier
     track, while exact versions are pinned. Omit the Git ref to track the
     repository's default branch; explicit branches track, while tags and
     commits are pinned. Installs prompt for confirmation (plugins are full-trust code);
-    pass `--yes` to skip. Reinstalling an already-installed managed plugin is
+    pass `--yes` to skip. Path installs inside BB-managed workspaces are
+    refused because archive cleanup deletes their source; move the source to a
+    stable checkout, or use `--allow-managed-workspace-source` only when that
+    deletion is intentional. Reinstalling an already-installed managed plugin is
     refused — use `bb plugin update`. Plugins that declare a frontend (`bb.app`)
     are built at install time for path sources and git sources without a
     prebuilt app when their imported dependencies are already available;

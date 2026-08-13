@@ -417,13 +417,16 @@ export function registerPluginRoutes(
       return context.json(
         {
           ok: false,
-          error: 'expected { "source": string }',
+          error:
+            'expected { "source": string, "allowManagedWorkspaceSource"?: boolean }',
         },
         422,
       );
     }
     try {
-      const plugin = await plugins.install(parsed.data.source);
+      const plugin = await plugins.install(parsed.data.source, {
+        allowManagedWorkspaceSource: parsed.data.allowManagedWorkspaceSource,
+      });
       return context.json({ ok: true, plugin });
     } catch (error) {
       return context.json(

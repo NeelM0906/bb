@@ -204,7 +204,10 @@ export const pluginListResponseSchema = z.object({
 export type PluginListResponse = z.infer<typeof pluginListResponseSchema>;
 
 export const pluginInstallSourceRequestSchema = z
-  .object({ source: z.string().min(1) })
+  .object({
+    source: z.string().min(1),
+    allowManagedWorkspaceSource: z.boolean().default(false),
+  })
   .strict();
 export type PluginInstallSourceRequest = z.infer<
   typeof pluginInstallSourceRequestSchema
