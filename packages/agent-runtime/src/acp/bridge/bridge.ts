@@ -44,6 +44,7 @@ import {
   ACP_COMPACTION_COMPLETED_METHOD,
   ACP_COMPACTION_STARTED_METHOD,
   ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_CODE,
+  ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_MESSAGE,
   ACP_DEFAULT_MODEL_ID,
   ACP_FS_WRITE_METHOD,
   ACP_PERMISSION_REQUEST_METHOD,
@@ -1957,7 +1958,7 @@ async function handleRequest(
         sendError(
           request.id,
           ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_CODE,
-          "No active turn to steer",
+          ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_MESSAGE,
         );
         return;
       }

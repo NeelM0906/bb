@@ -34,7 +34,10 @@ import {
   sendJsonRpcRequest,
   settleJsonRpcResponse,
 } from "./runtime-json-rpc.js";
-import { ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_CODE } from "./acp/bridge-protocol.js";
+import {
+  ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_CODE,
+  ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_MESSAGE,
+} from "./acp/bridge-protocol.js";
 import {
   handleRuntimeProviderRequest,
   type ResolveRuntimeProviderRequestThreadIdArgs,
@@ -86,6 +89,13 @@ interface RunThreadOperationArgs<TResult> {
   threadId: string;
   work: () => Promise<TResult>;
 }
+
+const staleSteerResultSchema = z
+  .object({
+    status: z.literal("stale"),
+    activeTurnId: z.string().nullable(),
+  })
+  .strict();
 
 function normalizeExecutionOptions(args: {
   adapter: ProviderAdapter;
@@ -1965,7 +1975,7 @@ function createAgentRuntimeInternal(
             providerId: pid,
           });
           try {
-            await sendCommand({
+            const result = await sendCommand({
               proc,
               message: cmd,
               resultSchema: ignoredJsonRpcResultSchema,
@@ -1975,11 +1985,18 @@ function createAgentRuntimeInternal(
                 threadId,
               },
             });
+            const staleResult = staleSteerResultSchema.safeParse(result);
+            if (isAcpProviderId(pid) && staleResult.success) {
+              turnState.clearThread(threadId);
+              proc.adapter.clearActiveTurnState?.(threadId);
+              return staleResult.data;
+            }
           } catch (error) {
             if (
               error instanceof JsonRpcResponseError &&
               isAcpProviderId(pid) &&
-              error.code === ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_CODE
+              error.code === ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_CODE &&
+              error.message === ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_MESSAGE
             ) {
               turnState.clearThread(threadId);
               proc.adapter.clearActiveTurnState?.(threadId);

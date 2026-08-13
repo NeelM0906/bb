@@ -215,6 +215,8 @@ export const ACP_WARNING_METHOD = "acp/warning";
 
 /** The bridge has a session, but its agent prompt has already ended. */
 export const ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_CODE = -32001;
+export const ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_MESSAGE =
+  "No active turn to steer";
 
 export const acpTurnStartedNotificationParamsSchema = z
   .object({
