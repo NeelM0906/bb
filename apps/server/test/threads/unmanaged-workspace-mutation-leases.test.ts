@@ -14,6 +14,7 @@ import {
 } from "@bb/db";
 import { describe, expect, it, vi } from "vitest";
 import {
+  listRecoverableWorkAdmissionCommands,
   reconcileHostWorkAdmissions,
   releaseThreadWorkAdmission,
 } from "../../src/services/threads/work-admission.js";
@@ -37,6 +38,87 @@ import {
 import { withTestHarness } from "../helpers/test-app.js";
 
 describe("protected unmanaged workspace dispatch", () => {
+  it("cleans a promoted lease whose recovered command is invalid", async () => {
+    await withTestHarness(async (harness) => {
+      const host = seedHostSession(harness.deps, {
+        id: "host-workspace-invalid-recovery",
+      }).host;
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/invalid-recovery-repo",
+      });
+      updateProject(harness.db, harness.hub, project.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/invalid-recovery-repo",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const holder = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const invalid = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "active",
+      });
+      for (const [id, threadId, commandJson] of [
+        ["req-invalid-holder", holder.id, "{}"],
+        ["req-invalid-promoted", invalid.id, '{"type":"removed.command"}'],
+      ] as const) {
+        createWorkAdmission(harness.db, {
+          commandJson,
+          hostId: host.id,
+          id,
+          reason: "interactive",
+          threadId,
+          waitingReason: "Awaiting host capacity",
+        });
+      }
+      expect(
+        acquireUnmanagedWorkspaceMutationLease(harness.db, {
+          environmentId: environment.id,
+          requestId: "req-invalid-holder",
+          threadId: holder.id,
+        }),
+      ).toMatchObject({ outcome: "acquired", generation: 1 });
+      expect(
+        acquireUnmanagedWorkspaceMutationLease(harness.db, {
+          environmentId: environment.id,
+          requestId: "req-invalid-promoted",
+          threadId: invalid.id,
+        }),
+      ).toMatchObject({ outcome: "waiting" });
+      expect(
+        releaseUnmanagedWorkspaceMutationLease(harness.db, {
+          canonicalPath: "/canonical/invalid-recovery-repo",
+          generation: 1,
+          hostId: host.id,
+          reason: "promote invalid recovery",
+        }),
+      ).toMatchObject({
+        promoted: { requestId: "req-invalid-promoted", generation: 2 },
+      });
+
+      expect(
+        listRecoverableWorkAdmissionCommands(harness.deps, {
+          hostId: host.id,
+        }),
+      ).toEqual([]);
+      expect(
+        getWorkAdmission(harness.db, "req-invalid-promoted"),
+      ).toMatchObject({ status: "terminal" });
+      expect(
+        getUnmanagedWorkspaceMutationLeaseForThread(harness.db, invalid.id),
+      ).toBeNull();
+    });
+  });
+
   it("promotes a workspace waiter before deleting its holder thread", async () => {
     await withTestHarness(async (harness) => {
       const host = seedHostSession(harness.deps, {

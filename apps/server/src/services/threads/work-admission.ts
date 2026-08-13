@@ -517,10 +517,28 @@ export function listRecoverableWorkAdmissionCommands(
     }
     const parsed = hostDaemonCommandSchema.safeParse(stored);
     if (!parsed.success || !isProviderWorkCommand(parsed.data)) {
-      markWaitingWorkAdmissionTerminal(deps.db, {
+      const workspaceWait = getUnmanagedWorkspaceMutationWaitState(
+        deps.db,
+        row.id,
+      );
+      const settled = markWaitingWorkAdmissionTerminal(deps.db, {
         id: row.id,
         terminalReason: "Stored admission command failed validation",
       });
+      if (settled) {
+        cancelUnmanagedWorkspaceMutationWaiter(deps.db, {
+          reason: "Stored admission command failed validation",
+          requestId: row.id,
+        });
+        if (workspaceWait) {
+          signalWorkspacePromotion(row.hostId, workspaceWait.canonicalPath);
+        }
+        releaseWorkspaceLeaseForThread(deps, {
+          reason: "Stored admission command failed validation",
+          threadId: row.threadId,
+        });
+        signalHostAdmissionPromotion(row.hostId);
+      }
       deps.logger.error(
         { admissionId: row.id, threadId: row.threadId },
         "Stored work admission command is invalid",
