@@ -99,7 +99,10 @@ import {
 } from "./thread-provisioning-active-context.js";
 import { hasProvisioningTimelineRow } from "./thread-provisioning-context.js";
 import { isPreStartThreadStatus } from "./thread-status.js";
-import { releaseThreadWorkAdmission } from "./work-admission.js";
+import {
+  releaseThreadWorkAdmission,
+  releaseWorkspaceLeaseForThreadInTransaction,
+} from "./work-admission.js";
 
 type ReadyThreadTurnDispatchKind = "thread.start" | "turn.submit";
 type ThreadStartCommand = Awaited<ReturnType<typeof buildThreadStartCommand>>;
@@ -1773,6 +1776,11 @@ export function finalizeStoppedThreadInTransaction(
         reason: "thread-deleted",
       },
     );
+
+    releaseWorkspaceLeaseForThreadInTransaction(deps, {
+      reason: "Workspace holder thread deleted",
+      threadId: finalizedThread.id,
+    });
 
     const environmentId = finalizedThread.environmentId;
     deleteThread(deps.db, deps.hub, finalizedThread.id);

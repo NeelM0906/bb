@@ -20,8 +20,10 @@ import {
   markWorkAdmissionTerminal,
   recordEnvironmentCanonicalPath,
   releaseUnmanagedWorkspaceMutationLease,
+  releaseUnmanagedWorkspaceMutationLeaseInTransaction,
   updateWorkAdmissionWaitingReason,
   type WorkAdmissionRow,
+  type DbTransaction,
 } from "@bb/db";
 import {
   hostDaemonCommandSchema,
@@ -301,6 +303,27 @@ function releaseWorkspaceLeaseForThread(
   return result.released;
 }
 
+export function releaseWorkspaceLeaseForThreadInTransaction(
+  deps: { db: DbTransaction },
+  args: { reason: string; threadId: string },
+): boolean {
+  const lease = getUnmanagedWorkspaceMutationLeaseForThread(
+    deps.db,
+    args.threadId,
+  );
+  if (!lease) return false;
+  const result = releaseUnmanagedWorkspaceMutationLeaseInTransaction(deps.db, {
+    canonicalPath: lease.canonicalPath,
+    generation: lease.generation,
+    hostId: lease.hostId,
+    reason: args.reason,
+  });
+  if (result.released) {
+    signalWorkspacePromotion(lease.hostId, lease.canonicalPath);
+  }
+  return result.released;
+}
+
 export async function awaitThreadWorkAdmission(
   deps: WorkAdmissionDeps,
   args: {
@@ -324,11 +347,10 @@ export async function awaitThreadWorkAdmission(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const settled = markWaitingWorkAdmissionTerminal(deps.db, {
-      id: row.id,
+    await releaseThreadWorkAdmission(deps, {
       terminalReason: `Workspace canonicalization failed: ${message}`,
+      threadId: row.threadId,
     });
-    if (settled) signalHostAdmissionPromotion(args.hostId);
     throw error;
   }
 

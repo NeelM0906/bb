@@ -5,7 +5,11 @@ import {
   getEnvironment,
   getCurrentThreadWorkAdmission,
   getWorkAdmission,
+  getUnmanagedWorkspaceMutationLease,
   getUnmanagedWorkspaceMutationLeaseForThread,
+  getUnmanagedWorkspaceMutationWaitState,
+  markThreadDeleted,
+  releaseUnmanagedWorkspaceMutationLease,
   updateProject,
 } from "@bb/db";
 import { describe, expect, it, vi } from "vitest";
@@ -13,6 +17,7 @@ import {
   reconcileHostWorkAdmissions,
   releaseThreadWorkAdmission,
 } from "../../src/services/threads/work-admission.js";
+import { finalizeStoppedThread } from "../../src/services/threads/thread-lifecycle.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
 import {
   listQueuedCommands,
@@ -32,6 +37,74 @@ import {
 import { withTestHarness } from "../helpers/test-app.js";
 
 describe("protected unmanaged workspace dispatch", () => {
+  it("promotes a workspace waiter before deleting its holder thread", async () => {
+    await withTestHarness(async (harness) => {
+      const host = seedHostSession(harness.deps, {
+        id: "host-workspace-holder-delete",
+      }).host;
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/deleted-holder-repo",
+      });
+      updateProject(harness.db, harness.hub, project.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/deleted-holder-repo",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const holder = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const waiter = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      for (const [id, threadId] of [
+        ["req-deleted-holder", holder.id],
+        ["req-deleted-waiter", waiter.id],
+      ] as const) {
+        createWorkAdmission(harness.db, {
+          commandJson: "{}",
+          hostId: host.id,
+          id,
+          reason: "interactive",
+          threadId,
+          waitingReason: "Awaiting host capacity",
+        });
+      }
+      expect(
+        acquireUnmanagedWorkspaceMutationLease(harness.db, {
+          environmentId: environment.id,
+          requestId: "req-deleted-holder",
+          threadId: holder.id,
+        }),
+      ).toMatchObject({ outcome: "acquired", generation: 1 });
+      expect(
+        acquireUnmanagedWorkspaceMutationLease(harness.db, {
+          environmentId: environment.id,
+          requestId: "req-deleted-waiter",
+          threadId: waiter.id,
+        }),
+      ).toMatchObject({ outcome: "waiting" });
+      markThreadDeleted(harness.db, harness.hub, { threadId: holder.id });
+
+      expect(finalizeStoppedThread(harness.deps, { threadId: holder.id })).toBe(
+        true,
+      );
+
+      expect(
+        getUnmanagedWorkspaceMutationLeaseForThread(harness.db, waiter.id),
+      ).toMatchObject({ generation: 2, requestId: "req-deleted-waiter" });
+    });
+  });
+
   it("preserves a promoted waiting lease during host reconciliation", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {
@@ -109,7 +182,7 @@ describe("protected unmanaged workspace dispatch", () => {
     });
   });
 
-  it("settles a canonicalization failure and wakes the next admission", async () => {
+  it("cleans durable workspace state after canonicalization failure", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {
         id: "host-workspace-canonicalization-failure",
@@ -128,20 +201,13 @@ describe("protected unmanaged workspace dispatch", () => {
         status: "ready",
         workspaceProvisionType: "unmanaged",
       });
-      const managedEnvironment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        path: "/managed/independent-repo",
-        projectId: project.id,
-        status: "ready",
-        workspaceProvisionType: "managed-worktree",
-      });
       const failed = seedThread(harness.deps, {
         environmentId: missingEnvironment.id,
         projectId: project.id,
         status: "idle",
       });
-      const next = seedThread(harness.deps, {
-        environmentId: managedEnvironment.id,
+      const workspaceHolder = seedThread(harness.deps, {
+        environmentId: missingEnvironment.id,
         projectId: project.id,
         status: "idle",
       });
@@ -161,6 +227,21 @@ describe("protected unmanaged workspace dispatch", () => {
         reasoningLevel: "medium" as const,
         serviceTier: "default" as const,
       });
+      createWorkAdmission(harness.db, {
+        commandJson: "{}",
+        hostId: host.id,
+        id: "req-canonicalization-holder",
+        reason: "interactive",
+        threadId: workspaceHolder.id,
+        waitingReason: "Awaiting host capacity",
+      });
+      expect(
+        acquireUnmanagedWorkspaceMutationLease(harness.db, {
+          environmentId: missingEnvironment.id,
+          requestId: "req-canonicalization-holder",
+          threadId: workspaceHolder.id,
+        }),
+      ).toMatchObject({ outcome: "acquired", generation: 1 });
 
       await sendThreadMessage(harness.deps, {
         environment: missingEnvironment,
@@ -179,32 +260,39 @@ describe("protected unmanaged workspace dispatch", () => {
         failed.id,
       );
       expect(failedAdmission).toMatchObject({ status: "waiting" });
-
-      await sendThreadMessage(harness.deps, {
-        environment: managedEnvironment,
-        payload: payload("independent managed work"),
-        thread: next,
-        trigger: "user",
-      });
-      await new Promise((resolve) => setTimeout(resolve, 20));
       expect(
-        listQueuedThreadCommands(harness, "thread.start", next.id),
-      ).toHaveLength(0);
+        acquireUnmanagedWorkspaceMutationLease(harness.db, {
+          environmentId: missingEnvironment.id,
+          requestId: failedAdmission!.id,
+          threadId: failed.id,
+        }),
+      ).toMatchObject({ outcome: "waiting" });
 
       await reportQueuedCommandError(harness, inspection, {
         errorCode: "ENOENT",
         errorMessage: "Workspace path does not exist",
       });
-      await waitForQueuedCommand(
-        harness,
-        (queued) =>
-          queued.command.type === "thread.start" &&
-          queued.command.threadId === next.id,
-      );
       expect(getWorkAdmission(harness.db, failedAdmission!.id)).toMatchObject({
         status: "terminal",
         terminalReason: expect.stringContaining("canonicalization failed"),
       });
+      expect(
+        getUnmanagedWorkspaceMutationWaitState(harness.db, failedAdmission!.id),
+      ).toBeNull();
+      const holderLease = getUnmanagedWorkspaceMutationLease(
+        harness.db,
+        host.id,
+        "/legacy/missing-repo",
+      );
+      expect(holderLease).toMatchObject({ generation: 1 });
+      expect(
+        releaseUnmanagedWorkspaceMutationLease(harness.db, {
+          canonicalPath: "/legacy/missing-repo",
+          generation: holderLease!.generation,
+          hostId: host.id,
+          reason: "test holder finished",
+        }),
+      ).toEqual({ promoted: null, released: true });
     });
   });
 

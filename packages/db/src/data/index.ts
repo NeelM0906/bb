@@ -591,6 +591,7 @@ export {
   listUnmanagedWorkspaceMutationLeases,
   listUnmanagedWorkspaceMutationLeaseEvents,
   releaseUnmanagedWorkspaceMutationLease,
+  releaseUnmanagedWorkspaceMutationLeaseInTransaction,
 } from "./unmanaged-workspace-mutation-leases.js";
 export type {
   AcquireUnmanagedWorkspaceMutationLeaseResult,

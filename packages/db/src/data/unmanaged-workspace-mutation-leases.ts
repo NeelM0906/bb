@@ -52,6 +52,12 @@ export interface ReleaseUnmanagedWorkspaceMutationLeaseResult {
   promoted: UnmanagedWorkspaceMutationLeaseRow | null;
 }
 
+type ReleaseUnmanagedWorkspaceMutationLeaseArgs = WorkspaceKey & {
+  eventType?: "released" | "recovered";
+  generation: number;
+  reason: string;
+};
+
 function protectedWorkspaceKey(
   db: DbQueryConnection,
   environmentId: string,
@@ -405,100 +411,101 @@ export function cancelUnmanagedWorkspaceMutationWaiter(
   );
 }
 
+export function releaseUnmanagedWorkspaceMutationLeaseInTransaction(
+  tx: DbTransaction,
+  args: ReleaseUnmanagedWorkspaceMutationLeaseArgs,
+): ReleaseUnmanagedWorkspaceMutationLeaseResult {
+  const holder = getUnmanagedWorkspaceMutationLease(
+    tx,
+    args.hostId,
+    args.canonicalPath,
+  );
+  if (!holder || holder.generation !== args.generation) {
+    return { promoted: null, released: false };
+  }
+  tx.delete(unmanagedWorkspaceMutationLeases)
+    .where(
+      and(
+        eq(unmanagedWorkspaceMutationLeases.hostId, args.hostId),
+        eq(
+          unmanagedWorkspaceMutationLeases.canonicalPath,
+          args.canonicalPath,
+        ),
+        eq(unmanagedWorkspaceMutationLeases.generation, args.generation),
+      ),
+    )
+    .run();
+  appendEvent(tx, {
+    canonicalPath: holder.canonicalPath,
+    createdAt: Date.now(),
+    environmentId: holder.environmentId,
+    generation: holder.generation,
+    hostId: holder.hostId,
+    reason: args.reason,
+    requestId: holder.requestId,
+    threadId: holder.threadId,
+    type: args.eventType ?? "released",
+  });
+  const waiter = tx
+    .select()
+    .from(unmanagedWorkspaceMutationWaiters)
+    .where(
+      and(
+        eq(unmanagedWorkspaceMutationWaiters.hostId, args.hostId),
+        eq(
+          unmanagedWorkspaceMutationWaiters.canonicalPath,
+          args.canonicalPath,
+        ),
+        eq(unmanagedWorkspaceMutationWaiters.state, "waiting"),
+      ),
+    )
+    .orderBy(asc(unmanagedWorkspaceMutationWaiters.sequence))
+    .limit(1)
+    .get();
+  if (!waiter) return { promoted: null, released: true };
+  const generation = nextGeneration(tx, args);
+  const now = Date.now();
+  const promoted = tx
+    .insert(unmanagedWorkspaceMutationLeases)
+    .values({
+      canonicalPath: waiter.canonicalPath,
+      acquiredAt: now,
+      environmentId: waiter.environmentId,
+      generation,
+      hostId: waiter.hostId,
+      requestId: waiter.requestId,
+      threadId: waiter.threadId,
+      updatedAt: now,
+    })
+    .returning()
+    .get();
+  tx.update(unmanagedWorkspaceMutationWaiters)
+    .set({
+      promotedGeneration: generation,
+      state: "promoted",
+      updatedAt: now,
+    })
+    .where(eq(unmanagedWorkspaceMutationWaiters.sequence, waiter.sequence))
+    .run();
+  appendEvent(tx, {
+    canonicalPath: waiter.canonicalPath,
+    createdAt: now,
+    environmentId: waiter.environmentId,
+    generation,
+    hostId: waiter.hostId,
+    requestId: waiter.requestId,
+    threadId: waiter.threadId,
+    type: "promoted",
+  });
+  return { promoted, released: true };
+}
+
 export function releaseUnmanagedWorkspaceMutationLease(
   db: DbConnection,
-  args: WorkspaceKey & {
-    eventType?: "released" | "recovered";
-    generation: number;
-    reason: string;
-  },
+  args: ReleaseUnmanagedWorkspaceMutationLeaseArgs,
 ): ReleaseUnmanagedWorkspaceMutationLeaseResult {
   return db.transaction(
-    (tx) => {
-      const holder = getUnmanagedWorkspaceMutationLease(
-        tx,
-        args.hostId,
-        args.canonicalPath,
-      );
-      if (!holder || holder.generation !== args.generation) {
-        return { promoted: null, released: false };
-      }
-      tx.delete(unmanagedWorkspaceMutationLeases)
-        .where(
-          and(
-            eq(unmanagedWorkspaceMutationLeases.hostId, args.hostId),
-            eq(
-              unmanagedWorkspaceMutationLeases.canonicalPath,
-              args.canonicalPath,
-            ),
-            eq(unmanagedWorkspaceMutationLeases.generation, args.generation),
-          ),
-        )
-        .run();
-      appendEvent(tx, {
-        canonicalPath: holder.canonicalPath,
-        createdAt: Date.now(),
-        environmentId: holder.environmentId,
-        generation: holder.generation,
-        hostId: holder.hostId,
-        reason: args.reason,
-        requestId: holder.requestId,
-        threadId: holder.threadId,
-        type: args.eventType ?? "released",
-      });
-      const waiter = tx
-        .select()
-        .from(unmanagedWorkspaceMutationWaiters)
-        .where(
-          and(
-            eq(unmanagedWorkspaceMutationWaiters.hostId, args.hostId),
-            eq(
-              unmanagedWorkspaceMutationWaiters.canonicalPath,
-              args.canonicalPath,
-            ),
-            eq(unmanagedWorkspaceMutationWaiters.state, "waiting"),
-          ),
-        )
-        .orderBy(asc(unmanagedWorkspaceMutationWaiters.sequence))
-        .limit(1)
-        .get();
-      if (!waiter) return { promoted: null, released: true };
-      const generation = nextGeneration(tx, args);
-      const now = Date.now();
-      const promoted = tx
-        .insert(unmanagedWorkspaceMutationLeases)
-        .values({
-          canonicalPath: waiter.canonicalPath,
-          acquiredAt: now,
-          environmentId: waiter.environmentId,
-          generation,
-          hostId: waiter.hostId,
-          requestId: waiter.requestId,
-          threadId: waiter.threadId,
-          updatedAt: now,
-        })
-        .returning()
-        .get();
-      tx.update(unmanagedWorkspaceMutationWaiters)
-        .set({
-          promotedGeneration: generation,
-          state: "promoted",
-          updatedAt: now,
-        })
-        .where(eq(unmanagedWorkspaceMutationWaiters.sequence, waiter.sequence))
-        .run();
-      appendEvent(tx, {
-        canonicalPath: waiter.canonicalPath,
-        createdAt: now,
-        environmentId: waiter.environmentId,
-        generation,
-        hostId: waiter.hostId,
-        requestId: waiter.requestId,
-        threadId: waiter.threadId,
-        type: "promoted",
-      });
-      return { promoted, released: true };
-    },
+    (tx) => releaseUnmanagedWorkspaceMutationLeaseInTransaction(tx, args),
     { behavior: "immediate" },
   );
 }
