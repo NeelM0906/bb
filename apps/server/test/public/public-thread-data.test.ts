@@ -3537,6 +3537,20 @@ describe("public thread data routes", () => {
         hostId: host.id,
         sessionId: session.id,
         handle: (request) => {
+          if (request.command.type === "host.admission.reserve") {
+            return {
+              ok: true,
+              result: {
+                outcome: "reserved",
+                reservation: {
+                  generation: 1,
+                  hostId: host.id,
+                  reason: request.command.reason,
+                  token: `test-admission:${request.command.threadId}`,
+                },
+              },
+            };
+          }
           if (request.command.type === "environment.provision") {
             stateAtProvisionStart = {
               activeContextStage:
