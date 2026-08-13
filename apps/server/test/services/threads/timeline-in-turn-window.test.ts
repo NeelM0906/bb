@@ -525,6 +525,41 @@ describe("in-turn timeline windows", () => {
     );
   });
 
+  it("pages a compact byte slice with hundreds of item identities", () => {
+    const { db, thread } = setup();
+    // One early large command pushes the 1,000 compact commands after it into a
+    // separate byte-budget page. Querying every scoped identity in that page
+    // as its own OR branch exceeds SQLite's expression-depth limit even though
+    // the page itself is correctly bounded.
+    seedTurns(db, thread, {
+      commandChars: THREAD_TIMELINE_EVENT_DATA_BYTE_LIMIT - 500_000,
+      completeLastTurn: false,
+      itemsPerTurn: [1],
+    });
+    appendCommandItems(db, thread, {
+      commandChars: 1,
+      count: 1_000,
+      itemStart: 1,
+    });
+    insertEvents(db, noopNotifier, [
+      {
+        threadId: thread.id,
+        sequence: getLatestThreadSequence(db, { threadId: thread.id }) + 1,
+        type: "turn/completed",
+        scope: turnScope("turn-1"),
+        providerThreadId,
+        itemId: null,
+        itemKind: null,
+        data: JSON.stringify({ status: "completed", providerThreadId }),
+      },
+    ]);
+
+    const walked = walkAllPages(db, thread, LARGE_BUDGET);
+
+    expect(walked.pages).toBeGreaterThan(1);
+    expect(walked.rows).not.toHaveLength(0);
+  });
+
   it("pages back through a running oversized turn to exactly the unbudgeted rows", () => {
     const { db, thread } = setup();
     seedTurns(db, thread, {
@@ -831,6 +866,62 @@ describe("in-turn timeline windows", () => {
     expect(matches[0]).toContain('"status":"completed"');
     expect(matches[0]).toContain("late output 0");
   });
+
+  it("gives a straddling item to exactly one byte page's details, completed", () => {
+    const { db, thread } = setup();
+    // Item 0 starts at the top of the finished turn and completes at its very
+    // end, so it straddles every byte cut inside the turn.
+    seedTurns(db, thread, {
+      commandChars: 25_000,
+      completeLastTurn: true,
+      itemsPerTurn: [650],
+      longRunningItemIndexes: [0],
+    });
+
+    const straddlingCallId = "turn-1-item-0";
+    const straddlingDetailRows: TimelineRow[] = [];
+    let cursor: TimelinePaginationCursor | null = null;
+    let pages = 0;
+    for (;;) {
+      const page = buildNestedPage(db, thread, LARGE_BUDGET, cursor);
+      pages += 1;
+      for (const row of page.response.rows) {
+        if (row.kind !== "turn") {
+          continue;
+        }
+        const details = buildTimelineTurnSummaryDetails(db, thread, {
+          includeProviderUnhandledOperations: false,
+          sourceSeqEnd: row.sourceSeqEnd,
+          sourceSeqStart: row.sourceSeqStart,
+          turnId: row.turnId,
+        });
+        for (const detailRow of details.rows) {
+          if (
+            detailRow.kind === "work" &&
+            detailRow.workKind === "command" &&
+            detailRow.callId === straddlingCallId
+          ) {
+            straddlingDetailRows.push(detailRow);
+          }
+        }
+      }
+      if (!page.response.timelinePage.hasOlderRows) {
+        break;
+      }
+      cursor = page.response.timelinePage.olderCursor;
+      expect(cursor).not.toBeNull();
+      expect(pages).toBeLessThan(10);
+    }
+
+    expect(pages).toBeGreaterThan(1);
+    expect(straddlingDetailRows).toHaveLength(1);
+    expect(straddlingDetailRows[0]).toEqual(
+      expect.objectContaining({
+        output: expect.stringContaining("late output 0"),
+        status: "completed",
+      }),
+    );
+  }, 15_000);
 
   it("rejects a sequence cursor whose id and sequence disagree", () => {
     const { db, thread } = setup();

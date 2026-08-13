@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { AgentRuntime, AgentRuntimeOptions } from "@bb/agent-runtime";
 import type { ThreadEvent } from "@bb/domain";
-import { turnScope } from "@bb/domain";
+import { threadScope, turnScope } from "@bb/domain";
 import type { HostDaemonInjectedSkillSource } from "@bb/host-daemon-contract";
 import type { HostWatcher } from "@bb/host-watcher";
 import {
@@ -268,7 +268,9 @@ function createFakeRuntime() {
     steerTurn: vi.fn(async (_args: SteerTurnArgs) => ({
       status: "steered" as const,
     })),
-    stopThread: vi.fn(async (_args: StopThreadArgs) => undefined),
+    stopThread: vi.fn(async (_args: StopThreadArgs) => ({
+      providerCheckpointId: null,
+    })),
     clearThreadGoal: vi.fn(async () => ({ cleared: true })),
     renameThread: vi.fn(async (_args: RenameThreadArgs) => undefined),
     archiveThread: vi.fn(async () => undefined),
@@ -278,9 +280,6 @@ function createFakeRuntime() {
       selectedOnlyModels: [],
     })),
     listRunningProviders: vi.fn((): string[] => []),
-    listProviderProcessDiagnostics: vi.fn<
-      NonNullable<AgentRuntime["listProviderProcessDiagnostics"]>
-    >(() => []),
     getActiveTurnId: (threadId) => activeTurnsByThreadId.get(threadId) ?? null,
     waitForActiveTurn: async (threadId) =>
       activeTurnsByThreadId.get(threadId) ?? null,
@@ -445,54 +444,6 @@ describe("RuntimeManager", () => {
       idleForMs: 1_000,
       nowMs: 5_000,
     });
-  });
-
-  it("reports direct provider ownership with its environment", async () => {
-    const runtime = createFakeRuntime();
-    runtime.listProviderProcessDiagnostics.mockReturnValue([
-      {
-        directPid: 4242,
-        generation: 7,
-        processKey: "fake",
-        providerId: "fake",
-        state: "running",
-        sessions: [
-          {
-            activeTurnId: "turn-1",
-            idleDeadlineMs: null,
-            providerThreadId: "provider-thread-1",
-            threadId: "thread-1",
-          },
-        ],
-      },
-    ]);
-    const manager = new RuntimeManager({
-      provisionWorkspace: createProvisionWorkspaceMock("/tmp/env-1"),
-      createRuntime: () => runtime,
-    });
-    await manager.ensureEnvironment({
-      environmentId: "env-1",
-      workspacePath: "/tmp/env-1",
-    });
-
-    expect(manager.listProviderProcessDiagnostics()).toEqual([
-      {
-        directPid: 4242,
-        environmentId: "env-1",
-        generation: 7,
-        processKey: "fake",
-        providerId: "fake",
-        state: "running",
-        sessions: [
-          {
-            activeTurnId: "turn-1",
-            idleDeadlineMs: null,
-            providerThreadId: "provider-thread-1",
-            threadId: "thread-1",
-          },
-        ],
-      },
-    ]);
   });
 
   it("passes staged injected skill roots to created runtimes", async () => {
@@ -2029,7 +1980,7 @@ describe("RuntimeManager", () => {
     expect(emittedEvents).toEqual([]);
   });
 
-  it("emits one thread-scoped error for a provider exit before turn start", async () => {
+  it("emits a thread failure when a provider exits before turn/started", async () => {
     const emittedEvents: Array<{
       environmentId: string;
       event: ThreadEvent;
@@ -2040,25 +1991,27 @@ describe("RuntimeManager", () => {
       | undefined;
     const manager = new RuntimeManager({
       provisionWorkspace: createProvisionWorkspaceMock(
-        "/tmp/env-pending-exit",
-      ).mockResolvedValue(createFakeWorkspace("/tmp/env-pending-exit")),
+        "/tmp/env-pending-turn-exit",
+      ).mockResolvedValue(createFakeWorkspace("/tmp/env-pending-turn-exit")),
       createRuntime: vi.fn((options) => {
         onProcessExit = options.onProcessExit;
         return runtime;
       }),
-      onEvent: (event) => emittedEvents.push(event),
+      onEvent: (event) => {
+        emittedEvents.push(event);
+      },
     });
 
     await manager.ensureEnvironment({
-      environmentId: "env-pending-exit",
-      workspacePath: "/tmp/env-pending-exit",
+      environmentId: "env-pending-turn-exit",
+      workspacePath: "/tmp/env-pending-turn-exit",
     });
     if (!onProcessExit) {
-      throw new Error("Expected runtime callback to be captured");
+      throw new Error("Expected runtime callbacks to be captured");
     }
 
     onProcessExit({
-      providerId: "acp-cursor",
+      providerId: "claude-code",
       threads: [
         {
           threadId: "thread-pending",
@@ -2070,18 +2023,19 @@ describe("RuntimeManager", () => {
       code: 1,
       expected: false,
       signal: null,
-      stderr: null,
+      stderr: "provider failed before acknowledging the turn",
     });
 
     expect(emittedEvents).toEqual([
       {
-        environmentId: "env-pending-exit",
+        environmentId: "env-pending-turn-exit",
         event: {
           type: "system/error",
           threadId: "thread-pending",
-          scope: { kind: "thread" },
+          scope: threadScope(),
           code: "provider_process_exited",
-          message: 'Provider "acp-cursor" exited unexpectedly with code 1',
+          message: 'Provider "claude-code" exited unexpectedly with code 1',
+          detail: "stderr:\nprovider failed before acknowledging the turn",
         },
       },
     ]);

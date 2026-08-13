@@ -36,7 +36,7 @@ import {
   providerCliStatusResponseSchema,
 } from "./local.js";
 
-export const HOST_DAEMON_PROTOCOL_VERSION = 107 as const;
+export const HOST_DAEMON_PROTOCOL_VERSION = 119 as const;
 
 export {
   BRANCH_LIST_LIMIT_MAX,
@@ -1455,6 +1455,11 @@ const threadStartResultSchema = z.object({
 const turnSubmitResultSchema = z.object({
   appliedAs: z.enum(["new-turn", "steer"]),
 });
+const threadStopResultSchema = z
+  .object({
+    providerCheckpointId: z.string().min(1).nullable(),
+  })
+  .strict();
 const emptyCommandResultSchema = z.object({});
 const projectPathResultSchema = z.object({ path: z.string().min(1) }).strict();
 const projectInspectResultSchema = projectPathResultSchema
@@ -1700,7 +1705,7 @@ export const hostDaemonCommandRegistry = {
   "thread.stop": defineHostDaemonCommandDescriptor({
     type: "thread.stop",
     schema: threadStopCommandSchema,
-    resultSchema: emptyCommandResultSchema,
+    resultSchema: threadStopResultSchema,
     transport: "settled",
     retryable: false,
     flushEventsBeforeResult: true,
@@ -2246,13 +2251,6 @@ function hostDaemonCommandDescriptorsForTransport<
   );
 }
 
-function hostDaemonCommandDescriptorsForRetryableOnlineRpc(): HostDaemonRetryableOnlineRpcCommandDescriptor[] {
-  return hostDaemonCommandDescriptorsForTransport("onlineRpc").filter(
-    (descriptor): descriptor is HostDaemonRetryableOnlineRpcCommandDescriptor =>
-      descriptor.retryable,
-  );
-}
-
 function hostDaemonCommandTypesForTransport<
   const Transport extends HostDaemonCommandTransport,
 >(transport: Transport): HostDaemonCommandTypeForTransport<Transport>[] {
@@ -2274,19 +2272,6 @@ function hostDaemonCommandSchemaForTransport<
       HostDaemonSchemaForTransport<Transport>,
       HostDaemonSchemaForTransport<Transport>,
       ...HostDaemonSchemaForTransport<Transport>[],
-    ],
-  );
-}
-
-function hostDaemonRetryableOnlineRpcCommandUnionSchema(): z.ZodType<HostDaemonRetryableOnlineRpcCommand> {
-  const schemas = hostDaemonCommandDescriptorsForRetryableOnlineRpc().map(
-    (descriptor) => descriptor.schema,
-  );
-  return z.union(
-    schemas as [
-      HostDaemonRetryableOnlineRpcCommandSchema,
-      HostDaemonRetryableOnlineRpcCommandSchema,
-      ...HostDaemonRetryableOnlineRpcCommandSchema[],
     ],
   );
 }
@@ -2349,8 +2334,6 @@ export const hostDaemonCommandSchema =
   hostDaemonCommandSchemaForTransport("settled");
 export const hostDaemonOnlineRpcCommandSchema =
   hostDaemonCommandSchemaForTransport("onlineRpc");
-export const hostDaemonRetryableOnlineRpcCommandSchema =
-  hostDaemonRetryableOnlineRpcCommandUnionSchema();
 export const hostDaemonRpcCommandSchema = z.union([
   hostDaemonOnlineRpcCommandSchema,
   hostDaemonCommandSchema,

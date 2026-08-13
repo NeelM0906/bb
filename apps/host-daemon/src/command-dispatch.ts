@@ -200,19 +200,32 @@ async function tryGetProviderCliStatusForProvider(
 }
 
 function verifyClaudeCodeUpdateEvents(args: {
-  before: ProviderCliStatus;
+  before: ProviderCliStatus | null;
   after: ProviderCliStatus | null;
   events: ProviderCliInstallEvent[];
 }): ProviderCliInstallEvent[] {
   const completedIndex = args.events.findIndex(
     (event) => event.type === "completed" && event.success,
   );
-  const expectedVersion = args.before.latestVersion;
-  const previousVersion = args.before.currentVersion;
-  const actualVersion = args.after?.currentVersion ?? null;
   if (completedIndex === -1) {
     return args.events;
   }
+  const executable =
+    args.after?.executablePath ??
+    args.before?.executablePath ??
+    args.before?.executableName ??
+    "claude";
+  if (args.before === null) {
+    return failClaudeCodeUpdateVerification({
+      ...args,
+      completedIndex,
+      message: `Claude Code's update command exited successfully, but bb could not read ${executable}'s version before the update. bb cannot confirm that the active executable changed. Run \`claude --version\` and \`claude doctor\` on this machine, then use the command output to update the installation they report.`,
+    });
+  }
+
+  const expectedVersion = args.before.latestVersion;
+  const previousVersion = args.before.currentVersion;
+  const actualVersion = args.after?.currentVersion ?? null;
 
   const validExpectedVersion =
     expectedVersion === null ? null : semver.valid(expectedVersion);
@@ -224,7 +237,11 @@ function verifyClaudeCodeUpdateEvents(args: {
   const canVerifyAdvancement =
     expectedVersion === null && validPreviousVersion !== null;
   if (!hasKnownTarget && !canVerifyAdvancement) {
-    return args.events;
+    return failClaudeCodeUpdateVerification({
+      ...args,
+      completedIndex,
+      message: `Claude Code's update command exited successfully, but bb could not compare ${executable}'s version before and after the update. Run \`claude --version\` and \`claude doctor\` on this machine, then use the command output to update the installation they report.`,
+    });
   }
   const updateVerified =
     validActualVersion !== null &&
@@ -236,24 +253,32 @@ function verifyClaudeCodeUpdateEvents(args: {
     return args.events;
   }
 
-  const executable =
-    args.after?.executablePath ??
-    args.before.executablePath ??
-    args.before.executableName;
   const expectation = hasKnownTarget
     ? `expected ${validExpectedVersion}`
     : `expected a version newer than ${validPreviousVersion}`;
   const message = `Claude Code's update command exited successfully, but ${executable} still reports ${actualVersion ?? "an unknown version"} (${expectation}). The executable may be pinned by PATH or managed by another installer. Run \`claude doctor\` on this machine and update the installation it reports.`;
+  return failClaudeCodeUpdateVerification({
+    ...args,
+    completedIndex,
+    message,
+  });
+}
+
+function failClaudeCodeUpdateVerification(args: {
+  completedIndex: number;
+  events: ProviderCliInstallEvent[];
+  message: string;
+}): ProviderCliInstallEvent[] {
   const verifiedEvents = [...args.events];
-  const completedEvent = verifiedEvents[completedIndex];
+  const completedEvent = verifiedEvents[args.completedIndex];
   if (completedEvent?.type !== "completed") {
     return args.events;
   }
-  verifiedEvents[completedIndex] = { ...completedEvent, success: false };
-  verifiedEvents.splice(completedIndex, 0, {
+  verifiedEvents[args.completedIndex] = { ...completedEvent, success: false };
+  verifiedEvents.splice(args.completedIndex, 0, {
     type: "error",
     provider: "claudeCode",
-    message,
+    message: args.message,
   });
   return verifiedEvents;
 }
@@ -284,7 +309,8 @@ async function installProviderCliOnHost(
       }),
     );
     if (
-      claudeCodeStatusBefore !== null &&
+      command.provider === "claudeCode" &&
+      command.actionKind === "update" &&
       events.some((event) => event.type === "completed" && event.success)
     ) {
       const claudeCodeStatusAfter = await tryGetProviderCliStatusForProvider(
@@ -411,8 +437,11 @@ const commandHandlers: CommandHandlerMap = {
       }
       // The old owner stopped, so the stop reached the running turn.
       await options.eventSink.flush();
-      return {};
+      return {
+        providerCheckpointId: released.providerCheckpointId,
+      };
     }
+    let providerCheckpointId = released.providerCheckpointId;
     if (entry.runtime.hasThread(command.threadId)) {
       // Stop can be dispatched while the start/submit RPC is still in flight
       // and the turn/started event has not been observed yet. Wait for the
@@ -422,12 +451,16 @@ const commandHandlers: CommandHandlerMap = {
       await entry.runtime.waitForActiveTurn(command.threadId, {
         timeoutMs: THREAD_STOP_ACTIVE_TURN_WAIT_MS,
       });
-      await entry.runtime.stopThread({ threadId: command.threadId });
+      const result = await entry.runtime.stopThread({
+        threadId: command.threadId,
+      });
+      providerCheckpointId =
+        result.providerCheckpointId ?? providerCheckpointId;
     }
     // Stop completion finalizes server-side thread state. Flush provider
     // events first so buffered lifecycle events cannot arrive after that.
     await options.eventSink.flush();
-    return {};
+    return { providerCheckpointId };
   },
   "thread.goal.clear": async (command, options) => {
     const entry = await ensureThreadRuntime(command, options);
@@ -636,8 +669,11 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
         ? { acpLaunchSpec: command.acpLaunchSpec }
         : {}),
     }),
-  "known_acp_agents.status": async (command) =>
-    getKnownAcpAgentsStatus({ agents: command.agents }),
+  "known_acp_agents.status": async (command, options) =>
+    getKnownAcpAgentsStatus({
+      agents: command.agents,
+      env: providerCliEnvFromShellEnv(options.runtimeManager.getShellEnv()),
+    }),
   "provider.usage": async () => getProviderUsage(),
   "provider_cli.status": async (_command, options) =>
     getProviderCliStatus({

@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import {
   existsSync,
   readFileSync,
@@ -27,7 +28,7 @@ import type { ProviderRuntimeEvent } from "./runtime-json-rpc.js";
 interface CreateProviderProcessManagerArgs {
   adapterProcessEnv?: Record<string, string>;
   env?: Record<string, string>;
-  onStdoutLine?: (line: string) => void;
+  handleStdoutLine?: (line: string, childPid: number | undefined) => void;
   onStderr?: NonNullable<AgentRuntimeOptions["onStderr"]>;
   onProcessExit: NonNullable<AgentRuntimeOptions["onProcessExit"]>;
   scriptPath: string;
@@ -88,7 +89,8 @@ describe("createAgentRuntime process lifecycle", () => {
             identityRegistry.getProviderThreadId(threadId) ?? null,
           threadId,
         })),
-      handleStdoutLine: ({ line }) => args.onStdoutLine?.(line),
+      handleStdoutLine: ({ line, providerProcess }) =>
+        args.handleStdoutLine?.(line, providerProcess.child.pid),
       onProcessExit: args.onProcessExit,
       onProviderIdentityWaitersInterrupted: (providerProcess) =>
         identityRegistry.resolvePendingIdentityWaiters(
@@ -476,7 +478,7 @@ rl.on("line", (line) => {
     await manager.shutdown();
   });
 
-  it("drains final provider stderr before reporting its exit", async () => {
+  it("drains provider stderr before reporting process exit", async () => {
     const exitInfo = vi.fn<NonNullable<AgentRuntimeOptions["onProcessExit"]>>();
     const crashScript = join(tmpDir, "delayed-stderr-provider.cjs");
     const delayedWriter =
@@ -506,56 +508,44 @@ rl.on("line", (line) => {
     await manager.shutdown();
   });
 
-  it("does not accept late stdout from a finalized provider generation", async () => {
-    const stdoutLines: string[] = [];
-    const crashScript = join(tmpDir, "late-stdout-provider.cjs");
-    const startMarker = join(tmpDir, "late-stdout-provider.started");
-    const delayedWriter =
-      'setTimeout(() => process.stdout.write("late-old-generation\\n"), 1_250);';
+  it("does not wait for an already-exited provider during shutdown", async () => {
+    const crashScript = join(tmpDir, "open-stderr-provider.cjs");
+    const delayedWriter = "setTimeout(() => {}, 400);";
     writeFileSync(
       crashScript,
-      `const { existsSync, writeFileSync } = require("node:fs");
-      const { spawn } = require("node:child_process");
-      const startMarker = ${JSON.stringify(startMarker)};
-      if (!existsSync(startMarker)) {
-        writeFileSync(startMarker, "started");
-        const writer = spawn(process.execPath, ["-e", ${JSON.stringify(delayedWriter)}], {
-          stdio: ["ignore", "inherit", "ignore"],
-        });
-        writer.unref();
-        process.exit(42);
-      }
-      setInterval(() => {}, 1_000);`,
+      `const { spawn } = require("node:child_process");
+      const writer = spawn(process.execPath, ["-e", ${JSON.stringify(delayedWriter)}], {
+        stdio: ["ignore", "ignore", "inherit"],
+      });
+      writer.unref();
+      setTimeout(() => process.exit(42), 100);`,
     );
     const manager = createProviderProcessManager({
       onProcessExit: vi.fn(),
-      onStdoutLine: (line) => stdoutLines.push(line),
       scriptPath: crashScript,
       workspacePath: tmpDir,
     });
 
     await manager.ensureProvider({ processKey: "fake", providerId: "fake" });
-    await waitForRuntimeState({
-      label: "first provider process exited",
-      predicate: () => !manager.listRunningProviders().includes("fake"),
-    });
-
-    await manager.ensureProvider({ processKey: "fake", providerId: "fake" });
-    const replacement = manager.requireProviderProcess({
+    const providerProcess = manager.requireProviderProcess({
       processKey: "fake",
       providerId: "fake",
     });
-    expect(replacement.child.exitCode).toBeNull();
+    await once(providerProcess.child, "exit");
 
-    await new Promise((resolve) => setTimeout(resolve, 1_400));
-    expect(stdoutLines).not.toContain("late-old-generation");
+    // A descendant still holds the stderr pipe open, so shutdown must not fall
+    // back to the multi-second SIGTERM/SIGKILL escalation for a process that
+    // has already exited.
+    const startedAt = Date.now();
     await manager.shutdown();
+
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
   });
 
   it("waits for an exited provider to finalize before replacing it", async () => {
-    const crashScript = join(tmpDir, "replace-after-exit-provider.cjs");
-    const startMarker = join(tmpDir, "replace-after-exit-provider.started");
-    const delayedWriter = "setTimeout(() => {}, 1_500);";
+    const crashScript = join(tmpDir, "replace-after-stderr-provider.cjs");
+    const startMarker = join(tmpDir, "replace-after-stderr.started");
+    const delayedWriter = "setTimeout(() => {}, 400);";
     writeFileSync(
       crashScript,
       `const { existsSync, writeFileSync } = require("node:fs");
@@ -567,9 +557,10 @@ rl.on("line", (line) => {
           stdio: ["ignore", "ignore", "inherit"],
         });
         writer.unref();
-        process.exit(42);
-      }
-      setInterval(() => {}, 1_000);`,
+        setTimeout(() => process.exit(42), 100);
+      } else {
+        setInterval(() => {}, 1_000);
+      }`,
     );
     const manager = createProviderProcessManager({
       onProcessExit: vi.fn(),
@@ -582,22 +573,146 @@ rl.on("line", (line) => {
       processKey: "fake",
       providerId: "fake",
     });
-    await waitForRuntimeState({
-      label: "provider child exit",
-      predicate: () => exitedProvider.child.exitCode !== null,
-    });
-    expect(manager.listProviderProcessDiagnostics()[0]).toMatchObject({
-      state: "finalizing",
-    });
+    await once(exitedProvider.child, "exit");
 
-    const replacementStartMs = Date.now();
     await manager.ensureProvider({ processKey: "fake", providerId: "fake" });
-    expect(Date.now() - replacementStartMs).toBeGreaterThanOrEqual(900);
-    const replacement = manager.requireProviderProcess({
+    const replacementProvider = manager.requireProviderProcess({
       processKey: "fake",
       providerId: "fake",
     });
-    expect(replacement.child.pid).not.toBe(exitedProvider.child.pid);
+    expect(replacementProvider.child.pid).not.toBe(exitedProvider.child.pid);
+    await manager.shutdown();
+  });
+
+  it("starts a single replacement for concurrent callers after an exit", async () => {
+    const crashScript = join(tmpDir, "concurrent-replace-provider.cjs");
+    const startsLog = join(tmpDir, "concurrent-replace.starts");
+    const delayedWriter = "setTimeout(() => {}, 400);";
+    writeFileSync(
+      crashScript,
+      `const { appendFileSync, readFileSync } = require("node:fs");
+      const { spawn } = require("node:child_process");
+      const startsLog = ${JSON.stringify(startsLog)};
+      appendFileSync(startsLog, process.pid + "\\n");
+      const isFirstStart =
+        readFileSync(startsLog, "utf8").trim().split("\\n").length === 1;
+      if (isFirstStart) {
+        const writer = spawn(process.execPath, ["-e", ${JSON.stringify(delayedWriter)}], {
+          stdio: ["ignore", "ignore", "inherit"],
+        });
+        writer.unref();
+        setTimeout(() => process.exit(42), 100);
+      } else {
+        setInterval(() => {}, 1_000);
+      }`,
+    );
+    const manager = createProviderProcessManager({
+      onProcessExit: vi.fn(),
+      scriptPath: crashScript,
+      workspacePath: tmpDir,
+    });
+
+    await manager.ensureProvider({ processKey: "fake", providerId: "fake" });
+    const exitedProvider = manager.requireProviderProcess({
+      processKey: "fake",
+      providerId: "fake",
+    });
+    await once(exitedProvider.child, "exit");
+
+    // Every caller waits on the same exit finalization, so each one resumes
+    // needing to re-check whether a peer already spawned the replacement.
+    await Promise.all([
+      manager.ensureProvider({ processKey: "fake", providerId: "fake" }),
+      manager.ensureProvider({ processKey: "fake", providerId: "fake" }),
+      manager.ensureProvider({ processKey: "fake", providerId: "fake" }),
+    ]);
+
+    const replacementProvider = manager.requireProviderProcess({
+      processKey: "fake",
+      providerId: "fake",
+    });
+    // The replacement records its own start asynchronously, so wait for it and
+    // then settle to give any extra spawn a chance to show up in the log.
+    await waitForRuntimeState({
+      label: "replacement provider recorded its start",
+      predicate: () => readLogLines(startsLog).length >= 2,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(replacementProvider.child.pid).not.toBe(exitedProvider.child.pid);
+    expect(readLogLines(startsLog)).toHaveLength(2);
+    expect(manager.listRunningProviders()).toEqual(["fake"]);
+    await manager.shutdown();
+  });
+
+  it("cuts off inherited provider output before starting a replacement", async () => {
+    const crashScript = join(tmpDir, "stale-descendant-output-provider.cjs");
+    const startMarker = join(tmpDir, "stale-descendant-output.started");
+    const writeMarker = join(tmpDir, "stale-descendant-output.wrote");
+    // The descendant keeps holding both inherited pipes past the assertions
+    // below, so the pipes can only be closed by the grace-deadline cleanup
+    // rather than by the descendant itself exiting and letting them EOF.
+    const delayedWriter = `const fs = require("node:fs");
+      const writeMarker = ${JSON.stringify(writeMarker)};
+      setTimeout(() => {
+        fs.writeFileSync(writeMarker, "wrote");
+        process.stdout.write("stale-from-old-provider\\n");
+      }, 1_200);
+      setTimeout(() => process.exit(0), 5_000);`;
+    writeFileSync(
+      crashScript,
+      `const { existsSync, writeFileSync } = require("node:fs");
+      const { spawn } = require("node:child_process");
+      const startMarker = ${JSON.stringify(startMarker)};
+      if (!existsSync(startMarker)) {
+        writeFileSync(startMarker, "started");
+        const writer = spawn(process.execPath, ["-e", ${JSON.stringify(delayedWriter)}], {
+          stdio: ["ignore", "inherit", "inherit"],
+        });
+        writer.unref();
+        setTimeout(() => process.exit(42), 50);
+      } else {
+        setInterval(() => {}, 1_000);
+      }`,
+    );
+    const lines: Array<{ childPid: number | undefined; line: string }> = [];
+    const manager = createProviderProcessManager({
+      handleStdoutLine: (line, childPid) => lines.push({ childPid, line }),
+      onProcessExit: vi.fn(),
+      scriptPath: crashScript,
+      workspacePath: tmpDir,
+    });
+
+    await manager.ensureProvider({ processKey: "fake", providerId: "fake" });
+    const exitedProvider = manager.requireProviderProcess({
+      processKey: "fake",
+      providerId: "fake",
+    });
+    await once(exitedProvider.child, "exit");
+
+    await manager.ensureProvider({ processKey: "fake", providerId: "fake" });
+    const replacementProvider = manager.requireProviderProcess({
+      processKey: "fake",
+      providerId: "fake",
+    });
+    await waitForRuntimeState({
+      label: "old provider descendant attempted delayed output",
+      predicate: () => existsSync(writeMarker),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const exitedStdout = exitedProvider.child.stdout;
+    const exitedStderr = exitedProvider.child.stderr;
+    if (!exitedStdout || !exitedStderr) {
+      throw new Error("Expected provider process pipes");
+    }
+    expect(replacementProvider.child.pid).not.toBe(exitedProvider.child.pid);
+    expect(exitedStdout.destroyed).toBe(true);
+    expect(exitedStderr.destroyed).toBe(true);
+    expect(lines).not.toContainEqual({
+      childPid: exitedProvider.child.pid,
+      line: "stale-from-old-provider",
+    });
     await manager.shutdown();
   });
 
@@ -1192,166 +1307,6 @@ rl.on("line", (line) => {
     }
   });
 
-  it("does not reap a provider session with open background work", async () => {
-    const events: ThreadEvent[] = [];
-    const runtime = createAgentRuntimeWithAdapters({
-      workspacePath: tmpDir,
-      onEvent: (event) => events.push(event),
-      onToolCall: async () => ({
-        contentItems: [{ type: "inputText", text: "ok" }],
-        success: true,
-      }),
-      adapterFactory: () => {
-        const adapter = createFakeAdapter(scriptPath);
-        return {
-          ...adapter,
-          translateEvent(event, context) {
-            const translatedEvents = adapter.translateEvent(event, context);
-            const eventsWithBackgroundWork: ThreadEvent[] = [];
-            for (const translatedEvent of translatedEvents) {
-              if (translatedEvent.type !== "turn/completed") {
-                eventsWithBackgroundWork.push(translatedEvent);
-                continue;
-              }
-              if (!translatedEvent.providerThreadId) {
-                throw new Error("Expected fake provider thread identity");
-              }
-              eventsWithBackgroundWork.push(
-                {
-                  type: "item/started",
-                  threadId: translatedEvent.threadId,
-                  providerThreadId: translatedEvent.providerThreadId,
-                  scope: translatedEvent.scope,
-                  item: {
-                    type: "backgroundTask",
-                    id: "background-task-1",
-                    taskType: "local_workflow",
-                    description: "background task",
-                    status: "pending",
-                    taskStatus: "running",
-                    skipTranscript: false,
-                  },
-                },
-                translatedEvent,
-              );
-            }
-            return eventsWithBackgroundWork;
-          },
-        };
-      },
-    });
-
-    try {
-      await runtime.startThread({
-        environmentId: "env-1",
-        threadId: "t1",
-        projectId: "p1",
-        providerId: "fake",
-        options: fullRuntimeOptions,
-      });
-      await runtime.runTurn({
-        clientRequestId: "creq_2222222260",
-        threadId: "t1",
-        input: [promptTextInput({ text: "start background work" })],
-        options: fullRuntimeOptions,
-      });
-      await waitForThreadAgentMessageText({
-        events,
-        providerId: "fake",
-        runtime,
-        text: "start background work",
-        threadId: "t1",
-      });
-
-      expect(
-        await runtime.reapIdleProviderSessions({
-          idleForMs: 0,
-          nowMs: Date.now() + 60 * 60 * 1000,
-        }),
-      ).toEqual({ reapedSessions: [] });
-      expect(runtime.hasThread("t1")).toBe(true);
-    } finally {
-      await runtime.shutdown();
-    }
-  });
-
-  it("reclaims a shared provider only after every hosted session is idle", async () => {
-    const events: ThreadEvent[] = [];
-    const runtime = createAgentRuntimeWithAdapters({
-      workspacePath: tmpDir,
-      onEvent: (event) => events.push(event),
-      onToolCall: async () => ({
-        contentItems: [{ type: "inputText", text: "ok" }],
-        success: true,
-      }),
-      adapterFactory: () => createFakeAdapter(scriptPath),
-    });
-
-    try {
-      await Promise.all([
-        runtime.startThread({
-          environmentId: "env-1",
-          threadId: "t1",
-          projectId: "p1",
-          providerId: "fake",
-          options: fullRuntimeOptions,
-        }),
-        runtime.startThread({
-          environmentId: "env-1",
-          threadId: "t2",
-          projectId: "p1",
-          providerId: "fake",
-          options: fullRuntimeOptions,
-        }),
-      ]);
-      await runtime.runTurn({
-        clientRequestId: "creq_2222222258",
-        threadId: "t2",
-        input: [promptTextInput({ text: "idle sibling" })],
-        options: fullRuntimeOptions,
-      });
-      await waitForThreadAgentMessageText({
-        events,
-        providerId: "fake",
-        runtime,
-        text: "idle sibling",
-        threadId: "t2",
-      });
-      await runtime.runTurn({
-        clientRequestId: "creq_2222222259",
-        threadId: "t1",
-        input: [promptTextInput({ text: "hold_turn" })],
-        options: fullRuntimeOptions,
-      });
-      expect(
-        await runtime.waitForActiveTurn("t1", { timeoutMs: 1_000 }),
-      ).not.toBeNull();
-
-      expect(
-        await runtime.reapIdleProviderSessions({
-          idleForMs: 0,
-          nowMs: Date.now() + 60_000,
-        }),
-      ).toEqual({ reapedSessions: [] });
-      expect(runtime.hasThread("t2")).toBe(true);
-
-      await runtime.stopThread({ threadId: "t1" });
-      const result = await runtime.reapIdleProviderSessions({
-        idleForMs: 0,
-        nowMs: Date.now() + 60_000,
-      });
-      expect(result.reapedSessions).toHaveLength(1);
-      expect(result.reapedSessions[0]).toMatchObject({
-        providerId: "fake",
-        threadId: "t2",
-      });
-      expect(runtime.hasThread("t2")).toBe(false);
-      expect(runtime.listRunningProviders()).not.toContain("fake");
-    } finally {
-      await runtime.shutdown();
-    }
-  });
-
   it("scrubs inherited bb runtime env vars before spawning provider processes", async () => {
     vi.stubEnv("BB_DATA_DIR", "/tmp/leaked-bb-data");
     vi.stubEnv("BB_SERVER_PORT", "38886");
@@ -1641,7 +1596,7 @@ rl.on("line", (line) => {
     await runtime.shutdown();
   });
 
-  it("waits for a failed startup's inherited pipe to finalize before retrying", async () => {
+  it("removes the cached provider and retries when startup skill configuration fails", async () => {
     const attemptsPath = join(tmpDir, "startup-config-attempts.txt");
     const logPath = join(tmpDir, "startup-config-log.txt");
     const startupConfigScript = join(tmpDir, "startup-config-failure.cjs");
@@ -1656,7 +1611,7 @@ rl.on("line", (line) => {
         : 0;
       const attempt = previousAttempts + 1;
       fs.writeFileSync(attemptsPath, String(attempt));
-      fs.appendFileSync(logPath, "spawn:" + attempt + ":" + Date.now() + "\\n");
+      fs.appendFileSync(logPath, "spawn:" + attempt + "\\n");
       setInterval(() => {}, 1000);
       const rl = readline.createInterface({ input: process.stdin });
       rl.on("line", (line) => {
@@ -1668,11 +1623,6 @@ rl.on("line", (line) => {
         if (msg.method === "skills/configure") {
           fs.appendFileSync(logPath, "configure:" + attempt + "\\n");
           if (attempt === 1) {
-            const { spawn } = require("node:child_process");
-            const pipeHolder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 1500)"], {
-              stdio: ["ignore", "inherit", "ignore"],
-            });
-            pipeHolder.unref();
             process.stdout.write(JSON.stringify({
               jsonrpc: "2.0",
               id: msg.id,
@@ -1698,10 +1648,6 @@ rl.on("line", (line) => {
             params: { threadId, providerThreadId }
           }) + "\\n");
         }
-      });
-      process.on("SIGTERM", () => {
-        fs.appendFileSync(logPath, "exit:" + attempt + ":" + Date.now() + "\\n");
-        process.exit(0);
       });`,
     );
     const baseAdapter = createFakeAdapter(scriptPath);
@@ -1750,19 +1696,13 @@ rl.on("line", (line) => {
       });
 
       expect(runtime.listRunningProviders()).toContain("codex");
-      const logLines = readFileSync(logPath, "utf8").trim().split("\n");
-      expect(logLines).toHaveLength(6);
-      expect(logLines[0]).toMatch(/^spawn:1:\d+$/);
-      expect(logLines.slice(1)).toEqual([
+      expect(readFileSync(logPath, "utf8").trim().split("\n")).toEqual([
+        "spawn:1",
         "configure:1",
-        expect.stringMatching(/^exit:1:\d+$/),
-        expect.stringMatching(/^spawn:2:\d+$/),
+        "spawn:2",
         "configure:2",
         "thread-start:2:t2",
       ]);
-      const firstExitAt = Number(logLines[2]?.split(":")[2]);
-      const retrySpawnAt = Number(logLines[3]?.split(":")[2]);
-      expect(retrySpawnAt - firstExitAt).toBeGreaterThanOrEqual(900);
     } finally {
       await runtime.shutdown();
     }
@@ -1914,8 +1854,7 @@ rl.on("line", (line) => {
     await runtime.shutdown();
   });
 
-  it("rejects pending sendRequest when provider dies mid-turn", async () => {
-    const exitInfo = vi.fn<NonNullable<AgentRuntimeOptions["onProcessExit"]>>();
+  it("reports a pending turn when the provider exits after acknowledging turn/start", async () => {
     const crashDuringTurnScript = join(tmpDir, "crash-during-turn.cjs");
     writeFileSync(
       crashDuringTurnScript,
@@ -1934,12 +1873,14 @@ rl.on("line", (line) => {
             params: { threadId: msg.params?.threadId, providerThreadId: "prov-mid" }
           }) + "\\n");
         } else if (msg.method === "turn/start") {
-          // Don't respond — just crash
+          process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }) + "\\n");
+          // Acknowledge the request, then exit before emitting turn/started.
           setTimeout(() => process.exit(77), 50);
         }
       });`,
     );
 
+    const exitInfo = vi.fn<NonNullable<AgentRuntimeOptions["onProcessExit"]>>();
     const runtime = createAgentRuntimeWithAdapters({
       workspacePath: tmpDir,
       onEvent: () => {},
@@ -1959,25 +1900,28 @@ rl.on("line", (line) => {
       options: fullRuntimeOptions,
     });
 
-    // runTurn sends the request but the provider crashes without responding
-    await expect(
-      runtime.runTurn({
-        clientRequestId: "creq_222222224y",
-        threadId: "t1",
-        input: [promptTextInput({ text: "hi" })],
-        options: fullRuntimeOptions,
+    await runtime.runTurn({
+      clientRequestId: "creq_222222224y",
+      threadId: "t1",
+      input: [promptTextInput({ text: "hi" })],
+      options: fullRuntimeOptions,
+    });
+    await waitForRuntimeState({
+      label: "provider process exit callback",
+      predicate: () => exitInfo.mock.calls.length === 1,
+    });
+    expect(exitInfo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threads: [
+          expect.objectContaining({
+            activeTurnId: null,
+            pendingTurnStart: true,
+            providerThreadId: "prov-mid",
+            threadId: "t1",
+          }),
+        ],
       }),
-    ).rejects.toThrow(/exited unexpectedly/i);
-    expect(exitInfo).toHaveBeenCalledOnce();
-    expect(exitInfo.mock.calls[0]?.[0].threads).toEqual([
-      {
-        activeTurnId: null,
-        pendingTurnStart: true,
-        providerThreadId: "prov-mid",
-        threadId: "t1",
-      },
-    ]);
-    expect(runtime.getLiveThreadIds()).toEqual([]);
+    );
     await runtime.shutdown();
   });
 

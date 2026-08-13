@@ -242,6 +242,8 @@ export type ReleaseThreadActiveTurnPolicy = "interrupt" | "keep";
 export interface ReleaseThreadFromOtherEnvironmentsResult {
   /** Environments that still run a turn for the thread under `keep`. */
   activeTurnEnvironmentIds: string[];
+  /** Provider checkpoint retained by a stopped runtime, when one reported it. */
+  providerCheckpointId: string | null;
   /** Environments whose runtime released the thread. */
   releasedEnvironmentIds: string[];
 }
@@ -448,13 +450,24 @@ export class RuntimeManager {
       (entry) => !keptEntries.includes(entry),
     );
 
-    await Promise.all(
+    const stopResults = await Promise.all(
       releasedEntries.map((entry) =>
         entry.runtime.stopThread({ threadId: args.threadId }),
       ),
     );
+    const providerCheckpointIds = new Set(
+      stopResults.flatMap((result) =>
+        result.providerCheckpointId === null
+          ? []
+          : [result.providerCheckpointId],
+      ),
+    );
     return {
       activeTurnEnvironmentIds: keptEntries.map((entry) => entry.environmentId),
+      providerCheckpointId:
+        providerCheckpointIds.size === 1
+          ? (providerCheckpointIds.values().next().value ?? null)
+          : null,
       releasedEnvironmentIds: releasedEntries.map(
         (entry) => entry.environmentId,
       ),
@@ -1194,7 +1207,8 @@ export class RuntimeManager {
   /**
    * Synthesizes failure events for threads that were mid-turn or awaiting
    * turn/start when their provider process died, from the runtime's final
-   * per-thread snapshot. Fully idle resident threads remain silent.
+   * per-thread snapshot. Fully idle resident threads remain silent so a
+   * retained provider exiting does not create a false thread failure.
    */
   private buildUnexpectedProviderExitEvents(
     info: AgentRuntimeProcessExitInfo,
