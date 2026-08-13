@@ -278,6 +278,44 @@ async function releaseHostReservation(
   return result.released;
 }
 
+async function ensureAdmissionWorkspaceCanonical(
+  deps: WorkAdmissionDeps,
+  args: {
+    environmentId: string;
+    hostId: string;
+    row: WorkAdmissionRow;
+    unpersistedReservation?: HostAdmissionReservation;
+  },
+): Promise<void> {
+  try {
+    await ensureLegacyUnmanagedWorkspacePathsCanonical(deps, {
+      hostId: args.hostId,
+      targetEnvironmentId: args.environmentId,
+    });
+  } catch (error) {
+    if (args.unpersistedReservation) {
+      try {
+        await releaseHostReservation(deps, args.unpersistedReservation);
+      } catch (releaseError) {
+        deps.logger.warn(
+          {
+            err: releaseError,
+            admissionId: args.row.id,
+            hostId: args.hostId,
+          },
+          "Failed to release host reservation after workspace canonicalization failure",
+        );
+      }
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    await releaseThreadWorkAdmission(deps, {
+      terminalReason: `Workspace canonicalization failed: ${message}`,
+      threadId: args.row.threadId,
+    });
+    throw error;
+  }
+}
+
 function workspaceWaitingReason(args: {
   canonicalPath: string;
   holderThreadId: string;
@@ -348,19 +386,11 @@ export async function awaitThreadWorkAdmission(
   // canonicalization is in flight, reconnect recovery can still resume this
   // command from the durable admission queue.
   let row = ensureAdmissionRow(deps, { ...args, reason });
-  try {
-    await ensureLegacyUnmanagedWorkspacePathsCanonical(deps, {
-      hostId: args.hostId,
-      targetEnvironmentId: args.command.environmentId,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    await releaseThreadWorkAdmission(deps, {
-      terminalReason: `Workspace canonicalization failed: ${message}`,
-      threadId: row.threadId,
-    });
-    throw error;
-  }
+  await ensureAdmissionWorkspaceCanonical(deps, {
+    environmentId: args.command.environmentId,
+    hostId: args.hostId,
+    row,
+  });
 
   for (;;) {
     if (row.status === "terminal") {
@@ -369,6 +399,14 @@ export async function awaitThreadWorkAdmission(
     if (row.status === "running") {
       const result = await reserve(deps, { ...args, reason });
       if (result.outcome === "reserved") {
+        // A daemon reconnect invalidates confirmed paths while this admission
+        // can remain queued. Re-gate immediately before the synchronous lease
+        // acquisition so an alias cannot bypass a canonical holder.
+        await ensureAdmissionWorkspaceCanonical(deps, {
+          environmentId: args.command.environmentId,
+          hostId: args.hostId,
+          row,
+        });
         const workspace = acquireUnmanagedWorkspaceMutationLease(deps.db, {
           environmentId: args.command.environmentId,
           requestId: row.id,
@@ -407,6 +445,16 @@ export async function awaitThreadWorkAdmission(
         row = getWorkAdmission(deps.db, row.id) ?? row;
         continue;
       }
+      // The initial canonicalization may have completed before a daemon
+      // reconnect cleared its confirmations. The reservation is not durable
+      // until the transaction below, so release it explicitly on re-gating
+      // failure.
+      await ensureAdmissionWorkspaceCanonical(deps, {
+        environmentId: args.command.environmentId,
+        hostId: args.hostId,
+        row,
+        unpersistedReservation: result.reservation,
+      });
       const workspace = acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission(
         deps.db,
         {

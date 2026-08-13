@@ -1,6 +1,7 @@
 import {
   acquireUnmanagedWorkspaceMutationLease,
   acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission,
+  clearEnvironmentPathCanonicalizationsForHost,
   createWorkAdmission,
   getEnvironment,
   getCurrentThreadWorkAdmission,
@@ -487,6 +488,132 @@ describe("protected unmanaged workspace dispatch", () => {
           reason: "test holder finished",
         }),
       ).toEqual({ promoted: null, released: true });
+    });
+  });
+
+  it("recanonicalizes queued aliases before acquiring workspace leases after reconnect", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-workspace-reconnect-aliases",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/reconnect-repo-a",
+      });
+      updateProject(harness.db, harness.hub, project.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const firstEnvironment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/reconnect-repo-a",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const secondEnvironment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/reconnect-repo-b",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const first = seedThread(harness.deps, {
+        environmentId: firstEnvironment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const second = seedThread(harness.deps, {
+        environmentId: secondEnvironment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      registerTestHostRpcCapture(harness, {
+        canonicalPathByInput: {
+          "/legacy/reconnect-repo-a": "/canonical/reconnect-repo",
+          "/legacy/reconnect-repo-b": "/canonical/reconnect-repo",
+        },
+        deferAdmissionReserveForThreadIds: new Set([first.id]),
+        hostId: host.id,
+        sessionId: session.id,
+      });
+      const payload = (text: string) => ({
+        input: textInput(text),
+        mode: "start" as const,
+        model: "gpt-5",
+        permissionMode: "full" as const,
+        reasoningLevel: "medium" as const,
+        serviceTier: "default" as const,
+      });
+
+      await sendThreadMessage(harness.deps, {
+        environment: firstEnvironment,
+        payload: payload("first reconnect mutation"),
+        thread: first,
+        trigger: "user",
+      });
+      await sendThreadMessage(harness.deps, {
+        environment: secondEnvironment,
+        payload: payload("second reconnect mutation"),
+        thread: second,
+        trigger: "user",
+      });
+      const firstReserve = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "host.admission.reserve" &&
+          queued.command.threadId === first.id,
+      );
+      if (firstReserve.command.type !== "host.admission.reserve") {
+        throw new Error("Expected deferred admission reservation");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      clearEnvironmentPathCanonicalizationsForHost(harness.db, host.id);
+      await reportQueuedCommandSuccess(harness, firstReserve, {
+        outcome: "reserved",
+        reservation: {
+          generation: 1,
+          hostId: host.id,
+          reason: firstReserve.command.reason,
+          token: `test-admission:${first.id}`,
+        },
+      });
+      await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "thread.start" &&
+          queued.command.threadId === first.id,
+      );
+
+      await vi.waitFor(() => {
+        expect(
+          getCurrentThreadWorkAdmission(harness.db, second.id),
+        ).toMatchObject({
+          status: "waiting",
+          waitingReason: expect.stringContaining("owns unmanaged workspace"),
+        });
+      });
+      expect(
+        listQueuedThreadCommands(harness, "thread.start", second.id),
+      ).toHaveLength(0);
+      expect(
+        getUnmanagedWorkspaceMutationLeaseForThread(harness.db, first.id),
+      ).toMatchObject({ canonicalPath: "/canonical/reconnect-repo" });
+      expect(
+        getUnmanagedWorkspaceMutationWaitState(
+          harness.db,
+          getCurrentThreadWorkAdmission(harness.db, second.id)!.id,
+        ),
+      ).toMatchObject({ canonicalPath: "/canonical/reconnect-repo" });
+
+      await releaseThreadWorkAdmission(harness.deps, {
+        terminalReason: "test reconnect waiter cancelled",
+        threadId: second.id,
+      });
+      await releaseThreadWorkAdmission(harness.deps, {
+        terminalReason: "test reconnect holder completed",
+        threadId: first.id,
+      });
     });
   });
 
