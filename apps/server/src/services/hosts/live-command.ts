@@ -256,16 +256,25 @@ export async function runLiveHostCommand<
     args.execution ?? createLiveHostCommandExecution(args.hostId);
   let command = args.command;
   let providerWorkCommand = isProviderWorkCommand(command) ? command : null;
+  const unregisterActiveTask =
+    providerWorkCommand === null
+      ? null
+      : registerActiveWorkAdmissionTask(deps, providerWorkCommand.requestId);
   if (providerWorkCommand !== null) {
-    const admitted = await awaitThreadWorkAdmission(deps, {
-      command: providerWorkCommand,
-      hostId: args.hostId,
-      ...(args.admissionReason === undefined
-        ? {}
-        : { reason: args.admissionReason }),
-    });
-    command = admitted.command;
-    providerWorkCommand = admitted.command;
+    try {
+      const admitted = await awaitThreadWorkAdmission(deps, {
+        command: providerWorkCommand,
+        hostId: args.hostId,
+        ...(args.admissionReason === undefined
+          ? {}
+          : { reason: args.admissionReason }),
+      });
+      command = admitted.command;
+      providerWorkCommand = admitted.command;
+    } catch (error) {
+      unregisterActiveTask?.();
+      throw error;
+    }
   }
   try {
     const result = await callHostOnlineRpc(deps, {
@@ -330,6 +339,7 @@ export async function runLiveHostCommand<
         });
       }
     }
+    unregisterActiveTask?.();
   }
 }
 
@@ -366,9 +376,6 @@ export function startLiveHostCommand<
 ): void {
   const execution =
     args.execution ?? createLiveHostCommandExecution(args.hostId);
-  const unregisterActiveTask = isProviderWorkCommand(args.command)
-    ? registerActiveWorkAdmissionTask(deps, args.command.requestId)
-    : null;
   void runLiveHostCommand(deps, { ...args, execution })
     .catch((error) => {
       const normalized =
@@ -402,8 +409,6 @@ export function startLiveHostCommand<
           { err: error, commandType: args.command.type },
           "Live command settled callback failed",
         );
-      } finally {
-        unregisterActiveTask?.();
       }
     });
 }

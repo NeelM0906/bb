@@ -15,6 +15,7 @@ import {
   recordEnvironmentCanonicalPath,
   updateProject,
 } from "@bb/db";
+import { encodeClientTurnRequestIdNumber } from "@bb/domain";
 import { describe, expect, it, vi } from "vitest";
 import {
   listRecoverableWorkAdmissionCommands,
@@ -24,7 +25,12 @@ import {
 } from "../../src/services/threads/work-admission.js";
 import { finalizeStoppedThread } from "../../src/services/threads/thread-lifecycle.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
-import { recoverDurableWorkAdmissions } from "../../src/services/hosts/live-command.js";
+import { buildThreadStartCommand } from "../../src/services/threads/thread-commands.js";
+import {
+  LIVE_DAEMON_COMMAND_TIMEOUT_MS,
+  recoverDurableWorkAdmissions,
+  runLiveHostCommand,
+} from "../../src/services/hosts/live-command.js";
 import {
   listQueuedCommands,
   listQueuedThreadCommands,
@@ -427,19 +433,30 @@ describe("protected unmanaged workspace dispatch", () => {
         }),
       ).toMatchObject({ outcome: "acquired" });
 
-      await sendThreadMessage(harness.deps, {
+      const command = await buildThreadStartCommand(harness.deps, {
         environment,
-        payload: {
-          input: textInput("recover without duplicating this waiter"),
-          mode: "start",
+        execution: {
           model: "gpt-5",
           permissionMode: "full",
           reasoningLevel: "medium",
           serviceTier: "default",
+          source: "client/turn/requested",
         },
+        fork: null,
+        input: textInput("recover without duplicating this waiter"),
+        permissionEscalation: "ask",
+        projectId: project.id,
+        providerId: waiter.providerId,
+        requestId: encodeClientTurnRequestIdNumber({ value: 401 }),
+        syncGeneratedTitle: false,
         thread: waiter,
-        trigger: "user",
       });
+      void runLiveHostCommand(harness.deps, {
+        admissionReason: "interactive",
+        command,
+        hostId: host.id,
+        timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
+      }).catch(() => {});
       const initialReservation = await waitForQueuedCommand(
         harness,
         (queued) =>
