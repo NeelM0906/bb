@@ -153,6 +153,35 @@ export function getUnmanagedWorkspaceMutationLeaseForThread(
   );
 }
 
+export function isPromotedUnmanagedWorkspaceMutationLease(
+  db: DbQueryConnection,
+  lease: UnmanagedWorkspaceMutationLeaseRow,
+): boolean {
+  return (
+    db
+      .select({ requestId: unmanagedWorkspaceMutationWaiters.requestId })
+      .from(unmanagedWorkspaceMutationWaiters)
+      .where(
+        and(
+          eq(unmanagedWorkspaceMutationWaiters.requestId, lease.requestId),
+          eq(unmanagedWorkspaceMutationWaiters.hostId, lease.hostId),
+          eq(
+            unmanagedWorkspaceMutationWaiters.canonicalPath,
+            lease.canonicalPath,
+          ),
+          eq(unmanagedWorkspaceMutationWaiters.threadId, lease.threadId),
+          eq(unmanagedWorkspaceMutationWaiters.state, "promoted"),
+          eq(
+            unmanagedWorkspaceMutationWaiters.promotedGeneration,
+            lease.generation,
+          ),
+        ),
+      )
+      .limit(1)
+      .get() !== undefined
+  );
+}
+
 export function listUnmanagedWorkspaceMutationLeases(
   db: DbQueryConnection,
   args: { hostId?: string } = {},

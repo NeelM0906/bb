@@ -10,6 +10,7 @@ import {
   getThread,
   getUnmanagedWorkspaceMutationLeaseForThread,
   getUnmanagedWorkspaceMutationWaitState,
+  isPromotedUnmanagedWorkspaceMutationLease,
   getWorkAdmission,
   listCurrentWorkAdmissions,
   listLiveUnmanagedEnvironmentsOnHost,
@@ -316,10 +317,20 @@ export async function awaitThreadWorkAdmission(
   // canonicalization is in flight, reconnect recovery can still resume this
   // command from the durable admission queue.
   let row = ensureAdmissionRow(deps, { ...args, reason });
-  await ensureLegacyUnmanagedWorkspacePathsCanonical(deps, {
-    hostId: args.hostId,
-    targetEnvironmentId: args.command.environmentId,
-  });
+  try {
+    await ensureLegacyUnmanagedWorkspacePathsCanonical(deps, {
+      hostId: args.hostId,
+      targetEnvironmentId: args.command.environmentId,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const settled = markWaitingWorkAdmissionTerminal(deps.db, {
+      id: row.id,
+      terminalReason: `Workspace canonicalization failed: ${message}`,
+    });
+    if (settled) signalHostAdmissionPromotion(args.hostId);
+    throw error;
+  }
 
   for (;;) {
     if (row.status === "terminal") {
@@ -560,6 +571,12 @@ export async function reconcileHostWorkAdmissions(
   })) {
     const admission = getWorkAdmission(deps.db, lease.requestId);
     if (admission?.status === "running") continue;
+    if (
+      admission?.status === "waiting" &&
+      isPromotedUnmanagedWorkspaceMutationLease(deps.db, lease)
+    ) {
+      continue;
+    }
     releaseWorkspaceLeaseForThread(deps, {
       eventType: "recovered",
       reason: "Workspace holder had no running work admission during recovery",

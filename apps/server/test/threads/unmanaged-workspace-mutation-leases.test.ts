@@ -1,16 +1,24 @@
 import {
+  acquireUnmanagedWorkspaceMutationLease,
+  acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission,
+  createWorkAdmission,
   getEnvironment,
   getCurrentThreadWorkAdmission,
+  getWorkAdmission,
   getUnmanagedWorkspaceMutationLeaseForThread,
   updateProject,
 } from "@bb/db";
 import { describe, expect, it, vi } from "vitest";
-import { releaseThreadWorkAdmission } from "../../src/services/threads/work-admission.js";
+import {
+  reconcileHostWorkAdmissions,
+  releaseThreadWorkAdmission,
+} from "../../src/services/threads/work-admission.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
 import {
   listQueuedCommands,
   listQueuedThreadCommands,
   registerTestHostRpcCapture,
+  reportQueuedCommandError,
   reportQueuedCommandSuccess,
   waitForQueuedCommand,
 } from "../helpers/commands.js";
@@ -24,6 +32,182 @@ import {
 import { withTestHarness } from "../helpers/test-app.js";
 
 describe("protected unmanaged workspace dispatch", () => {
+  it("preserves a promoted waiting lease during host reconciliation", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-workspace-promoted-reconcile",
+      });
+      registerTestHostRpcCapture(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/reconcile-repo",
+      });
+      updateProject(harness.db, harness.hub, project.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/reconcile-repo",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const holder = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "active",
+      });
+      const promoted = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "active",
+      });
+      for (const [id, threadId] of [
+        ["req-reconcile-holder", holder.id],
+        ["req-reconcile-promoted", promoted.id],
+      ] as const) {
+        createWorkAdmission(harness.db, {
+          commandJson: "{}",
+          hostId: host.id,
+          id,
+          reason: "interactive",
+          threadId,
+          waitingReason: "Awaiting host capacity",
+        });
+      }
+      expect(
+        acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission(harness.db, {
+          environmentId: environment.id,
+          requestId: "req-reconcile-holder",
+          reservationGeneration: 1,
+          reservationToken: "missing-host-reservation",
+          threadId: holder.id,
+        }),
+      ).toMatchObject({ outcome: "acquired" });
+      expect(
+        acquireUnmanagedWorkspaceMutationLease(harness.db, {
+          environmentId: environment.id,
+          requestId: "req-reconcile-promoted",
+          threadId: promoted.id,
+        }),
+      ).toMatchObject({ outcome: "waiting" });
+
+      await reconcileHostWorkAdmissions(harness.deps, { hostId: host.id });
+
+      expect(
+        getUnmanagedWorkspaceMutationLeaseForThread(harness.db, promoted.id),
+      ).toMatchObject({
+        generation: 2,
+        requestId: "req-reconcile-promoted",
+      });
+      expect(
+        getWorkAdmission(harness.db, "req-reconcile-promoted"),
+      ).toMatchObject({ status: "waiting" });
+    });
+  });
+
+  it("settles a canonicalization failure and wakes the next admission", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-workspace-canonicalization-failure",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/missing-repo",
+      });
+      updateProject(harness.db, harness.hub, project.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const missingEnvironment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/missing-repo",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const managedEnvironment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/managed/independent-repo",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "managed-worktree",
+      });
+      const failed = seedThread(harness.deps, {
+        environmentId: missingEnvironment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const next = seedThread(harness.deps, {
+        environmentId: managedEnvironment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      registerTestHostRpcCapture(harness, {
+        canonicalPathByInput: {
+          "/legacy/missing-repo": "/legacy/missing-repo",
+        },
+        deferProjectInspectForPaths: new Set(["/legacy/missing-repo"]),
+        hostId: host.id,
+        sessionId: session.id,
+      });
+      const payload = (text: string) => ({
+        input: textInput(text),
+        mode: "start" as const,
+        model: "gpt-5",
+        permissionMode: "full" as const,
+        reasoningLevel: "medium" as const,
+        serviceTier: "default" as const,
+      });
+
+      await sendThreadMessage(harness.deps, {
+        environment: missingEnvironment,
+        payload: payload("missing legacy path"),
+        thread: failed,
+        trigger: "user",
+      });
+      const inspection = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "project.inspect" &&
+          queued.command.path === "/legacy/missing-repo",
+      );
+      const failedAdmission = getCurrentThreadWorkAdmission(
+        harness.db,
+        failed.id,
+      );
+      expect(failedAdmission).toMatchObject({ status: "waiting" });
+
+      await sendThreadMessage(harness.deps, {
+        environment: managedEnvironment,
+        payload: payload("independent managed work"),
+        thread: next,
+        trigger: "user",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(
+        listQueuedThreadCommands(harness, "thread.start", next.id),
+      ).toHaveLength(0);
+
+      await reportQueuedCommandError(harness, inspection, {
+        errorCode: "ENOENT",
+        errorMessage: "Workspace path does not exist",
+      });
+      await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "thread.start" &&
+          queued.command.threadId === next.id,
+      );
+      expect(getWorkAdmission(harness.db, failedAdmission!.id)).toMatchObject({
+        status: "terminal",
+        terminalReason: expect.stringContaining("canonicalization failed"),
+      });
+    });
+  });
+
   it("withholds a second provider command until the holder releases through the common admission seam", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {

@@ -584,6 +584,7 @@ export {
   cancelUnmanagedWorkspaceMutationWaiter,
   getUnmanagedWorkspaceMutationLease,
   getUnmanagedWorkspaceMutationLeaseForThread,
+  isPromotedUnmanagedWorkspaceMutationLease,
   getUnmanagedWorkspaceMutationWaitState,
   hasProtectedUnmanagedWorkspaceOnHost,
   isUnmanagedWorkspaceMutationProtected,

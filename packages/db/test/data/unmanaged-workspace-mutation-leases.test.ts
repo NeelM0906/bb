@@ -6,6 +6,7 @@ import {
   acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission,
   cancelUnmanagedWorkspaceMutationWaiter,
   getUnmanagedWorkspaceMutationLease,
+  isPromotedUnmanagedWorkspaceMutationLease,
   isUnmanagedWorkspaceMutationProtected,
   listUnmanagedWorkspaceMutationLeaseEvents,
   releaseUnmanagedWorkspaceMutationLease,
@@ -280,8 +281,19 @@ describe("unmanaged workspace mutation leases", () => {
         generation: 2,
       },
     });
-    expect(getUnmanagedWorkspaceMutationLease(db, host.id, "/canonical/repo"))
-      .toMatchObject({ requestId: "req-second", generation: 2 });
+    const promotedLease = getUnmanagedWorkspaceMutationLease(
+      db,
+      host.id,
+      "/canonical/repo",
+    );
+    expect(promotedLease).toMatchObject({
+      requestId: "req-second",
+      generation: 2,
+    });
+    expect(
+      promotedLease &&
+        isPromotedUnmanagedWorkspaceMutationLease(db, promotedLease),
+    ).toBe(true);
 
     expect(
       listUnmanagedWorkspaceMutationLeaseEvents(db, {
