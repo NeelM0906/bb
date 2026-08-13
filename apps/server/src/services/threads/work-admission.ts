@@ -13,7 +13,7 @@ import {
   isPromotedUnmanagedWorkspaceMutationLease,
   getWorkAdmission,
   listCurrentWorkAdmissions,
-  listLiveUnmanagedEnvironmentsOnHost,
+  listUncanonicalizedLiveUnmanagedEnvironmentsOnHost,
   listUnmanagedWorkspaceMutationLeases,
   listWaitingWorkAdmissions,
   markWaitingWorkAdmissionTerminal,
@@ -131,14 +131,11 @@ async function canonicalizeLegacyUnmanagedWorkspacePaths(
   deps: WorkAdmissionDeps,
   args: { hostId: string; targetEnvironmentId: string },
 ): Promise<void> {
-  const environments = listLiveUnmanagedEnvironmentsOnHost(
+  const environments = listUncanonicalizedLiveUnmanagedEnvironmentsOnHost(
     deps.db,
     args.hostId,
   );
-  const target = environments.find(
-    (environment) => environment.id === args.targetEnvironmentId,
-  );
-  if (!target) return;
+  if (environments.length === 0) return;
 
   const canonicalize = async (environment: (typeof environments)[number]) => {
     if (environment.path === null) return;
@@ -155,14 +152,17 @@ async function canonicalizeLegacyUnmanagedWorkspacePaths(
     );
   };
 
-  // Fail closed across every live unmanaged environment on an opted-in host:
-  // any one of them may be a legacy alias of the target workspace.
-  await canonicalize(target);
-  await Promise.all(
-    environments
-      .filter((environment) => environment.id !== target.id)
-      .map((environment) => canonicalize(environment)),
+  // Fail closed across every not-yet-confirmed unmanaged environment on an
+  // opted-in host: any one may be a legacy alias of the target workspace.
+  // Persist each confirmation and scan sequentially so a host with many
+  // historical environments pays this cost once without a subprocess burst.
+  const target = environments.find(
+    (environment) => environment.id === args.targetEnvironmentId,
   );
+  if (target) await canonicalize(target);
+  for (const environment of environments) {
+    if (environment.id !== target?.id) await canonicalize(environment);
+  }
 }
 
 async function ensureLegacyUnmanagedWorkspacePathsCanonical(
@@ -185,15 +185,23 @@ async function ensureLegacyUnmanagedWorkspacePathsCanonical(
     byHost = new Map();
     canonicalizationByDatabase.set(deps.db, byHost);
   }
-  let pending = byHost.get(args.hostId);
-  if (!pending) {
-    pending = canonicalizeLegacyUnmanagedWorkspacePaths(deps, args);
-    byHost.set(args.hostId, pending);
-  }
-  try {
-    await pending;
-  } finally {
-    if (byHost.get(args.hostId) === pending) byHost.delete(args.hostId);
+  for (;;) {
+    let pending = byHost.get(args.hostId);
+    if (!pending) {
+      pending = canonicalizeLegacyUnmanagedWorkspacePaths(deps, args);
+      byHost.set(args.hostId, pending);
+    }
+    try {
+      await pending;
+    } finally {
+      if (byHost.get(args.hostId) === pending) byHost.delete(args.hostId);
+    }
+    if (
+      listUncanonicalizedLiveUnmanagedEnvironmentsOnHost(deps.db, args.hostId)
+        .length === 0
+    ) {
+      return;
+    }
   }
 }
 

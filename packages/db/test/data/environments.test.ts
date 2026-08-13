@@ -5,6 +5,8 @@ import { noopNotifier } from "../../src/notifier.js";
 import type { DbNotifier } from "../../src/notifier.js";
 import {
   createEnvironment,
+  listUncanonicalizedLiveUnmanagedEnvironmentsOnHost,
+  recordEnvironmentCanonicalPath,
   listRetiredLoadedEnvironmentIdsOnHost,
   recordEnvironmentCurrentBranch,
   recordProvisionedEnvironmentWorkspace,
@@ -149,6 +151,35 @@ describe("environments", () => {
     expect(notifier.notifyEnvironment).toHaveBeenCalledWith(environment.id, [
       "metadata-changed",
     ]);
+  });
+
+  it("persists canonicalization so confirmed unmanaged paths are not rescanned", () => {
+    const { db, host, project } = setup();
+    const environment = createEnvironment(db, noopNotifier, {
+      projectId: project.id,
+      hostId: host.id,
+      path: "/tmp/project-alias",
+      workspaceProvisionType: "unmanaged",
+      status: "ready",
+    });
+
+    expect(
+      listUncanonicalizedLiveUnmanagedEnvironmentsOnHost(db, host.id),
+    ).toMatchObject([{ id: environment.id }]);
+
+    const updated = recordEnvironmentCanonicalPath(
+      db,
+      noopNotifier,
+      environment.id,
+      "/private/tmp/project",
+    );
+
+    expect(updated).toMatchObject({
+      path: "/private/tmp/project",
+    });
+    expect(
+      listUncanonicalizedLiveUnmanagedEnvironmentsOnHost(db, host.id),
+    ).toEqual([]);
   });
 
   it("records the current branch observed for an environment", () => {

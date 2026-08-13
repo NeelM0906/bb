@@ -270,7 +270,7 @@ export {
   getEnvironment,
   findProjectEnvironmentByHostPath,
   listEnvironments,
-  listLiveUnmanagedEnvironmentsOnHost,
+  listUncanonicalizedLiveUnmanagedEnvironmentsOnHost,
   findForeignManagedEnvironmentAtHostPath,
   listEnvironmentsByIds,
   listRetiredLoadedEnvironmentIdsOnHost,

@@ -243,6 +243,9 @@ const latestMigrationWhen = Math.max(
 
 function dropWorkspaceSafetySchema(db: DbConnection): void {
   db.$client
+    .prepare("DROP TABLE IF EXISTS environment_path_canonicalizations")
+    .run();
+  db.$client
     .prepare("DROP TABLE IF EXISTS unmanaged_workspace_mutation_waiters")
     .run();
   db.$client
@@ -408,6 +411,7 @@ const threadSearchSourceSeqIndexMigrationWhen = 1786468375011;
 const workAdmissionsMigrationWhen = 1786564115037;
 const threadChildOriginCleanupMigrationWhen = 1786634486955;
 const workspaceSafetyMigrationWhen = 1786634688958;
+const environmentPathCanonicalizationMigrationWhen = 1786647173136;
 const farFutureBranchMigrationWhen = 9_999_999_999_999;
 const eventLargeValuesRestoreMigrationWhen = 1781557200000;
 const cleanupModeDropMigrationWhen = 1781557300000;
@@ -4089,10 +4093,13 @@ describe("migrate", () => {
       migrate(db);
       dropWorkspaceSafetySchema(db);
       db.$client
-        .prepare<DeleteMigrationParameters>(
-          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
-        )
-        .run(workspaceSafetyMigrationWhen);
+        .prepare<
+          [number, number]
+        >("DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?)")
+        .run(
+          workspaceSafetyMigrationWhen,
+          environmentPathCanonicalizationMigrationWhen,
+        );
       db.$client
         .prepare<InsertMigrationParameters>(
           "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
@@ -4104,8 +4111,14 @@ describe("migrate", () => {
       expect(readAppliedMigrationCreatedAts(db)).toContain(
         workspaceSafetyMigrationWhen,
       );
+      expect(readAppliedMigrationCreatedAts(db)).toContain(
+        environmentPathCanonicalizationMigrationWhen,
+      );
       expect(readTableNames(db)).toContain(
         "unmanaged_workspace_mutation_leases",
+      );
+      expect(readTableNames(db)).toContain(
+        "environment_path_canonicalizations",
       );
     } finally {
       closeConnection(db);
@@ -4128,14 +4141,15 @@ describe("migrate", () => {
       dropWorkspaceSafetySchema(db);
       db.$client
         .prepare<
-          [number, number, number, number, number]
-        >("DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?, ?, ?, ?)")
+          [number, number, number, number, number, number]
+        >("DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?, ?, ?, ?, ?)")
         .run(
           environmentArchiveGraceMigrationWhen,
           threadSearchSourceSeqIndexMigrationWhen,
           workAdmissionsMigrationWhen,
           threadChildOriginCleanupMigrationWhen,
           workspaceSafetyMigrationWhen,
+          environmentPathCanonicalizationMigrationWhen,
         );
       db.$client
         .prepare<InsertMigrationParameters>(
@@ -4152,6 +4166,7 @@ describe("migrate", () => {
           workAdmissionsMigrationWhen,
           threadChildOriginCleanupMigrationWhen,
           workspaceSafetyMigrationWhen,
+          environmentPathCanonicalizationMigrationWhen,
         ]),
       );
       expect(
@@ -4166,6 +4181,9 @@ describe("migrate", () => {
       expect(readTableNames(db)).toContain("work_admissions");
       expect(readTableNames(db)).toContain(
         "unmanaged_workspace_mutation_leases",
+      );
+      expect(readTableNames(db)).toContain(
+        "environment_path_canonicalizations",
       );
       expect(
         db.$client
@@ -4260,14 +4278,15 @@ describe("migrate", () => {
       dropWorkspaceSafetySchema(db);
       db.$client
         .prepare<
-          [number, number, number, number, number]
-        >("DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?, ?, ?, ?)")
+          [number, number, number, number, number, number]
+        >("DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?, ?, ?, ?, ?)")
         .run(
           environmentArchiveGraceMigrationWhen,
           threadSearchSourceSeqIndexMigrationWhen,
           workAdmissionsMigrationWhen,
           threadChildOriginCleanupMigrationWhen,
           workspaceSafetyMigrationWhen,
+          environmentPathCanonicalizationMigrationWhen,
         );
       db.$client
         .prepare<InsertMigrationParameters>(
@@ -4292,6 +4311,9 @@ describe("migrate", () => {
       );
       expect(readAppliedMigrationCreatedAts(db)).not.toContain(
         workspaceSafetyMigrationWhen,
+      );
+      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
+        environmentPathCanonicalizationMigrationWhen,
       );
     } finally {
       closeConnection(db);

@@ -1,4 +1,13 @@
-import { and, eq, inArray, isNotNull, ne, sql, lt } from "drizzle-orm";
+import {
+  and,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  sql,
+  lt,
+} from "drizzle-orm";
 import type {
   DiscoveredWorkspaceProperties,
   EnvironmentChangeKind,
@@ -10,7 +19,10 @@ import type {
 import { evaluateEnvironmentLifecycleEvent } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
 import type { DbNotifier } from "../notifier.js";
-import { environments } from "../schema.js";
+import {
+  environmentPathCanonicalizations,
+  environments,
+} from "../schema.js";
 import { createEnvironmentId } from "../ids.js";
 
 type EnvironmentReadConnection = DbConnection | DbTransaction;
@@ -138,22 +150,31 @@ export function listEnvironments(db: DbConnection, projectId?: string) {
   return db.select().from(environments).all();
 }
 
-export function listLiveUnmanagedEnvironmentsOnHost(
+export function listUncanonicalizedLiveUnmanagedEnvironmentsOnHost(
   db: EnvironmentReadConnection,
   hostId: string,
 ): EnvironmentRow[] {
   return db
-    .select()
+    .select({ environment: environments })
     .from(environments)
+    .leftJoin(
+      environmentPathCanonicalizations,
+      and(
+        eq(environmentPathCanonicalizations.environmentId, environments.id),
+        eq(environmentPathCanonicalizations.path, environments.path),
+      ),
+    )
     .where(
       and(
         eq(environments.hostId, hostId),
         eq(environments.workspaceProvisionType, "unmanaged"),
         ne(environments.status, "destroyed"),
         isNotNull(environments.path),
+        isNull(environmentPathCanonicalizations.environmentId),
       ),
     )
-    .all();
+    .all()
+    .map((row) => row.environment);
 }
 
 export function listEnvironmentsByIds(
@@ -326,9 +347,27 @@ export function recordEnvironmentCanonicalPath(
   id: string,
   canonicalPath: string,
 ) {
-  return updateEnvironmentMetadataRecord(db, notifier, id, {
+  const updated = updateEnvironmentMetadataRecord(db, notifier, id, {
     path: canonicalPath,
   });
+  if (!updated) return null;
+  recordEnvironmentPathCanonicalization(db, updated.id, canonicalPath);
+  return updated;
+}
+
+function recordEnvironmentPathCanonicalization(
+  db: EnvironmentWriteConnection,
+  environmentId: string,
+  path: string,
+): void {
+  const confirmedAt = Date.now();
+  db.insert(environmentPathCanonicalizations)
+    .values({ confirmedAt, environmentId, path })
+    .onConflictDoUpdate({
+      target: environmentPathCanonicalizations.environmentId,
+      set: { confirmedAt, path },
+    })
+    .run();
 }
 
 export interface RecordProvisionedEnvironmentWorkspaceInput extends DiscoveredWorkspaceProperties {
@@ -347,7 +386,7 @@ export function recordProvisionedEnvironmentWorkspace(
   id: string,
   input: RecordProvisionedEnvironmentWorkspaceInput,
 ) {
-  return updateEnvironmentMetadataRecord(db, notifier, id, {
+  const updated = updateEnvironmentMetadataRecord(db, notifier, id, {
     path: input.path,
     isGitRepo: input.isGitRepo,
     isWorktree: input.isWorktree,
@@ -358,6 +397,9 @@ export function recordProvisionedEnvironmentWorkspace(
       ? { mergeBaseBranch: input.mergeBaseBranch }
       : {}),
   });
+  if (!updated) return null;
+  recordEnvironmentPathCanonicalization(db, updated.id, input.path);
+  return updated;
 }
 
 export interface ListStaleDestroyingManagedEnvironmentsArgs {

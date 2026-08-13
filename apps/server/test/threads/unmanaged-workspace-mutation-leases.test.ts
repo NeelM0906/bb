@@ -495,10 +495,12 @@ describe("protected unmanaged workspace dispatch", () => {
       const { host, session } = seedHostSession(harness.deps, {
         id: "host-workspace-lease",
       });
+      const deferredProjectInspects = new Set<string>();
       registerTestHostRpcCapture(harness, {
         canonicalPathByInput: {
           "/canonical/shared-repo": "/canonical/shared-repo",
         },
+        deferProjectInspectForPaths: deferredProjectInspects,
         hostId: host.id,
         sessionId: session.id,
       });
@@ -550,6 +552,10 @@ describe("protected unmanaged workspace dispatch", () => {
       expect(
         getUnmanagedWorkspaceMutationLeaseForThread(harness.db, first.id),
       ).toMatchObject({ canonicalPath: "/canonical/shared-repo" });
+      // A second admission must use the durable per-environment confirmation.
+      // If it tries to inspect this path again, the deferred RPC below will
+      // strand it before it reaches the workspace waiter assertion.
+      deferredProjectInspects.add("/canonical/shared-repo");
 
       await sendThreadMessage(harness.deps, {
         environment,
@@ -567,6 +573,7 @@ describe("protected unmanaged workspace dispatch", () => {
         status: "waiting",
         waitingReason: expect.stringContaining("owns unmanaged workspace"),
       });
+      expect(listQueuedCommands(harness, "project.inspect")).toHaveLength(0);
 
       await releaseThreadWorkAdmission(harness.deps, {
         terminalReason: "test holder completed",

@@ -471,6 +471,20 @@ export const environments = sqliteTable(
   ],
 );
 
+// Durable host confirmation for an environment's current path. The path is
+// part of the identity so changing it automatically makes the confirmation
+// stale without coordinating invalidation across every environment writer.
+export const environmentPathCanonicalizations = sqliteTable(
+  "environment_path_canonicalizations",
+  {
+    environmentId: text("environment_id")
+      .primaryKey()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    path: text("path").notNull(),
+    confirmedAt: integer("confirmed_at").notNull(),
+  },
+);
+
 export const threads = sqliteTable(
   "threads",
   {
