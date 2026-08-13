@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { useState } from "react";
 import {
+  useResourceInfiniteItems,
   useResourcePagination,
   useResourceViewportPageSize,
 } from "@bb/shared-ui/resource-pagination";
@@ -47,6 +48,24 @@ function Probe({
   );
 }
 
+function InfiniteProbe({
+  pageSize,
+  resetKey,
+}: {
+  pageSize: number;
+  resetKey?: string;
+}) {
+  const infinite = useResourceInfiniteItems(ROWS, { pageSize, resetKey });
+  return (
+    <>
+      <span data-testid="rows">{infinite.items.join(",")}</span>
+      <button type="button" onClick={infinite.loadMore}>
+        load more
+      </button>
+    </>
+  );
+}
+
 function selectedPage(): number {
   return Number(screen.getByTestId("page").textContent);
 }
@@ -54,6 +73,10 @@ function selectedPage(): number {
 function visibleRows(): number[] {
   const rows = screen.getByTestId("rows").textContent ?? "";
   return rows === "" ? [] : rows.split(",").map(Number);
+}
+
+function loadMore(): void {
+  fireEvent.click(screen.getByRole("button", { name: "load more" }));
 }
 
 function goToPage(page: number): void {
@@ -110,6 +133,36 @@ describe("useResourcePagination", () => {
     rerender(<Probe pageSize={10} rowCount={12} />);
     expect(selectedPage()).toBe(1);
     expect(visibleRows()).toEqual(ROWS.slice(10, 12));
+  });
+});
+
+describe("useResourceInfiniteItems", () => {
+  /**
+   * The hook used to store a loaded page count and slice by the current
+   * measured page size, so a viewport remeasure that shrank the page size
+   * (2 pages × 10 rows → page size 5) cut already-loaded rows out of view.
+   * The anchor now preserves the loaded item count across page-size changes.
+   */
+  it("keeps already-loaded rows visible when the measured page size shrinks", () => {
+    const { rerender } = render(<InfiniteProbe pageSize={10} />);
+    loadMore();
+    expect(visibleRows()).toEqual(ROWS.slice(0, 20));
+
+    rerender(<InfiniteProbe pageSize={5} />);
+    expect(visibleRows()).toEqual(ROWS.slice(0, 20));
+
+    // Loading more continues from the preserved count at the new page size.
+    loadMore();
+    expect(visibleRows()).toEqual(ROWS.slice(0, 25));
+  });
+
+  it("resets to one page's worth for each new projection", () => {
+    const { rerender } = render(<InfiniteProbe pageSize={10} resetKey="all" />);
+    loadMore();
+    expect(visibleRows()).toEqual(ROWS.slice(0, 20));
+
+    rerender(<InfiniteProbe pageSize={10} resetKey="filtered" />);
+    expect(visibleRows()).toEqual(ROWS.slice(0, 10));
   });
 });
 
