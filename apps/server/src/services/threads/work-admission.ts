@@ -550,6 +550,12 @@ export async function awaitThreadWorkAdmission<
           threadId: command.threadId,
         },
       );
+      if (workspace.retargetedFrom) {
+        signalWorkspacePromotion(
+          workspace.retargetedFrom.hostId,
+          workspace.retargetedFrom.canonicalPath,
+        );
+      }
       if (workspace.outcome === "waiting") {
         await releaseHostReservation(deps, result.reservation);
         updateWorkAdmissionWaitingReason(deps.db, {

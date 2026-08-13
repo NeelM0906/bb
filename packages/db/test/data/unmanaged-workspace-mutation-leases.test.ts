@@ -6,11 +6,14 @@ import {
   acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission,
   cancelUnmanagedWorkspaceMutationWaiter,
   getUnmanagedWorkspaceMutationLease,
+  getUnmanagedWorkspaceMutationLeaseForThread,
+  getUnmanagedWorkspaceMutationWaitState,
   isPromotedUnmanagedWorkspaceMutationLease,
   isUnmanagedWorkspaceMutationProtected,
   listUnmanagedWorkspaceMutationLeaseEvents,
   releaseUnmanagedWorkspaceMutationLease,
 } from "../../src/data/unmanaged-workspace-mutation-leases.js";
+import { recordEnvironmentCanonicalPath } from "../../src/data/environments.js";
 import { upsertHost } from "../../src/data/hosts.js";
 import {
   createProject,
@@ -205,6 +208,119 @@ describe("unmanaged workspace mutation leases", () => {
     });
     expect(getUnmanagedWorkspaceMutationLease(db, host.id, "/canonical/repo"))
       .toMatchObject({ requestId: "req-first", generation: 1 });
+  });
+
+  it("atomically moves promoted waiting ownership to a retargeted workspace", () => {
+    const {
+      db,
+      firstEnvironment,
+      firstProject,
+      firstThread,
+      host,
+      secondEnvironment,
+      secondThread,
+    } = setup();
+    const targetEnvironment = createEnvironment(db, noopNotifier, {
+      hostId: host.id,
+      path: "/canonical/retargeted",
+      projectId: firstProject.id,
+      status: "ready",
+      workspaceProvisionType: "unmanaged",
+    });
+    const targetHolder = createThread(db, noopNotifier, {
+      environmentId: targetEnvironment.id,
+      projectId: firstProject.id,
+      providerId: "codex",
+    });
+    createWorkAdmission(db, {
+      commandJson: "{}",
+      hostId: host.id,
+      id: "req-retargeted-holder",
+      reason: "interactive",
+      threadId: targetHolder.id,
+      waitingReason: "Awaiting host capacity",
+    });
+
+    expect(
+      acquireUnmanagedWorkspaceMutationLease(db, {
+        environmentId: firstEnvironment.id,
+        requestId: "req-first",
+        threadId: firstThread.id,
+      }),
+    ).toMatchObject({ outcome: "acquired", generation: 1 });
+    expect(
+      acquireUnmanagedWorkspaceMutationLease(db, {
+        environmentId: secondEnvironment.id,
+        requestId: "req-second",
+        threadId: secondThread.id,
+      }),
+    ).toMatchObject({ outcome: "waiting" });
+    expect(
+      releaseUnmanagedWorkspaceMutationLease(db, {
+        canonicalPath: "/canonical/repo",
+        generation: 1,
+        hostId: host.id,
+        reason: "promote before retarget",
+      }),
+    ).toMatchObject({
+      promoted: { requestId: "req-second", threadId: secondThread.id },
+    });
+    expect(
+      acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission(db, {
+        environmentId: targetEnvironment.id,
+        requestId: "req-retargeted-holder",
+        reservationGeneration: 1,
+        reservationToken: "retargeted-holder-token",
+        threadId: targetHolder.id,
+      }),
+    ).toMatchObject({ outcome: "acquired" });
+    recordEnvironmentCanonicalPath(
+      db,
+      noopNotifier,
+      secondEnvironment.id,
+      "/canonical/retargeted",
+    );
+
+    expect(
+      acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission(db, {
+        environmentId: secondEnvironment.id,
+        requestId: "req-second",
+        reservationGeneration: 2,
+        reservationToken: "retargeted-waiter-token",
+        threadId: secondThread.id,
+      }),
+    ).toMatchObject({
+      canonicalPath: "/canonical/retargeted",
+      outcome: "waiting",
+      retargetedFrom: {
+        canonicalPath: "/canonical/repo",
+        hostId: host.id,
+      },
+    });
+    expect(
+      getUnmanagedWorkspaceMutationLease(db, host.id, "/canonical/repo"),
+    ).toBeNull();
+    expect(getUnmanagedWorkspaceMutationWaitState(db, "req-second"))
+      .toMatchObject({
+        canonicalPath: "/canonical/retargeted",
+        holder: { requestId: "req-retargeted-holder" },
+      });
+    expect(getWorkAdmission(db, "req-second")).toMatchObject({
+      status: "waiting",
+    });
+
+    expect(
+      releaseUnmanagedWorkspaceMutationLease(db, {
+        canonicalPath: "/canonical/retargeted",
+        generation: 1,
+        hostId: host.id,
+        reason: "retargeted holder completed",
+      }),
+    ).toMatchObject({
+      promoted: { requestId: "req-second", threadId: secondThread.id },
+    });
+    expect(getUnmanagedWorkspaceMutationLeaseForThread(db, secondThread.id))
+      .toMatchObject({ canonicalPath: "/canonical/retargeted" });
   });
 
   it("enables physical-path protection across projects when either project opts in", () => {

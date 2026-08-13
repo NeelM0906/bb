@@ -20,6 +20,7 @@ import {
   listRecoverableWorkAdmissionCommands,
   reconcileHostWorkAdmissions,
   releaseThreadWorkAdmission,
+  releaseWorkspaceLeaseForThreadInTransaction,
 } from "../../src/services/threads/work-admission.js";
 import { finalizeStoppedThread } from "../../src/services/threads/thread-lifecycle.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
@@ -818,6 +819,181 @@ describe("protected unmanaged workspace dispatch", () => {
       await releaseThreadWorkAdmission(harness.deps, {
         terminalReason: "test refreshed command completed",
         threadId: thread.id,
+      });
+    });
+  });
+
+  it("rekeys a promoted waiting lease when its canonical target changes", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-workspace-promoted-retarget",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/promoted-retarget-repo",
+      });
+      updateProject(harness.db, harness.hub, project.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/legacy/promoted-retarget-repo",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const holder = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const waiter = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const canonicalPathByInput: Record<string, string> = {
+        "/legacy/promoted-retarget-repo":
+          "/canonical/promoted-retarget-v1",
+      };
+      registerTestHostRpcCapture(harness, {
+        canonicalPathByInput,
+        deferAdmissionReserveForThreadIds: new Set([waiter.id]),
+        hostId: host.id,
+        sessionId: session.id,
+      });
+      recordEnvironmentCanonicalPath(
+        harness.db,
+        harness.hub,
+        environment.id,
+        "/canonical/promoted-retarget-v1",
+      );
+      expect(
+        acquireUnmanagedWorkspaceMutationLease(harness.db, {
+          environmentId: environment.id,
+          requestId: "req-promoted-retarget-holder",
+          threadId: holder.id,
+        }),
+      ).toMatchObject({
+        canonicalPath: "/canonical/promoted-retarget-v1",
+        outcome: "acquired",
+      });
+
+      await sendThreadMessage(harness.deps, {
+        environment,
+        payload: {
+          input: textInput("dispatch after the promoted path retargets"),
+          mode: "start",
+          model: "gpt-5",
+          permissionMode: "full",
+          reasoningLevel: "medium",
+          serviceTier: "default",
+        },
+        thread: waiter,
+        trigger: "user",
+      });
+      const firstReservation = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "host.admission.reserve" &&
+          queued.command.threadId === waiter.id,
+      );
+      if (firstReservation.command.type !== "host.admission.reserve") {
+        throw new Error("Expected first deferred admission reservation");
+      }
+      await reportQueuedCommandSuccess(harness, firstReservation, {
+        outcome: "reserved",
+        reservation: {
+          generation: 1,
+          hostId: host.id,
+          reason: firstReservation.command.reason,
+          token: `test-admission:${waiter.id}`,
+        },
+      });
+      const waitingAdmission = getCurrentThreadWorkAdmission(
+        harness.db,
+        waiter.id,
+      );
+      if (!waitingAdmission) throw new Error("Expected waiting admission");
+      await vi.waitFor(() => {
+        expect(
+          getUnmanagedWorkspaceMutationWaitState(
+            harness.db,
+            waitingAdmission.id,
+          ),
+        ).toMatchObject({
+          canonicalPath: "/canonical/promoted-retarget-v1",
+        });
+      });
+
+      harness.db.transaction((tx) =>
+        releaseWorkspaceLeaseForThreadInTransaction(
+          { db: tx },
+          {
+            reason: "promote retargeted waiter",
+            threadId: holder.id,
+          },
+        ),
+      );
+      await vi.waitFor(() => {
+        expect(
+          getUnmanagedWorkspaceMutationLeaseForThread(harness.db, waiter.id),
+        ).toMatchObject({
+          canonicalPath: "/canonical/promoted-retarget-v1",
+          requestId: waitingAdmission.id,
+        });
+      });
+      const secondReservation = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "host.admission.reserve" &&
+          queued.command.threadId === waiter.id,
+      );
+      if (secondReservation.command.type !== "host.admission.reserve") {
+        throw new Error("Expected second deferred admission reservation");
+      }
+      canonicalPathByInput["/legacy/promoted-retarget-repo"] =
+        "/canonical/promoted-retarget-v2";
+      clearEnvironmentPathCanonicalizationsForHost(harness.db, host.id);
+      await reportQueuedCommandSuccess(harness, secondReservation, {
+        outcome: "reserved",
+        reservation: {
+          generation: 1,
+          hostId: host.id,
+          reason: secondReservation.command.reason,
+          token: `test-admission:${waiter.id}`,
+        },
+      });
+      const start = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "thread.start" &&
+          queued.command.threadId === waiter.id,
+      );
+      if (start.command.type !== "thread.start") {
+        throw new Error("Expected thread start command");
+      }
+
+      expect(start.command.workspaceContext.workspacePath).toBe(
+        "/canonical/promoted-retarget-v2",
+      );
+      expect(
+        getUnmanagedWorkspaceMutationLease(
+          harness.db,
+          host.id,
+          "/canonical/promoted-retarget-v1",
+        ),
+      ).toBeNull();
+      expect(
+        getUnmanagedWorkspaceMutationLeaseForThread(harness.db, waiter.id),
+      ).toMatchObject({
+        canonicalPath: "/canonical/promoted-retarget-v2",
+        requestId: waitingAdmission.id,
+      });
+
+      await releaseThreadWorkAdmission(harness.deps, {
+        terminalReason: "test promoted retarget completed",
+        threadId: waiter.id,
       });
     });
   });

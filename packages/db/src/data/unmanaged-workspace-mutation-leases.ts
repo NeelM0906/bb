@@ -22,7 +22,7 @@ export type UnmanagedWorkspaceMutationLeaseRow =
 export type UnmanagedWorkspaceMutationLeaseEventRow =
   typeof unmanagedWorkspaceMutationLeaseEvents.$inferSelect;
 
-interface WorkspaceKey {
+export interface WorkspaceKey {
   canonicalPath: string;
   hostId: string;
 }
@@ -44,9 +44,10 @@ export type AcquireUnmanagedWorkspaceMutationLeaseResult =
   | ({ outcome: "waiting"; holder: UnmanagedWorkspaceMutationLeaseRow } &
       WorkspaceKey);
 
-export type AcquireUnmanagedWorkspaceMutationLeaseAndStartResult =
+export type AcquireUnmanagedWorkspaceMutationLeaseAndStartResult = (
   | AcquireUnmanagedWorkspaceMutationLeaseResult
-  | { outcome: "admission-not-waiting" };
+  | { outcome: "admission-not-waiting" }
+) & { retargetedFrom?: WorkspaceKey };
 
 export interface ReleaseUnmanagedWorkspaceMutationLeaseResult {
   released: boolean;
@@ -342,6 +343,36 @@ function acquireInTransaction(
       updatedAt: now,
     })
     .run();
+  const existingWaiter = tx
+    .select()
+    .from(unmanagedWorkspaceMutationWaiters)
+    .where(
+      and(
+        eq(unmanagedWorkspaceMutationWaiters.requestId, args.requestId),
+        eq(unmanagedWorkspaceMutationWaiters.hostId, key.hostId),
+        eq(
+          unmanagedWorkspaceMutationWaiters.canonicalPath,
+          key.canonicalPath,
+        ),
+        eq(unmanagedWorkspaceMutationWaiters.state, "waiting"),
+      ),
+    )
+    .get();
+  if (existingWaiter) {
+    tx.update(unmanagedWorkspaceMutationWaiters)
+      .set({
+        promotedGeneration: generation,
+        state: "promoted",
+        updatedAt: now,
+      })
+      .where(
+        eq(
+          unmanagedWorkspaceMutationWaiters.sequence,
+          existingWaiter.sequence,
+        ),
+      )
+      .run();
+  }
   appendEvent(tx, {
     ...key,
     createdAt: now,
@@ -349,9 +380,89 @@ function acquireInTransaction(
     generation,
     requestId: args.requestId,
     threadId: args.threadId,
-    type: "acquired",
+    type: existingWaiter ? "promoted" : "acquired",
   });
   return { ...key, generation, outcome: "acquired" };
+}
+
+function retargetPromotedLeaseInTransaction(
+  tx: DbTransaction,
+  args: AcquireArgs,
+): WorkspaceKey | null {
+  const lease = tx
+    .select()
+    .from(unmanagedWorkspaceMutationLeases)
+    .where(eq(unmanagedWorkspaceMutationLeases.requestId, args.requestId))
+    .get();
+  if (!lease || !isPromotedUnmanagedWorkspaceMutationLease(tx, lease)) {
+    return null;
+  }
+  const target = protectedWorkspaceKey(tx, args.environmentId);
+  if (
+    target?.hostId === lease.hostId &&
+    target.canonicalPath === lease.canonicalPath
+  ) {
+    return null;
+  }
+  const waiter = tx
+    .select()
+    .from(unmanagedWorkspaceMutationWaiters)
+    .where(eq(unmanagedWorkspaceMutationWaiters.requestId, args.requestId))
+    .get();
+  if (!waiter) {
+    throw new Error(
+      `Promoted workspace lease ${args.requestId} is missing its waiter`,
+    );
+  }
+  const now = Date.now();
+  const reason = "Workspace canonical target changed before admission started";
+  if (target) {
+    tx.update(unmanagedWorkspaceMutationWaiters)
+      .set({
+        canonicalPath: target.canonicalPath,
+        environmentId: args.environmentId,
+        hostId: target.hostId,
+        promotedGeneration: null,
+        reason: null,
+        state: "waiting",
+        updatedAt: now,
+      })
+      .where(eq(unmanagedWorkspaceMutationWaiters.sequence, waiter.sequence))
+      .run();
+  } else {
+    tx.update(unmanagedWorkspaceMutationWaiters)
+      .set({
+        promotedGeneration: null,
+        reason,
+        state: "cancelled",
+        updatedAt: now,
+      })
+      .where(eq(unmanagedWorkspaceMutationWaiters.sequence, waiter.sequence))
+      .run();
+    appendEvent(tx, {
+      canonicalPath: waiter.canonicalPath,
+      createdAt: now,
+      environmentId: waiter.environmentId,
+      generation: null,
+      hostId: waiter.hostId,
+      reason,
+      requestId: waiter.requestId,
+      threadId: waiter.threadId,
+      type: "cancelled",
+    });
+  }
+  const released = releaseUnmanagedWorkspaceMutationLeaseInTransaction(tx, {
+    canonicalPath: lease.canonicalPath,
+    generation: lease.generation,
+    hostId: lease.hostId,
+    reason,
+  });
+  if (!released.released) {
+    throw new Error(
+      `Promoted workspace lease ${args.requestId} changed during retargeting`,
+    );
+  }
+  return { canonicalPath: lease.canonicalPath, hostId: lease.hostId };
 }
 
 export function acquireUnmanagedWorkspaceMutationLease(
@@ -376,8 +487,12 @@ export function acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission(
       if (getWorkAdmission(tx, args.requestId)?.status !== "waiting") {
         return { outcome: "admission-not-waiting" };
       }
+      const retargetedFrom = retargetPromotedLeaseInTransaction(tx, args);
       const workspace = acquireInTransaction(tx, args);
-      if (workspace.outcome === "waiting") return workspace;
+      const result = retargetedFrom
+        ? { ...workspace, retargetedFrom }
+        : workspace;
+      if (workspace.outcome === "waiting") return result;
       if (
         !markWorkAdmissionRunning(tx, {
           id: args.requestId,
@@ -389,7 +504,7 @@ export function acquireUnmanagedWorkspaceMutationLeaseAndStartAdmission(
           `Work admission ${args.requestId} changed during atomic workspace acquisition`,
         );
       }
-      return workspace;
+      return result;
     },
     { behavior: "immediate" },
   );
