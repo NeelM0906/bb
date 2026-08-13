@@ -347,25 +347,30 @@ export function recordEnvironmentCanonicalPath(
   id: string,
   canonicalPath: string,
 ) {
-  const updated = updateEnvironmentMetadataRecord(db, notifier, id, {
-    path: canonicalPath,
-  });
-  if (!updated) return null;
-  recordEnvironmentPathCanonicalization(db, updated.id, canonicalPath);
-  return updated;
+  void notifier;
+  const environment = getEnvironment(db, id);
+  if (!environment || environment.path === null) return null;
+  recordEnvironmentPathCanonicalization(
+    db,
+    environment.id,
+    environment.path,
+    canonicalPath,
+  );
+  return environment;
 }
 
 function recordEnvironmentPathCanonicalization(
   db: EnvironmentWriteConnection,
   environmentId: string,
   path: string,
+  canonicalPath: string,
 ): void {
   const confirmedAt = Date.now();
   db.insert(environmentPathCanonicalizations)
-    .values({ confirmedAt, environmentId, path })
+    .values({ canonicalPath, confirmedAt, environmentId, path })
     .onConflictDoUpdate({
       target: environmentPathCanonicalizations.environmentId,
-      set: { confirmedAt, path },
+      set: { canonicalPath, confirmedAt, path },
     })
     .run();
 }
@@ -398,7 +403,12 @@ export function recordProvisionedEnvironmentWorkspace(
       : {}),
   });
   if (!updated) return null;
-  recordEnvironmentPathCanonicalization(db, updated.id, input.path);
+  recordEnvironmentPathCanonicalization(
+    db,
+    updated.id,
+    input.path,
+    input.path,
+  );
   return updated;
 }
 

@@ -480,6 +480,7 @@ export const environmentPathCanonicalizations = sqliteTable(
     environmentId: text("environment_id")
       .primaryKey()
       .references(() => environments.id, { onDelete: "cascade" }),
+    canonicalPath: text("canonical_path").notNull(),
     path: text("path").notNull(),
     confirmedAt: integer("confirmed_at").notNull(),
   },

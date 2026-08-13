@@ -175,7 +175,7 @@ describe("environments", () => {
     );
 
     expect(updated).toMatchObject({
-      path: "/private/tmp/project",
+      path: "/tmp/project-alias",
     });
     expect(
       listUncanonicalizedLiveUnmanagedEnvironmentsOnHost(db, host.id),

@@ -826,10 +826,6 @@ describe("protected unmanaged workspace dispatch", () => {
         hostId: host.id,
         path: "/legacy/shared-alias-a",
       }).project;
-      const aliasProject = seedProjectWithSource(harness.deps, {
-        hostId: host.id,
-        path: "/legacy/shared-alias-b",
-      }).project;
       updateProject(harness.db, harness.hub, protectedProject.id, {
         protectUnmanagedWorkspace: true,
       });
@@ -843,7 +839,7 @@ describe("protected unmanaged workspace dispatch", () => {
       const aliasEnvironment = seedEnvironment(harness.deps, {
         hostId: host.id,
         path: "/legacy/shared-alias-b",
-        projectId: aliasProject.id,
+        projectId: protectedProject.id,
         status: "ready",
         workspaceProvisionType: "unmanaged",
       });
@@ -863,7 +859,7 @@ describe("protected unmanaged workspace dispatch", () => {
       });
       const alias = seedThread(harness.deps, {
         environmentId: aliasEnvironment.id,
-        projectId: aliasProject.id,
+        projectId: protectedProject.id,
         status: "idle",
       });
       const payload = (text: string) => ({
@@ -904,11 +900,14 @@ describe("protected unmanaged workspace dispatch", () => {
           queued.command.threadId === holder.id,
       );
       expect(getEnvironment(harness.db, protectedEnvironment.id)?.path).toBe(
-        "/canonical/shared-legacy-repo",
+        "/legacy/shared-alias-a",
       );
       expect(getEnvironment(harness.db, aliasEnvironment.id)?.path).toBe(
-        "/canonical/shared-legacy-repo",
+        "/legacy/shared-alias-b",
       );
+      expect(
+        getUnmanagedWorkspaceMutationLeaseForThread(harness.db, holder.id),
+      ).toMatchObject({ canonicalPath: "/canonical/shared-legacy-repo" });
 
       await sendThreadMessage(harness.deps, {
         environment: aliasEnvironment,

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNotNull, isNull, ne } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import type {
   DbConnection,
   DbQueryConnection,
@@ -6,6 +6,7 @@ import type {
 } from "../connection.js";
 import {
   environments,
+  environmentPathCanonicalizations,
   projects,
   unmanagedWorkspaceMutationLeaseEvents,
   unmanagedWorkspaceMutationLeases,
@@ -75,14 +76,35 @@ function protectedWorkspaceKey(
   ) {
     return null;
   }
+  const confirmedTarget = db
+    .select({ canonicalPath: environmentPathCanonicalizations.canonicalPath })
+    .from(environmentPathCanonicalizations)
+    .where(
+      and(
+        eq(environmentPathCanonicalizations.environmentId, target.id),
+        eq(environmentPathCanonicalizations.path, target.path),
+      ),
+    )
+    .get();
+  const canonicalPath = confirmedTarget?.canonicalPath ?? target.path;
   const optIn = db
     .select({ projectId: projects.id })
     .from(environments)
+    .leftJoin(
+      environmentPathCanonicalizations,
+      and(
+        eq(environmentPathCanonicalizations.environmentId, environments.id),
+        eq(environmentPathCanonicalizations.path, environments.path),
+      ),
+    )
     .innerJoin(projects, eq(projects.id, environments.projectId))
     .where(
       and(
         eq(environments.hostId, target.hostId),
-        eq(environments.path, target.path),
+        eq(
+          sql<string>`coalesce(${environmentPathCanonicalizations.canonicalPath}, ${environments.path})`,
+          canonicalPath,
+        ),
         eq(environments.workspaceProvisionType, "unmanaged"),
         ne(environments.status, "destroyed"),
         isNotNull(environments.path),
@@ -92,7 +114,7 @@ function protectedWorkspaceKey(
     )
     .limit(1)
     .get();
-  return optIn ? { canonicalPath: target.path, hostId: target.hostId } : null;
+  return optIn ? { canonicalPath, hostId: target.hostId } : null;
 }
 
 export function isUnmanagedWorkspaceMutationProtected(

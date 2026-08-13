@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d97cd993-235e-42ac-9c79-6ca0f2a19a00",
+  "id": "ff13d2b7-a76d-4ad2-b076-3195c5b2d061",
   "prevId": "211e3c87-37c5-4f00-a1ef-818c244a1900",
   "tables": {
     "app_settings": {
@@ -428,6 +428,13 @@
           "name": "environment_id",
           "type": "text",
           "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "canonical_path": {
+          "name": "canonical_path",
+          "type": "text",
+          "primaryKey": false,
           "notNull": true,
           "autoincrement": false
         },
