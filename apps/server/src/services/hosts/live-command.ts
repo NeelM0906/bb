@@ -106,6 +106,37 @@ interface LiveHostCommandBaseLogFields {
 }
 
 const EXPECTED_LIVE_HOST_COMMAND_ERROR_CODES = new Set(["provision_cancelled"]);
+const activeWorkAdmissionTasksByDatabase = new WeakMap<
+  CommandResultSideEffectsDeps["db"],
+  Map<string, number>
+>();
+
+function registerActiveWorkAdmissionTask(
+  deps: Pick<CommandResultSideEffectsDeps, "db">,
+  requestId: string,
+): () => void {
+  let active = activeWorkAdmissionTasksByDatabase.get(deps.db);
+  if (!active) {
+    active = new Map();
+    activeWorkAdmissionTasksByDatabase.set(deps.db, active);
+  }
+  active.set(requestId, (active.get(requestId) ?? 0) + 1);
+  return () => {
+    const count = active.get(requestId) ?? 0;
+    if (count <= 1) active.delete(requestId);
+    else active.set(requestId, count - 1);
+    if (active.size === 0) activeWorkAdmissionTasksByDatabase.delete(deps.db);
+  };
+}
+
+function hasActiveWorkAdmissionTask(
+  deps: Pick<CommandResultSideEffectsDeps, "db">,
+  requestId: string,
+): boolean {
+  return (
+    (activeWorkAdmissionTasksByDatabase.get(deps.db)?.get(requestId) ?? 0) > 0
+  );
+}
 
 function commandFailureCode(error: Error): string {
   if (error instanceof ApiError) {
@@ -307,6 +338,11 @@ export function recoverDurableWorkAdmissions(
   args: { hostId?: string } = {},
 ): void {
   for (const entry of listRecoverableWorkAdmissionCommands(deps, args)) {
+    // The daemon can reconnect while the original in-memory task is waiting
+    // for durable workspace promotion (and therefore has no socket RPC to
+    // reject). Starting a second loop for the same request would let both
+    // share one idempotent reservation and race its release.
+    if (hasActiveWorkAdmissionTask(deps, entry.command.requestId)) continue;
     startLiveHostCommand(deps, {
       admissionReason: entry.reason,
       command: entry.command,
@@ -330,6 +366,9 @@ export function startLiveHostCommand<
 ): void {
   const execution =
     args.execution ?? createLiveHostCommandExecution(args.hostId);
+  const unregisterActiveTask = isProviderWorkCommand(args.command)
+    ? registerActiveWorkAdmissionTask(deps, args.command.requestId)
+    : null;
   void runLiveHostCommand(deps, { ...args, execution })
     .catch((error) => {
       const normalized =
@@ -363,6 +402,8 @@ export function startLiveHostCommand<
           { err: error, commandType: args.command.type },
           "Live command settled callback failed",
         );
+      } finally {
+        unregisterActiveTask?.();
       }
     });
 }

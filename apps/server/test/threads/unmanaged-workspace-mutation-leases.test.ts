@@ -24,6 +24,7 @@ import {
 } from "../../src/services/threads/work-admission.js";
 import { finalizeStoppedThread } from "../../src/services/threads/thread-lifecycle.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
+import { recoverDurableWorkAdmissions } from "../../src/services/hosts/live-command.js";
 import {
   listQueuedCommands,
   listQueuedThreadCommands,
@@ -377,6 +378,144 @@ describe("protected unmanaged workspace dispatch", () => {
       expect(
         getWorkAdmission(harness.db, "req-reconcile-promoted"),
       ).toMatchObject({ status: "waiting" });
+    });
+  });
+
+  it("does not duplicate a live workspace waiter during reconnect recovery", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-workspace-live-waiter-recovery",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/live-waiter-recovery-repo",
+      });
+      updateProject(harness.db, harness.hub, project.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/live-waiter-recovery-repo",
+        projectId: project.id,
+        status: "ready",
+        workspaceProvisionType: "unmanaged",
+      });
+      const holder = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const waiter = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      registerTestHostRpcCapture(harness, {
+        canonicalPathByInput: {
+          "/canonical/live-waiter-recovery-repo":
+            "/canonical/live-waiter-recovery-repo",
+        },
+        deferAdmissionReserveForThreadIds: new Set([waiter.id]),
+        hostId: host.id,
+        sessionId: session.id,
+      });
+      expect(
+        acquireUnmanagedWorkspaceMutationLease(harness.db, {
+          environmentId: environment.id,
+          requestId: "req-live-waiter-recovery-holder",
+          threadId: holder.id,
+        }),
+      ).toMatchObject({ outcome: "acquired" });
+
+      await sendThreadMessage(harness.deps, {
+        environment,
+        payload: {
+          input: textInput("recover without duplicating this waiter"),
+          mode: "start",
+          model: "gpt-5",
+          permissionMode: "full",
+          reasoningLevel: "medium",
+          serviceTier: "default",
+        },
+        thread: waiter,
+        trigger: "user",
+      });
+      const initialReservation = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "host.admission.reserve" &&
+          queued.command.threadId === waiter.id,
+      );
+      if (initialReservation.command.type !== "host.admission.reserve") {
+        throw new Error("Expected initial deferred admission reservation");
+      }
+      await reportQueuedCommandSuccess(harness, initialReservation, {
+        outcome: "reserved",
+        reservation: {
+          generation: 1,
+          hostId: host.id,
+          reason: initialReservation.command.reason,
+          token: `test-admission:${waiter.id}`,
+        },
+      });
+      const admission = getCurrentThreadWorkAdmission(harness.db, waiter.id);
+      if (!admission) throw new Error("Expected waiting admission");
+      await vi.waitFor(() => {
+        expect(
+          getUnmanagedWorkspaceMutationWaitState(harness.db, admission.id),
+        ).toMatchObject({
+          canonicalPath: "/canonical/live-waiter-recovery-repo",
+        });
+      });
+
+      recoverDurableWorkAdmissions(harness.deps, { hostId: host.id });
+      harness.db.transaction((tx) =>
+        releaseWorkspaceLeaseForThreadInTransaction(
+          { db: tx },
+          {
+            reason: "promote live waiter during recovery",
+            threadId: holder.id,
+          },
+        ),
+      );
+      await vi.waitFor(() => {
+        expect(
+          listQueuedCommands(harness, "host.admission.reserve").filter(
+            (command) =>
+              command.type === "host.admission.reserve" &&
+              command.threadId === waiter.id,
+          ),
+        ).toHaveLength(1);
+      });
+
+      const promotedReservation = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "host.admission.reserve" &&
+          queued.command.threadId === waiter.id,
+      );
+      if (promotedReservation.command.type !== "host.admission.reserve") {
+        throw new Error("Expected promoted deferred admission reservation");
+      }
+      await reportQueuedCommandSuccess(harness, promotedReservation, {
+        outcome: "reserved",
+        reservation: {
+          generation: 1,
+          hostId: host.id,
+          reason: promotedReservation.command.reason,
+          token: `test-admission:${waiter.id}`,
+        },
+      });
+      await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "thread.start" &&
+          queued.command.threadId === waiter.id,
+      );
+      await releaseThreadWorkAdmission(harness.deps, {
+        terminalReason: "test live waiter recovery completed",
+        threadId: waiter.id,
+      });
     });
   });
 
