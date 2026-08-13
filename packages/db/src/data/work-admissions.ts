@@ -1,10 +1,11 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notExists } from "drizzle-orm";
 import type {
   DbConnection,
   DbQueryConnection,
   DbTransaction,
 } from "../connection.js";
 import {
+  unmanagedWorkspaceMutationWaiters,
   workAdmissions,
   type WorkAdmissionReason,
 } from "../schema.js";
@@ -122,6 +123,36 @@ export function listWaitingWorkAdmissions(
     )
     .orderBy(asc(workAdmissions.createdAt), asc(workAdmissions.id))
     .all();
+}
+
+export function getFirstHostEligibleWaitingAdmission(
+  db: DbQueryConnection,
+  hostId: string,
+): WorkAdmissionRow | null {
+  const workspaceWait = db
+    .select({ requestId: unmanagedWorkspaceMutationWaiters.requestId })
+    .from(unmanagedWorkspaceMutationWaiters)
+    .where(
+      and(
+        eq(unmanagedWorkspaceMutationWaiters.requestId, workAdmissions.id),
+        eq(unmanagedWorkspaceMutationWaiters.state, "waiting"),
+      ),
+    );
+  return (
+    db
+      .select()
+      .from(workAdmissions)
+      .where(
+        and(
+          eq(workAdmissions.status, "waiting"),
+          eq(workAdmissions.hostId, hostId),
+          notExists(workspaceWait),
+        ),
+      )
+      .orderBy(asc(workAdmissions.createdAt), asc(workAdmissions.id))
+      .limit(1)
+      .get() ?? null
+  );
 }
 
 export function listCurrentWorkAdmissions(

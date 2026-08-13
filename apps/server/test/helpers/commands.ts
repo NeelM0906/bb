@@ -140,6 +140,7 @@ const testAdmissionsByHost = new Map<
 
 interface RegisterTestHostRpcCaptureArgs {
   canonicalPathByInput?: Readonly<Record<string, string>>;
+  deferAdmissionReserveForThreadIds?: ReadonlySet<string>;
   hostId: string;
   sessionId: string;
 }
@@ -409,17 +410,19 @@ export function registerTestHostRpcCapture(
         entry.requestIds.add(command.requestId);
         reservations.set(command.threadId, entry);
         testAdmissionsByHost.set(args.hostId, reservations);
-        deps.hub.recordHostOnlineRpcResponse({
-          message: hostDaemonOnlineRpcResponseMessageSchema.parse({
-            type: "host-rpc.response",
-            requestId: message.requestId,
-            commandType: command.type,
-            ok: true,
-            result: { outcome: "reserved", reservation: entry.reservation },
-          }),
-          sessionId: args.sessionId,
-        });
-        return;
+        if (!args.deferAdmissionReserveForThreadIds?.has(command.threadId)) {
+          deps.hub.recordHostOnlineRpcResponse({
+            message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+              type: "host-rpc.response",
+              requestId: message.requestId,
+              commandType: command.type,
+              ok: true,
+              result: { outcome: "reserved", reservation: entry.reservation },
+            }),
+            sessionId: args.sessionId,
+          });
+          return;
+        }
       }
       if (command.type === "host.admission.release") {
         const reservations = testAdmissionsByHost.get(args.hostId);

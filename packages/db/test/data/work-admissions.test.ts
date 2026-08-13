@@ -3,16 +3,19 @@ import { createConnection } from "../../src/connection.js";
 import {
   createWorkAdmission,
   getCurrentThreadWorkAdmission,
+  getFirstHostEligibleWaitingAdmission,
   listWaitingWorkAdmissions,
   listCurrentWorkAdmissions,
   markWorkAdmissionRunning,
   markWorkAdmissionTerminal,
 } from "../../src/data/work-admissions.js";
+import { createEnvironment } from "../../src/data/environments.js";
 import { upsertHost } from "../../src/data/hosts.js";
 import { createProject } from "../../src/data/projects.js";
 import { createThread } from "../../src/data/threads.js";
 import { migrate } from "../../src/migrate.js";
 import { noopNotifier } from "../../src/notifier.js";
+import { unmanagedWorkspaceMutationWaiters } from "../../src/schema.js";
 
 function setup() {
   const db = createConnection(":memory:");
@@ -33,7 +36,14 @@ function setup() {
     projectId: project.id,
     providerId: "codex",
   });
-  return { db, firstThread, host, secondThread };
+  const environment = createEnvironment(db, noopNotifier, {
+    hostId: host.id,
+    path: "/tmp/admission",
+    projectId: project.id,
+    status: "ready",
+    workspaceProvisionType: "unmanaged",
+  });
+  return { db, environment, firstThread, host, secondThread };
 }
 
 describe("durable work admissions", () => {
@@ -62,6 +72,44 @@ describe("durable work admissions", () => {
       expect.objectContaining({ id: "req-1", threadId: firstThread.id }),
       expect.objectContaining({ id: "req-2", threadId: secondThread.id }),
     ]);
+  });
+
+  it("selects the first host-eligible row without loading workspace waiters", () => {
+    const { db, environment, firstThread, host, secondThread } = setup();
+    createWorkAdmission(db, {
+      commandJson: '{"requestId":"req-blocked"}',
+      createdAt: 10,
+      hostId: host.id,
+      id: "req-blocked",
+      reason: "interactive",
+      threadId: firstThread.id,
+      waitingReason: "Workspace is busy",
+    });
+    createWorkAdmission(db, {
+      commandJson: '{"requestId":"req-eligible"}',
+      createdAt: 20,
+      hostId: host.id,
+      id: "req-eligible",
+      reason: "child",
+      threadId: secondThread.id,
+      waitingReason: "Awaiting host capacity",
+    });
+    db.insert(unmanagedWorkspaceMutationWaiters)
+      .values({
+        canonicalPath: "/tmp/admission",
+        createdAt: 10,
+        environmentId: environment.id,
+        hostId: host.id,
+        requestId: "req-blocked",
+        state: "waiting",
+        threadId: firstThread.id,
+        updatedAt: 10,
+      })
+      .run();
+
+    expect(
+      getFirstHostEligibleWaitingAdmission(db, host.id),
+    ).toMatchObject({ id: "req-eligible" });
   });
 
   it("generation-checks terminal settlement so stale completion cannot clear a successor", () => {

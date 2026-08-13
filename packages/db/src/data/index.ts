@@ -504,6 +504,7 @@ export {
 export {
   createWorkAdmission,
   getCurrentThreadWorkAdmission,
+  getFirstHostEligibleWaitingAdmission,
   getWorkAdmission,
   listCurrentWorkAdmissions,
   listWaitingWorkAdmissions,

@@ -5,6 +5,7 @@ import {
   createWorkAdmission,
   getEnvironment,
   getCurrentThreadWorkAdmission,
+  getFirstHostEligibleWaitingAdmission,
   hasProtectedUnmanagedWorkspaceOnHost,
   getThread,
   getUnmanagedWorkspaceMutationLeaseForThread,
@@ -193,16 +194,6 @@ async function ensureLegacyUnmanagedWorkspacePathsCanonical(
   }
 }
 
-function firstHostEligibleWaitingAdmission(
-  deps: Pick<WorkAdmissionDeps, "db">,
-  hostId: string,
-): WorkAdmissionRow | undefined {
-  return listWaitingWorkAdmissions(deps.db, { hostId }).find(
-    (candidate) =>
-      getUnmanagedWorkspaceMutationWaitState(deps.db, candidate.id) === null,
-  );
-}
-
 function resolveAdmissionReason(
   deps: Pick<WorkAdmissionDeps, "db">,
   args: {
@@ -355,7 +346,7 @@ export async function awaitThreadWorkAdmission(
     // waiting, stranding runnable work until some unrelated later release.
     const promotion = createHostPromotionWaiter(args.hostId);
     try {
-      const head = firstHostEligibleWaitingAdmission(deps, args.hostId);
+      const head = getFirstHostEligibleWaitingAdmission(deps.db, args.hostId);
       if (head?.id !== row.id) {
         await promotion.promise;
         row = getWorkAdmission(deps.db, row.id) ?? row;
@@ -391,6 +382,10 @@ export async function awaitThreadWorkAdmission(
             holderThreadId: workspace.holder.threadId,
           }),
         });
+        // The row was the durable FIFO head while another admission may have
+        // subscribed and gone to sleep. It is no longer host-eligible once the
+        // workspace waiter exists, so wake peers to re-evaluate the queue.
+        signalHostAdmissionPromotion(args.hostId);
         await waitForWorkspacePromotion(deps, {
           canonicalPath: workspace.canonicalPath,
           hostId: workspace.hostId,

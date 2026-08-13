@@ -8,8 +8,10 @@ import { describe, expect, it, vi } from "vitest";
 import { releaseThreadWorkAdmission } from "../../src/services/threads/work-admission.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
 import {
+  listQueuedCommands,
   listQueuedThreadCommands,
   registerTestHostRpcCapture,
+  reportQueuedCommandSuccess,
   waitForQueuedCommand,
 } from "../helpers/commands.js";
 import { textInput } from "../helpers/prompt-input.js";
@@ -212,14 +214,6 @@ describe("protected unmanaged workspace dispatch", () => {
       const { host, session } = seedHostSession(harness.deps, {
         id: "host-workspace-independent",
       });
-      registerTestHostRpcCapture(harness, {
-        canonicalPathByInput: {
-          "/canonical/blocked-repo": "/canonical/blocked-repo",
-          "/canonical/independent-repo": "/canonical/independent-repo",
-        },
-        hostId: host.id,
-        sessionId: session.id,
-      });
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
         path: "/canonical/blocked-repo",
@@ -256,6 +250,15 @@ describe("protected unmanaged workspace dispatch", () => {
         projectId: project.id,
         status: "idle",
       });
+      registerTestHostRpcCapture(harness, {
+        canonicalPathByInput: {
+          "/canonical/blocked-repo": "/canonical/blocked-repo",
+          "/canonical/independent-repo": "/canonical/independent-repo",
+        },
+        deferAdmissionReserveForThreadIds: new Set([blocked.id]),
+        hostId: host.id,
+        sessionId: session.id,
+      });
       const payload = (text: string) => ({
         input: textInput(text),
         mode: "start" as const,
@@ -283,17 +286,48 @@ describe("protected unmanaged workspace dispatch", () => {
         thread: blocked,
         trigger: "user",
       });
-      await vi.waitFor(() => {
-        expect(
-          getCurrentThreadWorkAdmission(harness.db, blocked.id),
-        ).toMatchObject({ waitingReason: expect.stringContaining("owns") });
-      });
+      const blockedReserve = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "host.admission.reserve" &&
+          queued.command.threadId === blocked.id,
+      );
+      if (blockedReserve.command.type !== "host.admission.reserve") {
+        throw new Error("Expected deferred admission reservation");
+      }
 
       await sendThreadMessage(harness.deps, {
         environment: independentEnvironment,
         payload: payload("run on independent path"),
         thread: independent,
         trigger: "user",
+      });
+      await vi.waitFor(() => {
+        expect(
+          getCurrentThreadWorkAdmission(harness.db, independent.id),
+        ).toMatchObject({ status: "waiting" });
+        expect(
+          listQueuedCommands(harness, "host.admission.reserve").filter(
+            (command) =>
+              command.type === "host.admission.reserve" &&
+              command.threadId === independent.id,
+          ),
+        ).toHaveLength(0);
+      });
+
+      await reportQueuedCommandSuccess(harness, blockedReserve, {
+        outcome: "reserved",
+        reservation: {
+          generation: 1,
+          hostId: host.id,
+          reason: blockedReserve.command.reason,
+          token: `test-admission:${blocked.id}`,
+        },
+      });
+      await vi.waitFor(() => {
+        expect(
+          getCurrentThreadWorkAdmission(harness.db, blocked.id),
+        ).toMatchObject({ waitingReason: expect.stringContaining("owns") });
       });
       await waitForQueuedCommand(
         harness,
