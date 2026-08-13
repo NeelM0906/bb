@@ -7,6 +7,8 @@ import { ApiError } from "../errors.js";
 import { verifyAuthenticatedDaemon } from "../internal/auth.js";
 import type { AppDeps } from "../types.js";
 import { runtimeErrorLogFields } from "../services/lib/error-log-fields.js";
+import { recoverDurableWorkAdmissions } from "../services/hosts/live-command.js";
+import { reconcileHostWorkAdmissions } from "../services/threads/work-admission.js";
 import { schedulePrimaryHostCaffeinateReconciliation } from "../services/system/app-settings.js";
 import {
   getInactiveSessionLogFields,
@@ -97,6 +99,16 @@ export function onDaemonSocketOpen(
   schedulePrimaryHostCaffeinateReconciliation(deps, {
     reason: "daemon-open",
   });
+  void reconcileHostWorkAdmissions(deps, { hostId: args.hostId })
+    .then(() => {
+      recoverDurableWorkAdmissions(deps, { hostId: args.hostId });
+    })
+    .catch((error: unknown) => {
+      deps.logger.warn(
+        { err: error, hostId: args.hostId },
+        "Failed to reconcile host work admissions after daemon connection",
+      );
+    });
 }
 
 export function onDaemonSocketMessage(
