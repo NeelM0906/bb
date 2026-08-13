@@ -140,6 +140,50 @@ describe("unmanaged workspace mutation leases", () => {
     expect(getProject(db, project.id)?.protectUnmanagedWorkspace).toBe(false);
   });
 
+  it("rejects enabling protection while unmanaged work is queued", () => {
+    const db = createConnection(":memory:");
+    migrate(db);
+    const host = upsertHost(db, noopNotifier, {
+      name: "queued-transition-host",
+      type: "persistent",
+    });
+    const project = createProject(db, noopNotifier, {
+      name: "queued-transition-project",
+      source: {
+        type: "local_path",
+        hostId: host.id,
+        path: "/queued-transition",
+      },
+    }).project;
+    const environment = createEnvironment(db, noopNotifier, {
+      hostId: host.id,
+      path: "/queued-transition",
+      projectId: project.id,
+      status: "ready",
+      workspaceProvisionType: "unmanaged",
+    });
+    const thread = createThread(db, noopNotifier, {
+      environmentId: environment.id,
+      projectId: project.id,
+      providerId: "codex",
+    });
+    createWorkAdmission(db, {
+      commandJson: "{}",
+      hostId: host.id,
+      id: "req-queued-transition",
+      reason: "interactive",
+      threadId: thread.id,
+      waitingReason: "Host capacity limit reached",
+    });
+
+    expect(() =>
+      updateProject(db, noopNotifier, project.id, {
+        protectUnmanagedWorkspace: true,
+      }),
+    ).toThrow(ProjectUnmanagedWorkspaceProtectionConflictError);
+    expect(getProject(db, project.id)?.protectUnmanagedWorkspace).toBe(false);
+  });
+
   it("atomically acquires workspace ownership and starts the durable admission", () => {
     const { db, firstEnvironment, firstThread, host } = setup();
 

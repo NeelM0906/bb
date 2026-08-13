@@ -82,7 +82,7 @@ describe("public project local host routes", () => {
       expect(response.status).toBe(409);
       await expect(readJson(response)).resolves.toMatchObject({
         code: "workspace_protection_conflict",
-        message: expect.stringContaining("unmanaged work is running"),
+        message: expect.stringContaining("unmanaged work is active or queued"),
       });
     });
   });

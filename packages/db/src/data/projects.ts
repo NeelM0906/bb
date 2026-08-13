@@ -285,7 +285,7 @@ export interface UpdateProjectInput {
 export class ProjectUnmanagedWorkspaceProtectionConflictError extends Error {
   constructor() {
     super(
-      "Cannot enable unmanaged workspace protection while unmanaged work is running on the same host. Wait for active runs to finish and try again.",
+      "Cannot enable unmanaged workspace protection while unmanaged work is active or queued on the same host. Wait for active and queued runs to finish and try again.",
     );
     this.name = "ProjectUnmanagedWorkspaceProtectionConflictError";
   }
@@ -320,14 +320,14 @@ function assertUnmanagedWorkspaceProtectionCanBeEnabled(
   // Conservatively reject the rare opt-in transition while any unmanaged run
   // is active on an affected host; subsequent admissions are protected once
   // the setting is committed.
-  const running = tx
+  const current = tx
     .select({ id: workAdmissions.id })
     .from(workAdmissions)
     .innerJoin(threads, eq(threads.id, workAdmissions.threadId))
     .innerJoin(environments, eq(environments.id, threads.environmentId))
     .where(
       and(
-        eq(workAdmissions.status, "running"),
+        inArray(workAdmissions.status, ["waiting", "running"]),
         inArray(environments.hostId, hostIds),
         eq(environments.workspaceProvisionType, "unmanaged"),
         ne(environments.status, "destroyed"),
@@ -335,7 +335,7 @@ function assertUnmanagedWorkspaceProtectionCanBeEnabled(
     )
     .limit(1)
     .get();
-  if (running) {
+  if (current) {
     throw new ProjectUnmanagedWorkspaceProtectionConflictError();
   }
 }
