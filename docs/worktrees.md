@@ -126,3 +126,9 @@ A few quick checks:
    prompts for input will time out at 15 minutes.
 4. Run `bash .bb-env-setup.sh` manually in a clean clone to verify it works
    outside bb before debugging through the provisioning transcript.
+5. If you manually remove a worktree while a provider's persistent exec
+   session still has it as its working directory, later commands may return no
+   output or exit status. Run the next command with the provider's explicit
+   working-directory option set to an existing checkout. That resets the
+   provider-owned session cwd; BB cannot repair it after the provider has
+   retained the deleted path.
