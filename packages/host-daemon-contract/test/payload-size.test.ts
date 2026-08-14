@@ -73,7 +73,7 @@ describe("daemon-to-server event payload sizes", () => {
       };
     });
 
-    expect(measurements).toEqual([
+    const expected = [
       {
         eventCount: 1,
         legacyEnvelope: { gzipBytes: 194, jsonBytes: 413 },
@@ -89,7 +89,38 @@ describe("daemon-to-server event payload sizes", () => {
         legacyEnvelope: { gzipBytes: 406, jsonBytes: 17_554 },
         grouped: { gzipBytes: 407, jsonBytes: 14_769 },
       },
-    ]);
+    ];
+    expect(
+      measurements.map((measurement) => ({
+        eventCount: measurement.eventCount,
+        legacyEnvelopeJsonBytes: measurement.legacyEnvelope.jsonBytes,
+        groupedJsonBytes: measurement.grouped.jsonBytes,
+      })),
+    ).toEqual(
+      expected.map((measurement) => ({
+        eventCount: measurement.eventCount,
+        legacyEnvelopeJsonBytes: measurement.legacyEnvelope.jsonBytes,
+        groupedJsonBytes: measurement.grouped.jsonBytes,
+      })),
+    );
+
+    // zlib output varies slightly across Node/platform builds even when the
+    // source bytes are identical. Keep a tight regression window instead of a
+    // non-portable exact compressed-byte snapshot.
+    for (const [index, measurement] of measurements.entries()) {
+      const baseline = expected[index];
+      if (baseline === undefined) {
+        throw new Error(`Missing payload-size baseline at index ${index}`);
+      }
+      for (const key of ["legacyEnvelope", "grouped"] as const) {
+        expect(measurement[key].gzipBytes).toBeGreaterThanOrEqual(
+          baseline[key].gzipBytes - 8,
+        );
+        expect(measurement[key].gzipBytes).toBeLessThanOrEqual(
+          baseline[key].gzipBytes + 8,
+        );
+      }
+    }
 
     for (const measurement of measurements.slice(1)) {
       expect(measurement.grouped.jsonBytes).toBeLessThan(
