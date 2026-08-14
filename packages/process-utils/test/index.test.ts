@@ -289,6 +289,7 @@ describe("process utils", () => {
       OPENAI_API_KEY: "external-secret",
       PATH: "/bin",
       SKIP_ME: undefined,
+      _VOLTA_TOOL_RECURSION: "1",
     };
 
     const sanitizedEnv = sanitizeInheritedChildProcessEnv({ env });

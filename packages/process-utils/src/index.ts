@@ -179,7 +179,11 @@ export function sanitizeInheritedChildProcessEnv(
     if (value === undefined) {
       continue;
     }
-    if (key === "NODE_ENV" || key.startsWith("BB_")) {
+    if (
+      key === "NODE_ENV" ||
+      key === "_VOLTA_TOOL_RECURSION" ||
+      key.startsWith("BB_")
+    ) {
       continue;
     }
     sanitizedEnv[key] = value;
