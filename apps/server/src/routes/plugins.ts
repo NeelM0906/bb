@@ -425,7 +425,8 @@ export function registerPluginRoutes(
     }
     try {
       const plugin = await plugins.install(parsed.data.source, {
-        allowManagedWorkspaceSource: parsed.data.allowManagedWorkspaceSource,
+        allowManagedWorkspaceSource:
+          parsed.data.allowManagedWorkspaceSource ?? false,
       });
       return context.json({ ok: true, plugin });
     } catch (error) {
