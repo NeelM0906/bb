@@ -473,6 +473,12 @@ For review or fix pipelines, get the environment ID from
 - For interrupted or stopped threads, inspect first. If the user stopped the
   thread, treat that as intentional unless they ask you to continue.
 - Use `bb thread stop <id>` when a thread is stuck or no longer needed.
+- A provider's persistent exec session can retain a cwd after an external
+  `git worktree remove` deletes it. If later commands return no output and no
+  exit status, run the next command with that provider's explicit working
+  directory option pointed at an existing checkout; that heals the stored cwd.
+  This session state belongs to the provider harness, outside bb's terminal
+  process boundary.
 - Use `bb thread compact <id>` to send the built-in `/compact` command to an idle or errored thread. Completion or failure appears in the timeline. Codex, Claude Code, Pi, and OpenCode ACP support it; Cursor ACP does not expose compatible compaction through ACP.
 - Use `bb thread cancel-plan <id>` to exit an active Plan turn without
   optimistically clearing its banner. Use `bb thread clear-goal <id>` to clear
@@ -743,7 +749,10 @@ them by mixing ink into canvas), the `--primary` accent, the secondary text tier
     track, while exact versions are pinned. Omit the Git ref to track the
     repository's default branch; explicit branches track, while tags and
     commits are pinned. Installs prompt for confirmation (plugins are full-trust code);
-    pass `--yes` to skip. Reinstalling an already-installed managed plugin is
+    pass `--yes` to skip. Path installs inside BB-managed workspaces are
+    refused because archive cleanup deletes their source; move the source to a
+    stable checkout, or use `--allow-managed-workspace-source` only when that
+    deletion is intentional. Reinstalling an already-installed managed plugin is
     refused — use `bb plugin update`. Plugins that declare a frontend (`bb.app`)
     are built at install time for path sources and git sources without a
     prebuilt app when their imported dependencies are already available;

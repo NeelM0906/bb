@@ -204,6 +204,15 @@ function finalizePendingMessages(args: FinalizeProjectionMessagesArgs): void {
 
   for (const message of args.state.messages) {
     if (message.kind !== "operation") continue;
+    if (
+      args.options?.threadStatus === "idle" &&
+      args.state.threadInterruptedAt === null &&
+      message.opType === "compaction" &&
+      message.scope.kind === "turn" &&
+      args.state.closedTurnIds.has(message.scope.turnId)
+    ) {
+      continue;
+    }
     finalizeOperationMessage(message, args.options);
   }
 

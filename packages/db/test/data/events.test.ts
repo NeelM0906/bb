@@ -17,6 +17,7 @@ import {
   appendStoredThreadEvent,
   appendStoredThreadEventInTransaction,
   appendStoredThreadEventsInTransaction,
+  cloneThreadEventsInTransaction,
   findStoredEventRow,
   findStoredTimelineWindowByteBudgetFloor,
   getActiveStoredTurnId,
@@ -314,6 +315,53 @@ describe("events", () => {
     expect(JSON.parse(all[0]!.data)).toMatchObject({ message: "first" });
   });
 
+  it("clones source events through a requested sequence with fork-local ids", () => {
+    const { db, project, thread: sourceThread } = setup();
+    const forkThread = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "codex",
+      sourceThreadId: sourceThread.id,
+      originKind: "fork",
+    });
+    insertEvents(db, noopNotifier, [1, 2, 3].map((sequence) => ({
+      threadId: sourceThread.id,
+      sequence,
+      type: "system/error" as const,
+      ...threadEventFields,
+      data: JSON.stringify({ message: `source-${sequence}` }),
+      createdAt: 1_000 + sequence,
+    })));
+
+    const result = db.transaction(
+      (tx) =>
+        cloneThreadEventsInTransaction(tx, {
+          sourceThreadId: sourceThread.id,
+          sourceSeqEnd: 2,
+          targetThreadId: forkThread.id,
+        }),
+      { behavior: "immediate" },
+    );
+
+    expect(result).toEqual({
+      clonedCount: 2,
+      eventTypes: ["system/error"],
+    });
+    const source = listEvents(db, { threadId: sourceThread.id });
+    const cloned = listEvents(db, { threadId: forkThread.id });
+    expect(cloned.map(({ sequence, data, createdAt }) => ({
+      sequence,
+      data,
+      createdAt,
+    }))).toEqual(source.slice(0, 2).map(({ sequence, data, createdAt }) => ({
+      sequence,
+      data,
+      createdAt,
+    })));
+    expect(cloned.map((event) => event.id)).not.toEqual(
+      source.slice(0, 2).map((event) => event.id),
+    );
+  });
+
   it("appends daemon events with server-owned sequences", () => {
     const { db, thread } = setup();
 
@@ -369,6 +417,36 @@ describe("events", () => {
         sequence: 7,
       },
     ]);
+  });
+
+  it("does not append turn/started again when a daemon retries an accepted batch", () => {
+    const { db, thread } = setup();
+    const turnStarted = {
+      threadId: thread.id,
+      type: "turn/started" as const,
+      ...createTurnEventFields({ turnId: "turn_retried" }),
+      environmentId: null,
+      providerThreadId: "provider_thr_retried",
+      data: JSON.stringify({
+        providerThreadId: "provider_thr_retried",
+        turnId: "turn_retried",
+      }),
+    };
+
+    const first = db.transaction(
+      (tx) => appendDaemonEventsInTransaction(tx, [turnStarted]),
+      { behavior: "immediate" },
+    );
+    const retry = db.transaction(
+      (tx) => appendDaemonEventsInTransaction(tx, [turnStarted]),
+      { behavior: "immediate" },
+    );
+
+    expect(first.insertedInputIndexes).toEqual([0]);
+    expect(retry.insertedInputIndexes).toEqual([]);
+    expect(
+      listEvents(db, { threadId: thread.id }).map((event) => event.type),
+    ).toEqual(["turn/started"]);
   });
 
   it("rejects daemon turn-scoped events before turn/started is stored", () => {

@@ -323,6 +323,141 @@ function isRepoName(value: unknown): value is string {
   return typeof value === "string" && /^[\w.-]+\/[\w.-]+$/.test(value);
 }
 
+function repoKey(repo: string): string {
+  return repo.toLowerCase();
+}
+
+export function isAuthoritativeMissingOrigin(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not a git repository|no such remote ['"]?origin/i.test(message);
+}
+
+/** Comma- or whitespace-separated owner/repo tokens, first occurrence wins. */
+export function parseRepoList(raw: string): string[] {
+  const repos: string[] = [];
+  const seen = new Set<string>();
+  for (const token of raw.split(/[\s,]+/)) {
+    const key = repoKey(token);
+    if (!isRepoName(token) || seen.has(key)) continue;
+    seen.add(key);
+    repos.push(token);
+  }
+  return repos;
+}
+
+const AUTO_TRACK_PERMISSIONS = new Set([
+  "TRIAGE",
+  "WRITE",
+  "MAINTAIN",
+  "ADMIN",
+]);
+
+export type RepoAccess = "granted" | "denied" | "unknown";
+
+/** True when GitHub granted more than public-read access. */
+export function canAutoTrackPermission(permission: string | null): boolean {
+  if (permission === null) return false;
+  return AUTO_TRACK_PERMISSIONS.has(permission.toUpperCase());
+}
+
+export function repoAccessFromCheck(
+  permission: string | null,
+  checkFailed: boolean,
+): RepoAccess {
+  if (checkFailed) return "unknown";
+  return canAutoTrackPermission(permission) ? "granted" : "denied";
+}
+
+export function selectTrackedRepos(args: {
+  projectRepos: RepoInfo[];
+  extraRepos: string[];
+  ignoredRepos: string[];
+  trackProjectRemotes: boolean;
+  accessByRepo: ReadonlyMap<string, RepoAccess>;
+  previouslyAutoTracked: readonly string[];
+}): RepoInfo[] {
+  const ignored = new Set(args.ignoredRepos.map(repoKey));
+  const previous = new Set(args.previouslyAutoTracked.map(repoKey));
+  const accessByRepo = new Map(
+    [...args.accessByRepo].map(([repo, access]) => [repoKey(repo), access]),
+  );
+  const projectByRepo = new Map<string, RepoInfo>();
+  for (const info of args.projectRepos) {
+    const key = repoKey(info.repo);
+    if (!projectByRepo.has(key)) projectByRepo.set(key, info);
+  }
+  const byRepo = new Map<string, RepoInfo>();
+
+  if (args.trackProjectRemotes) {
+    for (const info of args.projectRepos) {
+      const key = repoKey(info.repo);
+      if (ignored.has(key) || byRepo.has(key)) continue;
+      const access = accessByRepo.get(key) ?? "unknown";
+      const include =
+        access === "granted" || (access === "unknown" && previous.has(key));
+      if (include) byRepo.set(key, info);
+    }
+  }
+
+  for (const repo of args.extraRepos) {
+    const key = repoKey(repo);
+    if (ignored.has(key) || byRepo.has(key)) continue;
+    byRepo.set(key, projectByRepo.get(key) ?? { repo, projectId: null });
+  }
+
+  return [...byRepo.values()];
+}
+
+export function projectReposForTracking(args: {
+  discoveredRepos: RepoInfo[];
+  discoveryComplete: boolean;
+  previouslyAutoTracked: readonly string[];
+}): RepoInfo[] {
+  if (args.discoveryComplete) return args.discoveredRepos;
+  return selectTrackedRepos({
+    projectRepos: args.discoveredRepos,
+    extraRepos: [...args.previouslyAutoTracked],
+    ignoredRepos: [],
+    trackProjectRemotes: true,
+    accessByRepo: new Map(),
+    previouslyAutoTracked: args.previouslyAutoTracked,
+  });
+}
+
+export function nextAutoTrackedRepos(args: {
+  projectRepos: readonly string[];
+  ignoredRepos: readonly string[];
+  accessByRepo: ReadonlyMap<string, RepoAccess>;
+  previouslyAutoTracked: readonly string[];
+}): string[] {
+  const ignored = new Set(args.ignoredRepos.map(repoKey));
+  const project = new Map<string, string>();
+  for (const repo of args.projectRepos) {
+    const key = repoKey(repo);
+    if (!project.has(key)) project.set(key, repo);
+  }
+  const accessByRepo = new Map(
+    [...args.accessByRepo].map(([repo, access]) => [repoKey(repo), access]),
+  );
+  const next = new Map<string, string>();
+  for (const repo of args.previouslyAutoTracked) {
+    const key = repoKey(repo);
+    const projectRepo = project.get(key);
+    if (projectRepo === undefined || ignored.has(key)) continue;
+    if ((accessByRepo.get(key) ?? "unknown") !== "denied") {
+      next.set(key, projectRepo);
+    }
+  }
+  for (const [repo, access] of args.accessByRepo) {
+    const key = repoKey(repo);
+    const projectRepo = project.get(key);
+    if (projectRepo === undefined || ignored.has(key)) continue;
+    if (access === "granted") next.set(key, projectRepo);
+    if (access === "denied") next.delete(key);
+  }
+  return [...next.values()];
+}
+
 function run(
   file: string,
   args: string[],
@@ -456,10 +591,24 @@ export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
     extraRepos: {
       type: "string",
-      label: "Extra repositories",
+      label: "Shared repositories",
       description:
-        'Comma-separated "owner/repo" list to track in addition to repos discovered from BB projects.',
+        'Comma-separated "owner/repo" list you explicitly want to follow. These are tracked even without write access.',
       default: "",
+    },
+    ignoredRepos: {
+      type: "string",
+      label: "Ignored repositories",
+      description:
+        'Comma-separated "owner/repo" list that must never be tracked, including read-only remotes such as an upstream clone.',
+      default: "",
+    },
+    trackProjectRemotes: {
+      type: "boolean",
+      label: "Follow BB project remotes",
+      description:
+        "When enabled, also track each project's origin remote — but only if GitHub granted you more than public-read access. Upstream remotes are never followed.",
+      default: true,
     },
     defaultProject: {
       type: "project",
@@ -508,15 +657,19 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   // ------------------------------------------------------------------
-  // Repo discovery: BB project sources → git origin → owner/repo.
+  // Repo discovery: shared extraRepos, plus project `origin` remotes the
+  // viewer can write to. Never follow `upstream` or ignoredRepos.
   // ------------------------------------------------------------------
-  let repoCache: { repos: RepoInfo[]; fetchedAt: number } | null = null;
+  interface RepoDiscoveryResult {
+    repos: RepoInfo[];
+    projectDiscoveryComplete: boolean;
+  }
 
-  async function discoverRepos(force = false): Promise<RepoInfo[]> {
-    if (!force && repoCache !== null && Date.now() - repoCache.fetchedAt < 60_000) {
-      return repoCache.repos;
-    }
+  let repoCache: (RepoDiscoveryResult & { fetchedAt: number }) | null = null;
+
+  async function listProjectOriginRepos(): Promise<RepoDiscoveryResult> {
     const byRepo = new Map<string, RepoInfo>();
+    let projectDiscoveryComplete = true;
     try {
       const projects = (await bb.sdk.projects.list()) as unknown as BbProjectSummary[];
       for (const project of projects) {
@@ -529,29 +682,113 @@ export default async function plugin(bb: BbPluginApi) {
               5_000,
             );
             const repo = parseGithubRemote(stdout);
-            if (repo !== null && !byRepo.has(repo)) {
-              byRepo.set(repo, { repo, projectId: project.id });
+            if (repo !== null && !byRepo.has(repoKey(repo))) {
+              byRepo.set(repoKey(repo), { repo, projectId: project.id });
             }
-          } catch {
-            // no remote / not a git checkout — skip this source
+          } catch (error) {
+            if (!isAuthoritativeMissingOrigin(error)) {
+              projectDiscoveryComplete = false;
+              bb.log.warn(
+                `origin discovery failed for ${source.path}: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
           }
         }
       }
+      return { repos: [...byRepo.values()], projectDiscoveryComplete };
     } catch (error) {
       bb.log.warn(
         `project discovery failed: ${error instanceof Error ? error.message : String(error)}`,
       );
+      return { repos: [...byRepo.values()], projectDiscoveryComplete: false };
     }
-    const { extraRepos } = await settings.get();
-    for (const raw of extraRepos.split(/[\s,]+/)) {
-      if (isRepoName(raw) && !byRepo.has(raw)) {
-        byRepo.set(raw, { repo: raw, projectId: null });
-      }
-    }
-    const repos = [...byRepo.values()];
-    repoCache = { repos, fetchedAt: Date.now() };
-    return repos;
   }
+
+  async function repoAccess(repo: string): Promise<RepoAccess> {
+    try {
+      const raw = await gh(
+        ["repo", "view", repo, "--json", "viewerPermission"],
+        15_000,
+      );
+      const permission = (JSON.parse(raw) as { viewerPermission?: unknown })
+        .viewerPermission;
+      return repoAccessFromCheck(
+        typeof permission === "string" ? permission : null,
+        false,
+      );
+    } catch (error) {
+      bb.log.warn(
+        `permission check failed for ${repo}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return "unknown";
+    }
+  }
+
+  async function discoverReposWithStatus(
+    force = false,
+  ): Promise<RepoDiscoveryResult> {
+    if (!force && repoCache !== null && Date.now() - repoCache.fetchedAt < 60_000) {
+      return repoCache;
+    }
+    const { extraRepos, ignoredRepos, trackProjectRemotes } = await settings.get();
+    const extra = parseRepoList(extraRepos);
+    const ignored = parseRepoList(ignoredRepos);
+    const previouslyAutoTracked =
+      (await bb.storage.kv.get<string[]>("auto-tracked-repos")) ?? [];
+    const projectDiscovery = await listProjectOriginRepos();
+    const projectRepos = projectReposForTracking({
+      discoveredRepos: projectDiscovery.repos,
+      discoveryComplete: projectDiscovery.projectDiscoveryComplete,
+      previouslyAutoTracked,
+    });
+    const accessByRepo = new Map<string, RepoAccess>();
+    if (trackProjectRemotes && projectDiscovery.projectDiscoveryComplete) {
+      const ignoredKeys = new Set(ignored.map(repoKey));
+      const candidates = projectRepos.filter(
+        (info) => !ignoredKeys.has(repoKey(info.repo)),
+      );
+      const results = await Promise.all(
+        candidates.map(async (info) => ({
+          repo: info.repo,
+          access: await repoAccess(info.repo),
+        })),
+      );
+      for (const { repo, access } of results) accessByRepo.set(repo, access);
+    }
+    const repos = selectTrackedRepos({
+      projectRepos,
+      extraRepos: extra,
+      ignoredRepos: ignored,
+      trackProjectRemotes,
+      accessByRepo,
+      previouslyAutoTracked,
+    });
+    if (projectDiscovery.projectDiscoveryComplete) {
+      await bb.storage.kv.set(
+        "auto-tracked-repos",
+        nextAutoTrackedRepos({
+          projectRepos: projectRepos.map((info) => info.repo),
+          ignoredRepos: ignored,
+          accessByRepo,
+          previouslyAutoTracked,
+        }),
+      );
+    }
+    repoCache = {
+      repos,
+      projectDiscoveryComplete: projectDiscovery.projectDiscoveryComplete,
+      fetchedAt: Date.now(),
+    };
+    return repoCache;
+  }
+
+  async function discoverRepos(force = false): Promise<RepoInfo[]> {
+    return (await discoverReposWithStatus(force)).repos;
+  }
+
+  settings.onChange(() => {
+    repoCache = null;
+  });
 
   // ------------------------------------------------------------------
   // SQLite cache of open issues + PRs across tracked repos.
@@ -608,6 +845,8 @@ export default async function plugin(bb: BbPluginApi) {
     state?: "open" | "closed";
     /** Only items whose assignees include this login. */
     assignee?: string;
+    /** When set, hide rows from repos that are no longer tracked. */
+    trackedRepos?: readonly string[];
   }): CachedItem[] {
     const clauses: string[] = [];
     const params: unknown[] = [];
@@ -616,8 +855,14 @@ export default async function plugin(bb: BbPluginApi) {
       params.push(options.kind);
     }
     if (options.repo !== undefined) {
-      clauses.push("repo = ?");
-      params.push(options.repo);
+      clauses.push("LOWER(repo) = ?");
+      params.push(repoKey(options.repo));
+    } else if (options.trackedRepos !== undefined) {
+      if (options.trackedRepos.length === 0) return [];
+      clauses.push(
+        `LOWER(repo) IN (${options.trackedRepos.map(() => "?").join(", ")})`,
+      );
+      params.push(...options.trackedRepos.map(repoKey));
     }
     if (options.state === "open") {
       clauses.push("state = 'OPEN'");
@@ -647,8 +892,8 @@ export default async function plugin(bb: BbPluginApi) {
     number: number,
   ): CachedItem | null {
     const row = db
-      .prepare("SELECT * FROM items WHERE repo = ? AND kind = ? AND number = ?")
-      .get(repo, kind, number) as Record<string, unknown> | undefined;
+      .prepare("SELECT * FROM items WHERE LOWER(repo) = ? AND kind = ? AND number = ?")
+      .get(repoKey(repo), kind, number) as Record<string, unknown> | undefined;
     return row === undefined ? null : rowToItem(row);
   }
 
@@ -658,7 +903,7 @@ export default async function plugin(bb: BbPluginApi) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     db.transaction(() => {
-      db.prepare("DELETE FROM items WHERE repo = ?").run(repo);
+      db.prepare("DELETE FROM items WHERE LOWER(repo) = ?").run(repoKey(repo));
       for (const item of items) {
         insert.run(
           item.repo, item.number, item.kind, item.title, item.state,
@@ -667,6 +912,16 @@ export default async function plugin(bb: BbPluginApi) {
         );
       }
     })();
+  }
+
+  function dropUntrackedRepoRows(trackedRepos: readonly string[]): void {
+    if (trackedRepos.length === 0) {
+      db.prepare("DELETE FROM items").run();
+      return;
+    }
+    db.prepare(
+      `DELETE FROM items WHERE LOWER(repo) NOT IN (${trackedRepos.map(() => "?").join(", ")})`,
+    ).run(...trackedRepos.map(repoKey));
   }
 
   /** Patch a cached row in place after a mutation so the UI updates without
@@ -678,23 +933,24 @@ export default async function plugin(bb: BbPluginApi) {
     patch: { state?: string; assignees?: string[]; labels?: string[] },
   ): void {
     if (patch.state !== undefined) {
-      db.prepare("UPDATE items SET state = ? WHERE repo = ? AND kind = ? AND number = ?")
-        .run(patch.state, repo, kind, number);
+      db.prepare("UPDATE items SET state = ? WHERE LOWER(repo) = ? AND kind = ? AND number = ?")
+        .run(patch.state, repoKey(repo), kind, number);
     }
     if (patch.assignees !== undefined) {
-      db.prepare("UPDATE items SET assignees = ? WHERE repo = ? AND kind = ? AND number = ?")
-        .run(JSON.stringify(patch.assignees), repo, kind, number);
+      db.prepare("UPDATE items SET assignees = ? WHERE LOWER(repo) = ? AND kind = ? AND number = ?")
+        .run(JSON.stringify(patch.assignees), repoKey(repo), kind, number);
     }
     if (patch.labels !== undefined) {
-      db.prepare("UPDATE items SET labels = ? WHERE repo = ? AND kind = ? AND number = ?")
-        .run(JSON.stringify(patch.labels), repo, kind, number);
+      db.prepare("UPDATE items SET labels = ? WHERE LOWER(repo) = ? AND kind = ? AND number = ?")
+        .run(JSON.stringify(patch.labels), repoKey(repo), kind, number);
     }
     bb.realtime.publish("data-changed", {});
   }
 
   async function syncAll(force = false): Promise<{ repos: number; items: number }> {
     await checkAuth();
-    const repos = await discoverRepos(force);
+    const discovery = await discoverReposWithStatus(force);
+    const repos = discovery.repos;
     const before = JSON.stringify(
       db.prepare("SELECT repo, kind, number, updated_at FROM items ORDER BY repo, kind, number").all(),
     );
@@ -709,6 +965,9 @@ export default async function plugin(bb: BbPluginApi) {
           `sync failed for ${repo}: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
+    }
+    if (discovery.projectDiscoveryComplete) {
+      dropUntrackedRepoRows(repos.map((entry) => entry.repo));
     }
     const after = JSON.stringify(
       db.prepare("SELECT repo, kind, number, updated_at FROM items ORDER BY repo, kind, number").all(),
@@ -762,7 +1021,7 @@ export default async function plugin(bb: BbPluginApi) {
   // kv: "link:<kind>:<repo>#<number>" → ThreadLink[]
   // ------------------------------------------------------------------
   function linkKey(kind: "issue" | "pr", repo: string, number: number): string {
-    return `link:${kind}:${repo}#${number}`;
+    return `link:${kind}:${repoKey(repo)}#${number}`;
   }
 
   async function addLink(link: ThreadLink): Promise<void> {
@@ -778,7 +1037,19 @@ export default async function plugin(bb: BbPluginApi) {
     for (const key of keys) {
       const links = await bb.storage.kv.get<ThreadLink[]>(key);
       if (links !== undefined && links.length > 0) {
-        result[key.slice("link:".length)] = links;
+        const unprefixed = key.slice("link:".length);
+        const parsed = /^(issue|pr):([\w.-]+\/[\w.-]+)#(\d+)$/.exec(unprefixed);
+        const normalizedKey =
+          parsed === null
+            ? unprefixed
+            : `${parsed[1]}:${repoKey(parsed[2])}#${parsed[3]}`;
+        const existing = result[normalizedKey] ?? [];
+        result[normalizedKey] = [
+          ...existing,
+          ...links.filter(
+            (link) => !existing.some((item) => item.threadId === link.threadId),
+          ),
+        ];
       }
     }
     return result;
@@ -789,7 +1060,7 @@ export default async function plugin(bb: BbPluginApi) {
   // ------------------------------------------------------------------
   async function resolveProjectId(repo: string): Promise<string> {
     const repos = await discoverRepos();
-    const info = repos.find((entry) => entry.repo === repo);
+    const info = repos.find((entry) => repoKey(entry.repo) === repoKey(repo));
     if (info?.projectId != null) return info.projectId;
     const { defaultProject } = await settings.get();
     if (defaultProject) return defaultProject;
@@ -872,7 +1143,8 @@ export default async function plugin(bb: BbPluginApi) {
   const labelsCache = new Map<string, { labels: string[]; fetchedAt: number }>();
 
   async function getAssignableUsers(repo: string): Promise<string[]> {
-    const cached = assignableCache.get(repo);
+    const key = repoKey(repo);
+    const cached = assignableCache.get(key);
     if (cached !== undefined && Date.now() - cached.fetchedAt < 10 * 60_000) {
       return cached.users;
     }
@@ -882,12 +1154,13 @@ export default async function plugin(bb: BbPluginApi) {
       .map((entry) => String(entry?.login ?? ""))
       .filter((login) => login.length > 0)
       .sort((a, b) => a.localeCompare(b));
-    assignableCache.set(repo, { users, fetchedAt: Date.now() });
+    assignableCache.set(key, { users, fetchedAt: Date.now() });
     return users;
   }
 
   async function getRepoLabels(repo: string): Promise<string[]> {
-    const cached = labelsCache.get(repo);
+    const key = repoKey(repo);
+    const cached = labelsCache.get(key);
     if (cached !== undefined && Date.now() - cached.fetchedAt < 10 * 60_000) {
       return cached.labels;
     }
@@ -897,7 +1170,7 @@ export default async function plugin(bb: BbPluginApi) {
       .map((entry) => String(entry?.name ?? "").trim())
       .filter((name) => name.length > 0)
       .sort((a, b) => a.localeCompare(b));
-    labelsCache.set(repo, { labels, fetchedAt: Date.now() });
+    labelsCache.set(key, { labels, fetchedAt: Date.now() });
     return labels;
   }
 
@@ -928,6 +1201,7 @@ export default async function plugin(bb: BbPluginApi) {
 
     /** { kind?, repo?, query?, state?, mine? } → cached items, newest first. */
     async listItems(input) {
+      const trackedRepos = (await discoverRepos()).map((entry) => entry.repo);
       return {
         items: listCachedItems({
           kind: input.kind,
@@ -935,6 +1209,7 @@ export default async function plugin(bb: BbPluginApi) {
           query: input.query,
           state: input.state,
           assignee: input.mine === true ? await getViewer() : undefined,
+          trackedRepos: input.repo === undefined ? trackedRepos : undefined,
         }),
       };
     },
@@ -1324,8 +1599,9 @@ export default async function plugin(bb: BbPluginApi) {
   // Search reads the cache (2s time box); resolve prefers a live gh view
   // and falls back to the cache so a network blip doesn't block the send.
   // ------------------------------------------------------------------
-  function mentionItems(kind: "issue" | "pr", query: string) {
-    return listCachedItems({ kind, query, state: "open" })
+  async function mentionItems(kind: "issue" | "pr", query: string) {
+    const trackedRepos = (await discoverRepos()).map((entry) => entry.repo);
+    return listCachedItems({ kind, query, state: "open", trackedRepos })
       .slice(0, 8)
       .map((item) => ({
         id: `${item.repo}#${item.number}`,
@@ -1441,7 +1717,7 @@ export default async function plugin(bb: BbPluginApi) {
         if (sub === "repos") {
           const repos = await discoverRepos(true);
           if (repos.length === 0) {
-            return { exitCode: 0, stdout: "No tracked repos. Attach a project with a GitHub remote or set extraRepos." };
+            return { exitCode: 0, stdout: "No tracked repos. Share owner/repo values via extraRepos, or enable Follow BB project remotes for origins you can write to." };
           }
           return {
             exitCode: 0,
@@ -1451,10 +1727,12 @@ export default async function plugin(bb: BbPluginApi) {
           };
         }
         if (sub === "issues" || sub === "prs") {
+          const trackedRepos = (await discoverRepos()).map((entry) => entry.repo);
           const items = listCachedItems({
             kind: sub === "prs" ? "pr" : "issue",
             repo: isRepoName(arg) ? arg : undefined,
             state: "open",
+            trackedRepos: isRepoName(arg) ? undefined : trackedRepos,
           });
           if (items.length === 0) {
             return { exitCode: 0, stdout: "Nothing cached. Run `bb github sync` first." };

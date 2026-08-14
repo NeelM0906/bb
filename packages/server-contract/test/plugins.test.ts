@@ -3,9 +3,25 @@ import {
   pluginCatalogInstallRequestSchema,
   pluginCatalogSearchResultSchema,
   pluginCatalogStatusSchema,
+  pluginInstallSourceRequestSchema,
 } from "../src/index.js";
 
 describe("plugin catalog contracts", () => {
+  it("keeps the managed-workspace override absent for older strict servers", () => {
+    expect(
+      pluginInstallSourceRequestSchema.parse({ source: "npm:@bb/notes@^1" }),
+    ).toEqual({ source: "npm:@bb/notes@^1" });
+    expect(
+      pluginInstallSourceRequestSchema.parse({
+        source: "path:/tmp/plugin",
+        allowManagedWorkspaceSource: true,
+      }),
+    ).toEqual({
+      source: "path:/tmp/plugin",
+      allowManagedWorkspaceSource: true,
+    });
+  });
+
   it("accepts catalog install coordinates without marketplace nesting", () => {
     expect(
       pluginCatalogInstallRequestSchema.parse({

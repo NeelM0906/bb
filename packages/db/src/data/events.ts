@@ -131,6 +131,17 @@ export interface InsertEventsResult {
   insertedInputIndexes: number[];
 }
 
+export interface CloneThreadEventsArgs {
+  sourceSeqEnd: number;
+  sourceThreadId: string;
+  targetThreadId: string;
+}
+
+export interface CloneThreadEventsResult {
+  clonedCount: number;
+  eventTypes: ThreadEventType[];
+}
+
 export interface AppendDaemonEventInput {
   data: string;
   environmentId: string | null;
@@ -326,6 +337,83 @@ export function insertEvents(
   };
 }
 
+/**
+ * Seed a newly created fork with the source's persisted history. Source
+ * sequences and timestamps remain stable so timeline bounds still identify the
+ * same branch point; event ids and the owning thread id are fork-local.
+ */
+export function cloneThreadEventsInTransaction(
+  db: DbTransaction,
+  args: CloneThreadEventsArgs,
+): CloneThreadEventsResult {
+  if (getHighWaterMarks(db, [args.targetThreadId])[args.targetThreadId]) {
+    throw new Error("Cannot clone history into a thread that already has events");
+  }
+
+  const sourceRows = db
+    .select()
+    .from(events)
+    .where(
+      and(
+        eq(events.threadId, args.sourceThreadId),
+        lte(events.sequence, args.sourceSeqEnd),
+      ),
+    )
+    .orderBy(events.sequence)
+    .all();
+  const eventTypes = new Set<ThreadEventType>();
+
+  for (const row of sourceRows) {
+    db.run(
+      sql`INSERT INTO events
+        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, data, created_at)
+        VALUES (
+          ${createEventId()},
+          ${args.targetThreadId},
+          ${row.environmentId},
+          ${row.scopeKind},
+          ${row.turnId},
+          ${row.providerThreadId},
+          ${row.sequence},
+          ${row.type},
+          ${row.itemId},
+          ${row.itemKind},
+          ${row.data},
+          ${row.createdAt}
+        )`,
+    );
+    eventTypes.add(row.type);
+
+    const event = parseDaemonThreadEvent({
+      data: row.data,
+      environmentId: row.environmentId,
+      itemId: row.itemId,
+      itemKind: row.itemKind,
+      providerThreadId: row.providerThreadId,
+      scope:
+        row.scopeKind === "turn" && row.turnId !== null
+          ? { kind: "turn", turnId: row.turnId }
+          : { kind: "thread" },
+      threadId: args.targetThreadId,
+      type: row.type,
+    });
+    if (event !== null) {
+      upsertThreadSearchSegments(db, {
+        updatedAt: row.createdAt,
+        segments: listThreadSearchSegmentsForThreadEvent({
+          event,
+          sequence: row.sequence,
+        }),
+      });
+    }
+  }
+
+  return {
+    clonedCount: sourceRows.length,
+    eventTypes: [...eventTypes],
+  };
+}
+
 function buildThreadTurnKey(args: ThreadTurnKey): string {
   return `${args.threadId}\0${args.turnId}`;
 }
@@ -354,9 +442,6 @@ function collectDaemonTurnStartLookupKeys(
   const keys: ThreadTurnKey[] = [];
 
   for (const input of eventInputs) {
-    if (input.type === "turn/started") {
-      continue;
-    }
     const turnId = getThreadEventScopeTurnId(input.scope);
     if (turnId === undefined) {
       continue;
@@ -399,14 +484,20 @@ const ORPHAN_DROPPABLE_TURN_EVENT_TYPES: ReadonlySet<ThreadEventType> = new Set(
   "provider/unhandled",
 ]);
 
-type DaemonTurnStartDisposition = "append" | "skip-orphan-snapshot";
+type DaemonTurnStartDisposition =
+  | "append"
+  | "skip-duplicate-turn-start"
+  | "skip-orphan-snapshot";
 
 function resolveDaemonTurnStartDisposition(
   input: AppendDaemonEventInput,
   startedTurnKeys: ReadonlySet<string>,
 ): DaemonTurnStartDisposition {
   if (input.type === "turn/started") {
-    return "append";
+    const turnId = getThreadEventScopeTurnId(input.scope);
+    if (turnId === undefined) return "append";
+    const key = buildThreadTurnKey({ threadId: input.threadId, turnId });
+    return startedTurnKeys.has(key) ? "skip-duplicate-turn-start" : "append";
   }
 
   const turnId = getThreadEventScopeTurnId(input.scope);
@@ -585,13 +676,15 @@ export function appendDaemonEventsInTransaction(
   );
   const now = Date.now();
   for (const [index, input] of eventInputs.entries()) {
-    if (
-      resolveDaemonTurnStartDisposition(input, startedTurnKeys) ===
-      "skip-orphan-snapshot"
-    ) {
+    const disposition = resolveDaemonTurnStartDisposition(
+      input,
+      startedTurnKeys,
+    );
+    if (disposition === "skip-orphan-snapshot") {
       skippedTurnUnstartedInputIndexes.push(index);
       continue;
     }
+    if (disposition === "skip-duplicate-turn-start") continue;
 
     const sequence = nextSequencesByThreadId.get(input.threadId);
     if (sequence === undefined) {

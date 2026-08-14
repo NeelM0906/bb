@@ -5680,6 +5680,35 @@ describe("codex provider adapter", () => {
     );
   });
 
+  it("preserves stream-disconnected classification when Codex reports the terminal retry as other", () => {
+    const adapter = createCodexProviderAdapter();
+    const events = adapter.translateEvent(
+      codexEvent("error", {
+        threadId: "t1",
+        turnId: "turn-1",
+        error: {
+          message:
+            "stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+          codexErrorInfo: "other",
+          additionalDetails: null,
+        },
+        willRetry: false,
+      }),
+    );
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "provider/error",
+        willRetry: false,
+        errorInfo: {
+          category: "stream-disconnected",
+          providerCode: "responseStreamDisconnected",
+          httpStatusCode: null,
+        },
+      }),
+    );
+  });
+
   // -- translateEvent: warnings --------------------------------------------
 
   it("translateEvent deprecationNotice maps to warning", () => {

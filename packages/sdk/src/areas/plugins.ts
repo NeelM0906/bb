@@ -42,6 +42,8 @@ export interface PluginIdArgs {
 
 /** Install directly from a path:, git:, npm:, or builtin: source spec. */
 export interface PluginInstallArgs {
+  /** Permit installing from a BB-managed workspace that may later be deleted. */
+  allowManagedWorkspaceSource?: boolean;
   source: string;
 }
 

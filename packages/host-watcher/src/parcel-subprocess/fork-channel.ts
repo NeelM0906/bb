@@ -1,4 +1,4 @@
-import { fork } from "node:child_process";
+import { type ChildProcess, fork } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,14 +29,34 @@ function resolveChildEntry(): string {
   );
 }
 
-export function createForkChannel(): ChildChannel {
-  const child = fork(resolveChildEntry(), [], {
-    stdio: ["ignore", "inherit", "inherit", "ipc"],
-  });
+export function createChildChannel(child: ChildProcess): ChildChannel {
+  const exitListeners = new Set<() => void>();
+  let gone = false;
+
+  function markGone(): void {
+    if (gone) return;
+    gone = true;
+    for (const listener of exitListeners) listener();
+  }
+
+  function abandon(): void {
+    if (gone) return;
+    child.kill("SIGKILL");
+    markGone();
+  }
+
+  child.on("error", markGone);
+  child.on("exit", markGone);
+
   return {
     send(message: ParentToChildMessage) {
-      if (child.connected) {
-        child.send(message);
+      if (gone || !child.connected) return;
+      try {
+        child.send(message, (error) => {
+          if (error) abandon();
+        });
+      } catch {
+        abandon();
       }
     },
     onMessage(listener) {
@@ -45,10 +65,18 @@ export function createForkChannel(): ChildChannel {
       });
     },
     onExit(listener) {
-      child.on("exit", () => listener());
+      exitListeners.add(listener);
     },
     kill() {
       child.kill("SIGKILL");
     },
   };
+}
+
+export function createForkChannel(): ChildChannel {
+  return createChildChannel(
+    fork(resolveChildEntry(), [], {
+      stdio: ["ignore", "inherit", "inherit", "ipc"],
+    }),
+  );
 }

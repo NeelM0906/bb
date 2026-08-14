@@ -245,6 +245,34 @@ describe("thread creation with startedOnBehalfOf (seed-without-run)", () => {
       expect(queuedStart.command.fork).toEqual({
         sourceProviderThreadId: "provider-earlier-source",
       });
+      const sourceEvents = listEvents(harness.db, {
+        threadId: sourceThread.id,
+      });
+      const forkEvents = listEvents(harness.db, { threadId: fork.id });
+      expect(
+        forkEvents.map(({ sequence, type, providerThreadId }) => ({
+          sequence,
+          type,
+          providerThreadId,
+        })),
+      ).toEqual([
+        {
+          sequence: 5,
+          type: "turn/started",
+          providerThreadId: "provider-earlier-source",
+        },
+        {
+          sequence: 6,
+          type: "client/turn/requested",
+          providerThreadId: null,
+        },
+        {
+          sequence: 7,
+          type: "client/thread/start",
+          providerThreadId: null,
+        },
+      ]);
+      expect(forkEvents[0]?.id).not.toBe(sourceEvents[0]?.id);
     });
   });
 

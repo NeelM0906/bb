@@ -1010,13 +1010,18 @@ describe("internal event and tool-call routes", () => {
         harness.db.select().from(threads).where(eq(threads.id, thread.id)).get()
           ?.status,
       ).toBe("idle");
-      expect(
-        harness.db
-          .select()
-          .from(events)
-          .where(eq(events.threadId, thread.id))
-          .all(),
-      ).toHaveLength(4);
+      const storedEventTypes = harness.db
+        .select({ type: events.type })
+        .from(events)
+        .where(eq(events.threadId, thread.id))
+        .orderBy(events.sequence)
+        .all()
+        .map((event) => event.type);
+      expect(storedEventTypes).toEqual([
+        "turn/started",
+        "turn/completed",
+        "turn/completed",
+      ]);
     });
   });
 

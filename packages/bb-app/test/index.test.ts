@@ -38,6 +38,7 @@ import {
   runBundledCliCommand,
   superviseFullStackProcesses,
   terminateManagedFullStackProcesses,
+  waitForHealth,
   waitForHostDaemonStatus,
   waitForProcessExit,
 } from "../src/launcher.js";
@@ -488,6 +489,36 @@ async function captureStdout(run: () => Promise<void>): Promise<string> {
 }
 
 describe("bb-app launcher", () => {
+  it("does not accept another server's successful health response", async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, launchNonce: "other-launch" }));
+    });
+    await new Promise<void>((resolvePromise, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolvePromise);
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Expected health test server to have a TCP address");
+    }
+
+    try {
+      await expect(
+        waitForHealth({
+          childProcess: null,
+          expectedLaunchNonce: "expected-launch",
+          timeoutMs: 25,
+          url: `http://127.0.0.1:${address.port}/health`,
+        }),
+      ).rejects.toThrow("Timed out waiting for health");
+    } finally {
+      await new Promise<void>((resolvePromise, reject) => {
+        server.close((error) => (error ? reject(error) : resolvePromise()));
+      });
+    }
+  });
+
   it("waits for the expected host daemon identity and connection", async () => {
     let statusRequests = 0;
     const server = createServer((request, response) => {

@@ -1,4 +1,6 @@
+import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
+import { isBbManagedWorkspacePath } from "../threads/worktree-paths.js";
 import {
   getInstalledPlugin,
   getInstalledPluginRegistration,
@@ -50,6 +52,27 @@ export interface PluginRegistrationContext {
   syncCliSkill: () => Promise<void>;
   notifyPluginsChanged: () => void;
   list: () => PluginListEntry[];
+}
+
+export interface PluginPathInstallOptions {
+  allowManagedWorkspaceSource?: boolean;
+}
+
+async function isManagedWorkspacePluginPath(args: {
+  dataDir: string;
+  rootDir: string;
+}): Promise<boolean> {
+  if (isBbManagedWorkspacePath({ dataDir: args.dataDir, path: args.rootDir })) {
+    return true;
+  }
+  const [canonicalDataDir, canonicalRootDir] = await Promise.all([
+    realpath(args.dataDir).catch(() => resolve(args.dataDir)),
+    realpath(args.rootDir).catch(() => args.rootDir),
+  ]);
+  return isBbManagedWorkspacePath({
+    dataDir: canonicalDataDir,
+    path: canonicalRootDir,
+  });
 }
 
 export function createPluginRegistration(context: PluginRegistrationContext) {
@@ -263,9 +286,27 @@ export function createPluginRegistration(context: PluginRegistrationContext) {
 
   async function installPathSource(
     path: string,
+    options: PluginPathInstallOptions = {},
     context: InstallContext = directInstallContext,
   ): Promise<PluginListEntry> {
     const rootDir = resolve(path);
+    if (
+      await isManagedWorkspacePluginPath({
+        dataDir: deps.dataDir,
+        rootDir,
+      })
+    ) {
+      const warning =
+        `plugin "${rootDir}" is installed from inside a bb-managed workspace; ` +
+        "its source will be deleted when that environment is destroyed (for example, when the owning thread is archived). " +
+        "Move it to a stable path outside the managed workspace.";
+      if (options.allowManagedWorkspaceSource !== true) {
+        throw new Error(
+          `${warning} Re-run with the explicit managed-workspace source override only if this data loss is intentional.`,
+        );
+      }
+      logger.warn(warning);
+    }
     return registerInstalled({
       rootDir,
       source: `path:${rootDir}`,

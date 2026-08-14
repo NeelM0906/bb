@@ -47,6 +47,9 @@ env:
 
 jobs:
   publish:
+    # Forks may validate a manual dry run, but must never publish the upstream
+    # npm package or execute the scheduled nightly release.
+    if: ${{ github.repository == 'get-bb/bb' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == true) }}
     name: Publish bb-app
     runs-on: ubuntu-latest
     timeout-minutes: 30

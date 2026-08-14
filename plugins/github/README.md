@@ -32,18 +32,30 @@ it reports needs-configuration. No tokens are stored by the plugin.
 
 ## Which repos are tracked
 
-- Every BB project source whose checkout has a GitHub `origin` remote
-  (repo → project mapping is also how spawn picks the project).
-- Plus the `extraRepos` setting: comma-separated `owner/repo` list.
-- `defaultProject` setting: where threads spawn for repos with no project.
+Tracking is opt-in. The plugin never follows an `upstream` remote.
+
+- **Shared repositories** (`extraRepos`): comma-separated `owner/repo` list
+  you explicitly grant. These are tracked even if you only have public-read
+  access.
+- **BB project remotes** (`trackProjectRemotes`, on by default): each
+  project's GitHub `origin` remote, and only when GitHub granted you more
+  than public-read access (`TRIAGE` / `WRITE` / `MAINTAIN` / `ADMIN`). A
+  public clone of someone else's repo — including an upstream you forked
+  from — is not auto-tracked.
+- **Ignored repositories** (`ignoredRepos`): never tracked, even if they
+  appear in extraRepos or as a project origin.
+- `defaultProject`: where threads spawn for repos with no project.
 
 ```
 bb plugin config github set extraRepos "owner/repo, owner/other"
+bb plugin config github set ignoredRepos "get-bb/bb"
+bb plugin config github set trackProjectRemotes false
 bb plugin reload github
 ```
 
 A background service refreshes the issue/PR cache every 5 minutes; the
-panel's Refresh button (or `bb github sync`) forces it.
+panel's Refresh button (or `bb github sync`) forces it. Untracked repos
+are dropped from the cache on each sync.
 
 ## Development
 

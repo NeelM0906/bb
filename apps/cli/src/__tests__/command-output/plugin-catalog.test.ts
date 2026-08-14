@@ -95,6 +95,26 @@ describe("bb plugin catalog", () => {
     expect(body.source).toMatch(/^path:.*\/linear$/);
   });
 
+  it("forwards the explicit managed-workspace source override", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      json({ ok: true, plugin: installedPlugin }),
+    );
+
+    await runCommand(
+      [
+        "plugin",
+        "install",
+        "./linear",
+        "--yes",
+        "--allow-managed-workspace-source",
+      ],
+      register,
+    );
+
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body));
+    expect(body).toMatchObject({ allowManagedWorkspaceSource: true });
+  });
+
   it("installs a pasted GitHub repository URL as a direct source", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       json({ ok: true, plugin: installedPlugin }),

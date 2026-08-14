@@ -432,8 +432,9 @@ export interface DelayMillisecondsArgs {
   ms: number;
 }
 
-interface WaitForHealthArgs {
+export interface WaitForHealthArgs {
   childProcess: ChildProcess | null;
+  expectedLaunchNonce: string;
   timeoutMs?: number;
   url: string;
 }
@@ -2165,7 +2166,7 @@ export async function maybeAddAutoJoinEnv(
   };
 }
 
-async function waitForHealth(args: WaitForHealthArgs): Promise<void> {
+export async function waitForHealth(args: WaitForHealthArgs): Promise<void> {
   const timeoutMs = args.timeoutMs ?? HEALTH_CHECK_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
@@ -2179,7 +2180,18 @@ async function waitForHealth(args: WaitForHealthArgs): Promise<void> {
     try {
       const response = await fetch(args.url);
       if (response.ok) {
-        return;
+        const health = z
+          .object({
+            ok: z.literal(true),
+            launchNonce: z.string(),
+          })
+          .safeParse(await response.json());
+        if (
+          health.success &&
+          health.data.launchNonce === args.expectedLaunchNonce
+        ) {
+          return;
+        }
       }
     } catch {}
     await new Promise<void>((resolvePromise) => {
@@ -2902,10 +2914,11 @@ function logManagedProcessStartupFailureContext(
 async function startFullStackServerProcess(
   args: StartFullStackServerProcessArgs,
 ): Promise<ManagedProcessRun> {
+  const launchNonce = randomUUID();
   const serverRun = spawnNamedManagedProcess({
     args: [args.context.serverEntry],
     command: process.execPath,
-    env: args.env,
+    env: { ...args.env, BB_SERVER_LAUNCH_NONCE: launchNonce },
     outputBuffer: args.outputBuffer,
     processName: "server",
   });
@@ -2914,6 +2927,7 @@ async function startFullStackServerProcess(
   try {
     await waitForHealth({
       childProcess: serverRun.childProcess,
+      expectedLaunchNonce: launchNonce,
       url: `${args.context.serverUrl}/health`,
     });
     return serverRun;

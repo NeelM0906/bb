@@ -1712,6 +1712,12 @@ function runTurn(session: AcpThreadSession, firstInput: PromptInput[]): void {
             message: error instanceof Error ? error.message : String(error),
           });
         }
+        if (!session.stopping) {
+          finishTurn(
+            session,
+            session.connection.exited ? "cancelled" : "refusal",
+          );
+        }
         return;
       }
       session.promptRequestPending = false;

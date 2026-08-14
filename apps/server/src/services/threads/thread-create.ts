@@ -1,7 +1,9 @@
 import {
+  cloneThreadEventsInTransaction,
   deleteThread,
   findProjectEnvironmentByHostPath,
   getEnvironment,
+  getLatestThreadSequence,
   getThread,
 } from "@bb/db";
 import type {
@@ -89,6 +91,10 @@ interface CreateProvisioningThreadArgs {
     typeof buildExecutionOptions
   >[2]["projectDefaults"];
   fork: ThreadForkDescriptor | null;
+  forkHistory?: {
+    sourceSeqEnd: number;
+    sourceThreadId: string;
+  };
   request: ThreadCreateServiceRequest;
   providerInput?: ThreadCreateServiceRequestInput["input"];
 }
@@ -511,6 +517,23 @@ async function createProvisioningThread(
   let execution: Awaited<ReturnType<typeof buildExecutionOptions>>;
   let context: ThreadProvisionContext;
   try {
+    const forkHistory = args.forkHistory;
+    if (forkHistory !== undefined) {
+      const cloned = deps.db.transaction(
+        (tx) =>
+          cloneThreadEventsInTransaction(tx, {
+            sourceSeqEnd: forkHistory.sourceSeqEnd,
+            sourceThreadId: forkHistory.sourceThreadId,
+            targetThreadId: thread.id,
+          }),
+        { behavior: "immediate" },
+      );
+      if (cloned.clonedCount > 0) {
+        deps.hub.notifyThread(thread.id, ["events-appended"], {
+          eventTypes: cloned.eventTypes,
+        });
+      }
+    }
     execution = await buildExecutionOptions(
       deps,
       args.request,
@@ -916,6 +939,18 @@ export async function createThreadFromRequest(
     environmentIntent,
     executionDefaults: resolvedExecutionDefaults,
     fork,
+    ...(request.originKind === "fork" && sourceThread !== null
+      ? {
+          forkHistory: {
+            sourceSeqEnd:
+              request.sourceSeqEnd ??
+              getLatestThreadSequence(deps.db, {
+                threadId: sourceThread.id,
+              }),
+            sourceThreadId: sourceThread.id,
+          },
+        }
+      : {}),
     ...(options.providerInput !== undefined
       ? { providerInput: options.providerInput }
       : {}),
