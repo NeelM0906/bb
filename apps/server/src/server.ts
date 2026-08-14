@@ -321,7 +321,12 @@ export function createApp(
     return compressResponse(context, next);
   });
   app.onError((error) => errorToResponse(error, deps.logger));
-  app.get("/health", (context) => context.json({ ok: true }));
+  app.get("/health", (context) =>
+    context.json({
+      ok: true,
+      launchNonce: process.env.BB_SERVER_LAUNCH_NONCE ?? null,
+    }),
+  );
   app.get("/install.sh", async (context) => {
     const script = await readFile(INSTALL_MACHINE_SCRIPT_PATH);
     return new Response(script, {
