@@ -166,6 +166,10 @@ added/updated/unchanged counts.
                                  Omitted npm specs, ranges, dist-tags, omitted
                                  Git refs, and Git branches track; exact npm
                                  versions, Git tags, and Git commits are pinned
+    --allow-managed-workspace-source
+                                 Permit a path inside a BB-managed workspace.
+                                 Its source is deleted with that environment;
+                                 use only when that data loss is intentional
   bb plugin outdated             Check installed plugins for compatible
                                  updates (table; --json for raw results).
                                  Columns: installed, latest compatible,
