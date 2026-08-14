@@ -315,7 +315,15 @@ function getProviderErrorCategory(
 function toProviderErrorInfo(
   error: CodexErrorPayload,
 ): ProviderErrorInfo | null {
-  const errorInfo = error.codexErrorInfo;
+  const errorInfo =
+    error.codexErrorInfo === "other" &&
+    /^stream disconnected before completion(?::|$)/iu.test(error.message)
+      ? {
+          responseStreamDisconnected: {
+            httpStatusCode: null,
+          },
+        }
+      : error.codexErrorInfo;
   if (!errorInfo) {
     return null;
   }

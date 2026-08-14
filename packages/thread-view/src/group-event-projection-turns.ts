@@ -250,9 +250,9 @@ export function groupEventProjectionTurns(
       });
       const existing = turnsById.get(turnId);
       if (existing) {
-        throw new Error(
-          `Timeline projection found duplicate turn/started for ${turnId}`,
-        );
+        // Legacy daemon retries can contain the same provider turn start more
+        // than once. Keep the first lifecycle marker as canonical.
+        continue;
       }
       turnsById.set(turnId, createProjectionTurn(event, meta));
       entryDrafts.push({

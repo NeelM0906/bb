@@ -1725,7 +1725,7 @@ describe("acp bridge", () => {
   });
 
   it("settles an ACP prompt failure exactly once", async () => {
-    const { providerThreadId } = await startThread({
+    const { bbThreadId, providerThreadId } = await startThread({
       envVars: { FAKE_ACP_PROMPT_ERROR: "1" },
     });
     const turnId = sendRequest("turn/start", {
@@ -1733,13 +1733,14 @@ describe("acp bridge", () => {
       input: [{ type: "text", text: "fail once", mentions: [] }],
     });
     await waitForResponse(turnId);
-    await waitFor(
-      () => (notifications("error").length === 1 ? true : undefined),
-      "prompt failure notification",
-    );
+    const completed = await waitForTurnCompleted();
 
     expect(notifications("error")).toHaveLength(1);
-    expect(notifications("acp/turn/completed")).toHaveLength(0);
+    expect(completed.params).toEqual({
+      threadId: bbThreadId,
+      stopReason: "refusal",
+    });
+    expect(notifications("acp/turn/completed")).toHaveLength(1);
   });
 
   it("cancels the active turn on thread/stop", async () => {

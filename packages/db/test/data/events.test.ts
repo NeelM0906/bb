@@ -371,6 +371,36 @@ describe("events", () => {
     ]);
   });
 
+  it("does not append turn/started again when a daemon retries an accepted batch", () => {
+    const { db, thread } = setup();
+    const turnStarted = {
+      threadId: thread.id,
+      type: "turn/started" as const,
+      ...createTurnEventFields({ turnId: "turn_retried" }),
+      environmentId: null,
+      providerThreadId: "provider_thr_retried",
+      data: JSON.stringify({
+        providerThreadId: "provider_thr_retried",
+        turnId: "turn_retried",
+      }),
+    };
+
+    const first = db.transaction(
+      (tx) => appendDaemonEventsInTransaction(tx, [turnStarted]),
+      { behavior: "immediate" },
+    );
+    const retry = db.transaction(
+      (tx) => appendDaemonEventsInTransaction(tx, [turnStarted]),
+      { behavior: "immediate" },
+    );
+
+    expect(first.insertedInputIndexes).toEqual([0]);
+    expect(retry.insertedInputIndexes).toEqual([]);
+    expect(
+      listEvents(db, { threadId: thread.id }).map((event) => event.type),
+    ).toEqual(["turn/started"]);
+  });
+
   it("rejects daemon turn-scoped events before turn/started is stored", () => {
     const { db, thread } = setup();
 
