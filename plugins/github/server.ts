@@ -327,6 +327,11 @@ function repoKey(repo: string): string {
   return repo.toLowerCase();
 }
 
+export function isAuthoritativeMissingOrigin(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not a git repository|no such remote ['"]?origin/i.test(message);
+}
+
 /** Comma- or whitespace-separated owner/repo tokens, first occurrence wins. */
 export function parseRepoList(raw: string): string[] {
   const repos: string[] = [];
@@ -664,6 +669,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   async function listProjectOriginRepos(): Promise<RepoDiscoveryResult> {
     const byRepo = new Map<string, RepoInfo>();
+    let projectDiscoveryComplete = true;
     try {
       const projects = (await bb.sdk.projects.list()) as unknown as BbProjectSummary[];
       for (const project of projects) {
@@ -679,12 +685,17 @@ export default async function plugin(bb: BbPluginApi) {
             if (repo !== null && !byRepo.has(repoKey(repo))) {
               byRepo.set(repoKey(repo), { repo, projectId: project.id });
             }
-          } catch {
-            // no remote / not a git checkout — skip this source
+          } catch (error) {
+            if (!isAuthoritativeMissingOrigin(error)) {
+              projectDiscoveryComplete = false;
+              bb.log.warn(
+                `origin discovery failed for ${source.path}: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
           }
         }
       }
-      return { repos: [...byRepo.values()], projectDiscoveryComplete: true };
+      return { repos: [...byRepo.values()], projectDiscoveryComplete };
     } catch (error) {
       bb.log.warn(
         `project discovery failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -1010,7 +1021,7 @@ export default async function plugin(bb: BbPluginApi) {
   // kv: "link:<kind>:<repo>#<number>" → ThreadLink[]
   // ------------------------------------------------------------------
   function linkKey(kind: "issue" | "pr", repo: string, number: number): string {
-    return `link:${kind}:${repo}#${number}`;
+    return `link:${kind}:${repoKey(repo)}#${number}`;
   }
 
   async function addLink(link: ThreadLink): Promise<void> {
@@ -1026,7 +1037,19 @@ export default async function plugin(bb: BbPluginApi) {
     for (const key of keys) {
       const links = await bb.storage.kv.get<ThreadLink[]>(key);
       if (links !== undefined && links.length > 0) {
-        result[key.slice("link:".length)] = links;
+        const unprefixed = key.slice("link:".length);
+        const parsed = /^(issue|pr):([\w.-]+\/[\w.-]+)#(\d+)$/.exec(unprefixed);
+        const normalizedKey =
+          parsed === null
+            ? unprefixed
+            : `${parsed[1]}:${repoKey(parsed[2])}#${parsed[3]}`;
+        const existing = result[normalizedKey] ?? [];
+        result[normalizedKey] = [
+          ...existing,
+          ...links.filter(
+            (link) => !existing.some((item) => item.threadId === link.threadId),
+          ),
+        ];
       }
     }
     return result;

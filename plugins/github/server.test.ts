@@ -6,6 +6,7 @@ import {
   canAutoTrackPermission,
   fetchRepoItems,
   githubRpcContract,
+  isAuthoritativeMissingOrigin,
   nextAutoTrackedRepos,
   parsePaginatedGhApi,
   parseRepoList,
@@ -184,6 +185,25 @@ describe("GitHub RPC contract", () => {
 });
 
 describe("GitHub repo tracking", () => {
+  it("treats only an absent repository or origin as authoritative discovery", () => {
+    expect(
+      isAuthoritativeMissingOrigin(
+        new Error("fatal: not a git repository (or any parent directory)"),
+      ),
+    ).toBe(true);
+    expect(
+      isAuthoritativeMissingOrigin(new Error("error: No such remote 'origin'")),
+    ).toBe(true);
+    expect(
+      isAuthoritativeMissingOrigin(
+        new Error("git remote get-url failed: operation timed out"),
+      ),
+    ).toBe(false);
+    expect(
+      isAuthoritativeMissingOrigin(new Error("spawn git EACCES")),
+    ).toBe(false);
+  });
+
   it("parses comma or whitespace separated owner/repo values", () => {
     expect(parseRepoList("get-bb/bb, acme/widgets\nowner/other")).toEqual([
       "get-bb/bb",

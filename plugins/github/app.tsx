@@ -161,6 +161,10 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function linkLookupKey(kind: "issue" | "pr", repo: string, number: number) {
+  return `${kind}:${repo.toLowerCase()}#${number}`;
+}
+
 function relativeTime(iso: string): string {
   const then = Date.parse(iso);
   if (Number.isNaN(then)) return "";
@@ -1066,7 +1070,7 @@ function ItemsTable({
           <ItemRow
             key={`${item.repo}#${item.number}`}
             item={item}
-            links={links[`${kind}:${item.repo}#${item.number}`]}
+            links={links[linkLookupKey(kind, item.repo, item.number)]}
             onOpen={() => onOpenItem(item.repo, item.number)}
           />
         ))}
@@ -1338,7 +1342,7 @@ function IssueDetailView({
     );
   }
 
-  const issueLinks = links[`issue:${repo}#${number}`];
+  const issueLinks = links[linkLookupKey("issue", repo, number)];
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -1938,7 +1942,7 @@ function PullDetailView({
     );
   }
 
-  const pullLinks = links[`pr:${repo}#${number}`];
+  const pullLinks = links[linkLookupKey("pr", repo, number)];
   const mainColumn = (
     <div className="flex min-w-0 flex-1 flex-col gap-4">
       <ChecksSection checks={pull.checks} />
