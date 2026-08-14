@@ -131,6 +131,17 @@ export interface InsertEventsResult {
   insertedInputIndexes: number[];
 }
 
+export interface CloneThreadEventsArgs {
+  sourceSeqEnd: number;
+  sourceThreadId: string;
+  targetThreadId: string;
+}
+
+export interface CloneThreadEventsResult {
+  clonedCount: number;
+  eventTypes: ThreadEventType[];
+}
+
 export interface AppendDaemonEventInput {
   data: string;
   environmentId: string | null;
@@ -323,6 +334,83 @@ export function insertEvents(
   return {
     insertedCount,
     insertedInputIndexes,
+  };
+}
+
+/**
+ * Seed a newly created fork with the source's persisted history. Source
+ * sequences and timestamps remain stable so timeline bounds still identify the
+ * same branch point; event ids and the owning thread id are fork-local.
+ */
+export function cloneThreadEventsInTransaction(
+  db: DbTransaction,
+  args: CloneThreadEventsArgs,
+): CloneThreadEventsResult {
+  if (getHighWaterMarks(db, [args.targetThreadId])[args.targetThreadId]) {
+    throw new Error("Cannot clone history into a thread that already has events");
+  }
+
+  const sourceRows = db
+    .select()
+    .from(events)
+    .where(
+      and(
+        eq(events.threadId, args.sourceThreadId),
+        lte(events.sequence, args.sourceSeqEnd),
+      ),
+    )
+    .orderBy(events.sequence)
+    .all();
+  const eventTypes = new Set<ThreadEventType>();
+
+  for (const row of sourceRows) {
+    db.run(
+      sql`INSERT INTO events
+        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, data, created_at)
+        VALUES (
+          ${createEventId()},
+          ${args.targetThreadId},
+          ${row.environmentId},
+          ${row.scopeKind},
+          ${row.turnId},
+          ${row.providerThreadId},
+          ${row.sequence},
+          ${row.type},
+          ${row.itemId},
+          ${row.itemKind},
+          ${row.data},
+          ${row.createdAt}
+        )`,
+    );
+    eventTypes.add(row.type);
+
+    const event = parseDaemonThreadEvent({
+      data: row.data,
+      environmentId: row.environmentId,
+      itemId: row.itemId,
+      itemKind: row.itemKind,
+      providerThreadId: row.providerThreadId,
+      scope:
+        row.scopeKind === "turn" && row.turnId !== null
+          ? { kind: "turn", turnId: row.turnId }
+          : { kind: "thread" },
+      threadId: args.targetThreadId,
+      type: row.type,
+    });
+    if (event !== null) {
+      upsertThreadSearchSegments(db, {
+        updatedAt: row.createdAt,
+        segments: listThreadSearchSegmentsForThreadEvent({
+          event,
+          sequence: row.sequence,
+        }),
+      });
+    }
+  }
+
+  return {
+    clonedCount: sourceRows.length,
+    eventTypes: [...eventTypes],
   };
 }
 

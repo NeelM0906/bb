@@ -17,6 +17,7 @@ import {
   appendStoredThreadEvent,
   appendStoredThreadEventInTransaction,
   appendStoredThreadEventsInTransaction,
+  cloneThreadEventsInTransaction,
   findStoredEventRow,
   findStoredTimelineWindowByteBudgetFloor,
   getActiveStoredTurnId,
@@ -312,6 +313,53 @@ describe("events", () => {
     expect(all).toHaveLength(2);
     // Original data preserved for sequence 1
     expect(JSON.parse(all[0]!.data)).toMatchObject({ message: "first" });
+  });
+
+  it("clones source events through a requested sequence with fork-local ids", () => {
+    const { db, project, thread: sourceThread } = setup();
+    const forkThread = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "codex",
+      sourceThreadId: sourceThread.id,
+      originKind: "fork",
+    });
+    insertEvents(db, noopNotifier, [1, 2, 3].map((sequence) => ({
+      threadId: sourceThread.id,
+      sequence,
+      type: "system/error" as const,
+      ...threadEventFields,
+      data: JSON.stringify({ message: `source-${sequence}` }),
+      createdAt: 1_000 + sequence,
+    })));
+
+    const result = db.transaction(
+      (tx) =>
+        cloneThreadEventsInTransaction(tx, {
+          sourceThreadId: sourceThread.id,
+          sourceSeqEnd: 2,
+          targetThreadId: forkThread.id,
+        }),
+      { behavior: "immediate" },
+    );
+
+    expect(result).toEqual({
+      clonedCount: 2,
+      eventTypes: ["system/error"],
+    });
+    const source = listEvents(db, { threadId: sourceThread.id });
+    const cloned = listEvents(db, { threadId: forkThread.id });
+    expect(cloned.map(({ sequence, data, createdAt }) => ({
+      sequence,
+      data,
+      createdAt,
+    }))).toEqual(source.slice(0, 2).map(({ sequence, data, createdAt }) => ({
+      sequence,
+      data,
+      createdAt,
+    })));
+    expect(cloned.map((event) => event.id)).not.toEqual(
+      source.slice(0, 2).map((event) => event.id),
+    );
   });
 
   it("appends daemon events with server-owned sequences", () => {

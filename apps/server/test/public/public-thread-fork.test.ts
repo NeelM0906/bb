@@ -1,6 +1,13 @@
 import { ensurePersonalProject, getThread, listEvents } from "@bb/db";
-import { PERSONAL_PROJECT_ID, turnRequestEventDataSchema } from "@bb/domain";
-import { threadResponseSchema } from "@bb/server-contract";
+import {
+  PERSONAL_PROJECT_ID,
+  turnRequestEventDataSchema,
+  turnScope,
+} from "@bb/domain";
+import {
+  threadResponseSchema,
+  threadTimelineResponseSchema,
+} from "@bb/server-contract";
 import { describe, expect, it } from "vitest";
 import {
   reportQueuedCommandSuccess,
@@ -9,6 +16,7 @@ import {
 import { readJson } from "../helpers/json.js";
 import {
   seedEnvironment,
+  seedEvent,
   seedHostSession,
   seedProjectWithSource,
   seedThread,
@@ -59,6 +67,30 @@ function seedForkSource(
     sequence: 3,
     threadId: sourceThread.id,
     turnId: "turn-fork-source",
+  });
+  seedEvent(harness.deps, {
+    environmentId: environment.id,
+    providerThreadId: "provider-fork-source",
+    sequence: 4,
+    threadId: sourceThread.id,
+    type: "item/completed",
+    scope: turnScope("turn-fork-source"),
+    data: {
+      item: {
+        type: "agentMessage",
+        id: "fork-source-answer",
+        text: "Inherited fork history",
+      },
+    },
+  });
+  seedEvent(harness.deps, {
+    environmentId: environment.id,
+    providerThreadId: "provider-fork-source",
+    sequence: 5,
+    threadId: sourceThread.id,
+    type: "turn/completed",
+    scope: turnScope("turn-fork-source"),
+    data: { status: "completed" },
   });
   return { environment, host, project, sourceThread };
 }
@@ -214,6 +246,14 @@ describe("public thread fork route", () => {
       expect(queued.command.fork).toEqual({
         sourceProviderThreadId: "provider-fork-source",
       });
+      const timelineResponse = await harness.app.request(
+        `/api/v1/threads/${fork.id}/timeline`,
+      );
+      expect(timelineResponse.status).toBe(200);
+      const timeline = threadTimelineResponseSchema.parse(
+        await readJson(timelineResponse),
+      );
+      expect(JSON.stringify(timeline.rows)).toContain("Inherited fork history");
     });
   });
 
@@ -273,9 +313,9 @@ describe("public thread fork route", () => {
 
       expect(response.status).toBe(201);
       const fork = threadResponseSchema.parse(await readJson(response));
-      const requested = listEvents(harness.db, { threadId: fork.id }).find(
-        (event) => event.type === "client/turn/requested",
-      );
+      const requested = listEvents(harness.db, { threadId: fork.id })
+        .filter((event) => event.type === "client/turn/requested")
+        .at(-1);
       expect(requested).toBeDefined();
       const requestData = turnRequestEventDataSchema.parse(
         JSON.parse(requested?.data ?? "null"),
