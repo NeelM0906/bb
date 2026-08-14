@@ -1416,10 +1416,7 @@ describe("@bb/sdk", () => {
         url: "http://bb.test/api/v1/plugins",
       },
       {
-        bodyText: JSON.stringify({
-          source: "npm:@bb/notes@^1",
-          allowManagedWorkspaceSource: false,
-        }),
+        bodyText: JSON.stringify({ source: "npm:@bb/notes@^1" }),
         method: "POST",
         url: "http://bb.test/api/v1/plugins/install",
       },

@@ -129,7 +129,7 @@ describe("bb plugin catalog", () => {
     );
     expect(
       JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body)),
-    ).toEqual({ source, allowManagedWorkspaceSource: false });
+    ).toEqual({ source });
   });
 
   it("keeps install --json free of human trust preamble output", async () => {

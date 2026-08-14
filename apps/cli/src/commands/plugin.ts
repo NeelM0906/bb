@@ -754,8 +754,9 @@ export function registerPluginCommands(
             intent.kind === "source"
               ? await createCliBbSdk(getUrl()).plugins.install({
                   source: intent.source,
-                  allowManagedWorkspaceSource:
-                    opts.allowManagedWorkspaceSource === true,
+                  ...(opts.allowManagedWorkspaceSource === true
+                    ? { allowManagedWorkspaceSource: true }
+                    : {}),
                 })
               : await createCliBbSdk(getUrl()).plugins.catalog.install({
                   entryId: intent.entry.entryId,

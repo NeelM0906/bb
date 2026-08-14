@@ -632,7 +632,13 @@ describe("plugin service", () => {
     await mkdir(dirname(managedRoot), { recursive: true });
     await rename(written, managedRoot);
 
+    const stableLookingLink = join(workDir, "stable-plugin-link");
+    await symlink(managedRoot, stableLookingLink, "dir");
+
     await expect(service.installPath(managedRoot)).rejects.toThrow(
+      "will be deleted when that environment is destroyed",
+    );
+    await expect(service.installPath(stableLookingLink)).rejects.toThrow(
       "will be deleted when that environment is destroyed",
     );
     await expect(
@@ -640,6 +646,40 @@ describe("plugin service", () => {
         allowManagedWorkspaceSource: true,
       }),
     ).resolves.toMatchObject({ id: "managed" });
+  });
+
+  it("refuses managed plugins when the configured data directory is a symlink", async () => {
+    await service.stop();
+    const realDataDir = join(workDir, "real-data");
+    const linkedDataDir = join(workDir, "linked-data");
+    await mkdir(realDataDir, { recursive: true });
+    await symlink(realDataDir, linkedDataDir, "dir");
+    service = createPluginService({
+      db,
+      hub: {
+        getDaemonSessionIdForHost: () => null,
+        notifyPluginSignal: () => 0,
+        notifySystem: () => {},
+      },
+      logger,
+      dataDir: linkedDataDir,
+      appVersion: "0.9.0",
+      loadTimeoutMs: 2000,
+    });
+    const managedRoot = join(
+      realDataDir,
+      "worktrees",
+      "env_linked_data",
+      "bb-plugin-linked-data",
+    );
+    await writePlugin(dirname(managedRoot), {
+      name: "bb-plugin-linked-data",
+      serverSource: `export default function plugin() {}`,
+    });
+
+    await expect(service.installPath(managedRoot)).rejects.toThrow(
+      "will be deleted when that environment is destroyed",
+    );
   });
 });
 

@@ -59,7 +59,7 @@ describe("server-to-browser timeline payload sizes", () => {
       };
     });
 
-    expect(measurements).toEqual([
+    const expected = [
       {
         rowCount: 1,
         full: { gzipBytes: 216, jsonBytes: 629 },
@@ -78,7 +78,40 @@ describe("server-to-browser timeline payload sizes", () => {
         legacyDelta: { gzipBytes: 471, jsonBytes: 2_662 },
         compactDelta: { gzipBytes: 230, jsonBytes: 649 },
       },
-    ]);
+    ];
+    expect(
+      measurements.map((measurement) => ({
+        rowCount: measurement.rowCount,
+        fullJsonBytes: measurement.full.jsonBytes,
+        legacyDeltaJsonBytes: measurement.legacyDelta.jsonBytes,
+        compactDeltaJsonBytes: measurement.compactDelta.jsonBytes,
+      })),
+    ).toEqual(
+      expected.map((measurement) => ({
+        rowCount: measurement.rowCount,
+        fullJsonBytes: measurement.full.jsonBytes,
+        legacyDeltaJsonBytes: measurement.legacyDelta.jsonBytes,
+        compactDeltaJsonBytes: measurement.compactDelta.jsonBytes,
+      })),
+    );
+
+    // zlib output varies slightly across Node/platform builds even when the
+    // source bytes are identical. Keep a tight regression window instead of a
+    // non-portable exact compressed-byte snapshot.
+    for (const [index, measurement] of measurements.entries()) {
+      const baseline = expected[index];
+      if (baseline === undefined) {
+        throw new Error(`Missing payload-size baseline at index ${index}`);
+      }
+      for (const key of ["full", "legacyDelta", "compactDelta"] as const) {
+        expect(measurement[key].gzipBytes).toBeGreaterThanOrEqual(
+          baseline[key].gzipBytes - 8,
+        );
+        expect(measurement[key].gzipBytes).toBeLessThanOrEqual(
+          baseline[key].gzipBytes + 8,
+        );
+      }
+    }
 
     for (const measurement of measurements) {
       expect(measurement.compactDelta.jsonBytes).toBeLessThanOrEqual(

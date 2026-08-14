@@ -9,6 +9,7 @@ import {
   nextAutoTrackedRepos,
   parsePaginatedGhApi,
   parseRepoList,
+  projectReposForTracking,
   repoAccessFromCheck,
   selectTrackedRepos,
   validateGithubCliArgs,
@@ -192,6 +193,7 @@ describe("GitHub repo tracking", () => {
     expect(parseRepoList("not-a-repo, acme/widgets, acme/widgets")).toEqual([
       "acme/widgets",
     ]);
+    expect(parseRepoList("Get-BB/BB get-bb/bb")).toEqual(["Get-BB/BB"]);
   });
 
   it("auto-tracks only permissions the viewer was granted", () => {
@@ -246,6 +248,40 @@ describe("GitHub repo tracking", () => {
         previouslyAutoTracked: ["acme/widgets"],
       }),
     ).toEqual([]);
+  });
+
+  it("compares repository identity case-insensitively", () => {
+    expect(
+      selectTrackedRepos({
+        projectRepos: [{ repo: "Get-BB/BB", projectId: "proj_bb" }],
+        extraRepos: ["get-bb/bb"],
+        ignoredRepos: ["GET-BB/bb"],
+        trackProjectRemotes: true,
+        accessByRepo: new Map([["get-bb/BB", "granted"]]),
+        previouslyAutoTracked: ["GET-bb/bb"],
+      }),
+    ).toEqual([]);
+    expect(
+      nextAutoTrackedRepos({
+        projectRepos: ["Get-BB/BB"],
+        ignoredRepos: [],
+        accessByRepo: new Map([["get-bb/bb", "granted"]]),
+        previouslyAutoTracked: [],
+      }),
+    ).toEqual(["Get-BB/BB"]);
+  });
+
+  it("preserves prior auto-tracked repos when project discovery is incomplete", () => {
+    expect(
+      projectReposForTracking({
+        discoveredRepos: [{ repo: "Acme/Widgets", projectId: "proj_widgets" }],
+        discoveryComplete: false,
+        previouslyAutoTracked: ["acme/widgets", "get-bb/fork"],
+      }),
+    ).toEqual([
+      { repo: "Acme/Widgets", projectId: "proj_widgets" },
+      { repo: "get-bb/fork", projectId: null },
+    ]);
   });
 
   it("does not drop a previously tracked writable origin when the permission check fails", () => {
