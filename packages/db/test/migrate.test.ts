@@ -4604,11 +4604,26 @@ describe("migrate", () => {
     }
   });
 
-  it("does not record a successful ledger row when canonical tail DDL fails", () => {
+  it("reapplies 0110 when protect_unmanaged_workspace already exists", () => {
     const db = createConnection(":memory:");
 
     try {
       migrate(db);
+      const host = upsertHost(db, noopNotifier, {
+        name: "workspace-safety-upgrade-host",
+        type: "persistent",
+      });
+      const { project } = createProject(db, noopNotifier, {
+        name: "workspace-safety-upgrade-project",
+        source: {
+          type: "local_path",
+          hostId: host.id,
+          path: "/tmp/workspace-safety-upgrade",
+        },
+      });
+      db.$client
+        .prepare("UPDATE projects SET protect_unmanaged_workspace = 1 WHERE id = ?")
+        .run(project.id);
       db.$client
         .prepare<DeleteMigrationParameters>(
           "DELETE FROM __drizzle_migrations WHERE created_at = ?",
@@ -4620,12 +4635,17 @@ describe("migrate", () => {
         )
         .run("future-branch-migration", farFutureBranchMigrationWhen);
 
-      expect(() => migrate(db)).toThrow(
-        /duplicate column name: protect_unmanaged_workspace/,
-      );
-      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
+      expect(() => migrate(db)).not.toThrow();
+      expect(readAppliedMigrationCreatedAts(db)).toContain(
         workspaceSafetyMigrationWhen,
       );
+      expect(
+        db.$client
+          .prepare<[string], { value: number }>(
+            "SELECT protect_unmanaged_workspace AS value FROM projects WHERE id = ?",
+          )
+          .get(project.id)?.value,
+      ).toBe(1);
     } finally {
       closeConnection(db);
     }

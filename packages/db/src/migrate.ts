@@ -1325,6 +1325,8 @@ function repairBranchLocalQueuedGroupingBeforeInitialThreadSections(
 }
 
 const STAGED_CONNECT_MACHINE_ID_COLUMN = "_bb_connect_machine_id_pending";
+const STAGED_PROTECT_UNMANAGED_WORKSPACE_COLUMN =
+  "_bb_protect_unmanaged_workspace_pending";
 
 function stageExistingConnectMachineIdColumn(
   db: DbConnection,
@@ -1350,6 +1352,50 @@ function stageExistingConnectMachineIdColumn(
     `ALTER TABLE hosts RENAME COLUMN connect_machine_id TO ${STAGED_CONNECT_MACHINE_ID_COLUMN}`,
   );
   return true;
+}
+
+function stageExistingProtectUnmanagedWorkspaceColumn(
+  db: DbConnection,
+  migrationsFolder: string,
+): boolean {
+  if (
+    !tableExists(db, "__drizzle_migrations") ||
+    !tableExists(db, "projects") ||
+    !columnExists(db, "projects", "protect_unmanaged_workspace")
+  ) {
+    return false;
+  }
+
+  const migration = requireExpectedAppliedMigration(
+    readExpectedAppliedMigrations(migrationsFolder),
+    "0110_unknown_phantom_reporter",
+  );
+  if (readAppliedMigrationCreatedAts(db).has(migration.createdAt)) {
+    return false;
+  }
+
+  db.$client.exec(
+    `ALTER TABLE projects RENAME COLUMN protect_unmanaged_workspace TO ${STAGED_PROTECT_UNMANAGED_WORKSPACE_COLUMN}`,
+  );
+  return true;
+}
+
+function restoreStagedProtectUnmanagedWorkspaceColumn(db: DbConnection): void {
+  if (
+    !columnExists(db, "projects", STAGED_PROTECT_UNMANAGED_WORKSPACE_COLUMN)
+  ) {
+    return;
+  }
+  if (!columnExists(db, "projects", "protect_unmanaged_workspace")) {
+    db.$client.exec(
+      `ALTER TABLE projects RENAME COLUMN ${STAGED_PROTECT_UNMANAGED_WORKSPACE_COLUMN} TO protect_unmanaged_workspace`,
+    );
+    return;
+  }
+  db.$client.exec(
+    `UPDATE projects SET protect_unmanaged_workspace = ${STAGED_PROTECT_UNMANAGED_WORKSPACE_COLUMN};
+     ALTER TABLE projects DROP COLUMN ${STAGED_PROTECT_UNMANAGED_WORKSPACE_COLUMN};`,
+  );
 }
 
 function restoreStagedConnectMachineIdColumn(db: DbConnection): void {
@@ -1578,6 +1624,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
   const sqlite = db.$client;
 
   sqlite.pragma("foreign_keys = OFF");
+  let stagedProtectUnmanagedWorkspace = false;
   try {
     assertNoDuplicatePendingInteractionProviderRequests(db);
     if (options.deferDestructiveLegacyCleanup === true) {
@@ -1597,6 +1644,8 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
       db,
       migrationsFolder,
     );
+    stagedProtectUnmanagedWorkspace =
+      stageExistingProtectUnmanagedWorkspaceColumn(db, migrationsFolder);
     try {
       drizzleMigrate(db, { migrationsFolder });
     } finally {
@@ -1610,6 +1659,9 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
       migrationsFolder,
     );
   } finally {
+    if (stagedProtectUnmanagedWorkspace) {
+      restoreStagedProtectUnmanagedWorkspaceColumn(db);
+    }
     sqlite.pragma("foreign_keys = ON");
   }
 
