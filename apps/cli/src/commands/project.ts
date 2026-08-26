@@ -6,7 +6,6 @@ import type {
   ProjectResponse,
   UpdateProjectSourceRequest,
 } from "@bb/server-contract";
-import mimeTypes from "mime-types";
 import { action } from "../action.js";
 import { createCliBbSdk } from "../client.js";
 import { resolveLocalHostId } from "../daemon.js";
@@ -225,11 +224,11 @@ function printProjectSource(source: ProjectSource): void {
   console.log(`${source.id}  ${source.type}  ${source.path}${defaultMarker}`);
 }
 
-function attachmentMimeType(
+async function attachmentMimeType(
   clientPath: string,
   filename: string,
   explicitMimeType: string | undefined,
-): string {
+): Promise<string> {
   if (explicitMimeType !== undefined) {
     const normalized = explicitMimeType.trim();
     if (normalized.length === 0) {
@@ -237,6 +236,9 @@ function attachmentMimeType(
     }
     return normalized;
   }
+  // Only attachment upload needs the mime-db table; loading it here keeps it
+  // out of every other `bb project` invocation.
+  const { default: mimeTypes } = await import("mime-types");
   const inferred = mimeTypes.lookup(filename) || mimeTypes.lookup(clientPath);
   return typeof inferred === "string" ? inferred : "application/octet-stream";
 }
@@ -281,7 +283,7 @@ export function registerProjectCommands(
           ).projects.attachments.upload({
             clientFile: bytes,
             filename,
-            mimeType: attachmentMimeType(
+            mimeType: await attachmentMimeType(
               opts.clientFile,
               filename,
               opts.mimeType,

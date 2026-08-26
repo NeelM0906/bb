@@ -14,7 +14,13 @@ import {
   type HostDaemonInteractiveRequestResponse,
 } from "@bb/host-daemon-contract";
 import type { HostWatcher } from "@bb/host-watcher";
+import { createDeferredPromise } from "@bb/test-helpers";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  DISPATCH_TEST_BRIDGE_LAUNCH,
+  DISPATCH_TEST_ARTIFACT_BYTES,
+  dispatchTestRuntimeBridgeLaunch,
+} from "../test/command/dispatch-helpers.js";
 import {
   createHostDaemonApp,
   startIdleProviderSessionReaper,
@@ -59,12 +65,6 @@ interface HostDaemonAppFixture {
   runtimeOptions: RuntimeOptionsRef;
 }
 
-interface Deferred<T> {
-  promise: Promise<T>;
-  reject(error: Error): void;
-  resolve(value: T): void;
-}
-
 type StartIdleProviderSessionReaperArgsForTest = Parameters<
   typeof startIdleProviderSessionReaper
 >[0];
@@ -78,23 +78,6 @@ function createLogger() {
     warn: vi.fn(),
     error: vi.fn(),
   } satisfies HostDaemonLogger;
-}
-
-function createDeferred<T>(): Deferred<T> {
-  let resolveFn: ((value: T) => void) | null = null;
-  let rejectFn: ((error: Error) => void) | null = null;
-  const promise = new Promise<T>((resolve, reject) => {
-    resolveFn = resolve;
-    rejectFn = reject;
-  });
-  if (!resolveFn || !rejectFn) {
-    throw new Error("Failed to create deferred promise");
-  }
-  return {
-    promise,
-    reject: rejectFn,
-    resolve: resolveFn,
-  };
 }
 
 async function makeTempDir(prefix: string): Promise<string> {
@@ -191,6 +174,14 @@ function createFetchRecorder(
       });
     }
 
+    if (/^\/internal\/plugins\/[^/]+\/host\/[a-f0-9]{64}$/u.test(url.pathname)) {
+      // The bridge artifact every bridge launch in these tests names.
+      return new Response(new Uint8Array(DISPATCH_TEST_ARTIFACT_BYTES), {
+        status: 200,
+        headers: { "content-length": String(DISPATCH_TEST_ARTIFACT_BYTES.byteLength) },
+      });
+    }
+
     return new Response(`Unhandled test request: ${url.pathname}`, {
       status: 500,
     });
@@ -268,6 +259,18 @@ function createFakeRuntime(): AgentRuntime {
         selectedOnlyModels: [],
       };
     },
+    async providerHealth() {
+      return { supported: false as const };
+    },
+    async providerUsage() {
+      return { supported: false as const };
+    },
+    async providerInstallationStatus() {
+      throw new Error("Unexpected provider installation status call");
+    },
+    async providerInstallationRun() {
+      throw new Error("Unexpected provider installation run call");
+    },
     listRunningProviders() {
       return [];
     },
@@ -343,9 +346,9 @@ function createToolCallRequest(): ToolCallRequest {
 }
 
 async function settleReaperPromiseChain(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 8; index += 1) {
+    await Promise.resolve();
+  }
 }
 
 afterEach(async () => {
@@ -509,6 +512,7 @@ describe("createHostDaemonApp", () => {
         command: {
           type: "provider.list_models",
           providerId: "cursor",
+          bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         },
       });
 
@@ -531,7 +535,13 @@ describe("createHostDaemonApp", () => {
           },
         }),
       );
-      expect(listModels).toHaveBeenCalledWith({ providerId: "cursor" });
+      expect(listModels).toHaveBeenCalledWith({
+        providerId: "cursor",
+        bridgeLaunch: {
+          // Resolved against this test's own daemon data dir.
+          ...dispatchTestRuntimeBridgeLaunch(dataDir),
+        },
+      });
 
       await expect(
         app.router.handleOnlineRpcRequest({
@@ -540,6 +550,7 @@ describe("createHostDaemonApp", () => {
           command: {
             type: "provider.list_models",
             providerId: "cursor",
+            bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           },
         }),
       ).resolves.toMatchObject({
@@ -608,6 +619,7 @@ describe("createHostDaemonApp", () => {
           command: {
             type: "provider.list_models",
             providerId: "codex",
+            bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           },
         }),
       ).resolves.toMatchObject({
@@ -630,7 +642,7 @@ describe("createHostDaemonApp", () => {
   it("runs the idle provider session reaper on a non-overlapping interval", async () => {
     const logger = createLogger();
     const firstReap =
-      createDeferred<RuntimeManagerReapIdleProviderSessionsResult>();
+      createDeferredPromise<RuntimeManagerReapIdleProviderSessionsResult>();
     const failure = new Error("reaper failed");
     const queuedReaps: Array<
       () => Promise<RuntimeManagerReapIdleProviderSessionsResult>
@@ -679,6 +691,7 @@ describe("createHostDaemonApp", () => {
     const reaper = startIdleProviderSessionReaper({
       logger,
       nowMs: () => nowMs,
+      resolveProviderSessionReapingEnabled: async () => true,
       runtimeManager: {
         reapIdleProviderSessions,
       },
@@ -689,10 +702,12 @@ describe("createHostDaemonApp", () => {
     expect(timer.unref).toHaveBeenCalledTimes(1);
 
     triggerTick();
+    await settleReaperPromiseChain();
     expect(reapIdleProviderSessions).toHaveBeenCalledTimes(1);
     expect(reapIdleProviderSessions).toHaveBeenNthCalledWith(1, {
       idleForMs: 1_800_000,
       nowMs: 1_000,
+      providerSessionReapingEnabled: true,
     });
 
     nowMs = 2_000;
@@ -732,6 +747,7 @@ describe("createHostDaemonApp", () => {
     expect(reapIdleProviderSessions).toHaveBeenNthCalledWith(2, {
       idleForMs: 1_800_000,
       nowMs: 2_000,
+      providerSessionReapingEnabled: true,
     });
     expect(logger.warn).toHaveBeenCalledWith(
       {
@@ -835,6 +851,7 @@ describe("createHostDaemonApp", () => {
         .filter((request) => request.pathname === "/internal/session/open")
         .map((request) => JSON.parse(request.body ?? "{}"));
       expect(openSessionBody[0]).toMatchObject({
+        localApiPort: null,
         loadedEnvironments: [{ environmentId: "env-app-retired" }],
       });
     } finally {

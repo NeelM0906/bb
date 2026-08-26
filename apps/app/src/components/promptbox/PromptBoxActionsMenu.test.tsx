@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ComposerView } from "@bb/plugin-sdk";
+import type { ComposerView } from "@get-bb/plugin-sdk";
 import {
   cleanup,
   fireEvent,
@@ -16,7 +16,7 @@ import {
   type PluginComposerHost,
 } from "@/components/plugin/plugin-composer-host";
 import type { PluginComposerPlusMenuContribution } from "@/components/plugin/PluginComposerActions";
-import { emptyPromptDraftState } from "@/lib/prompt-draft";
+import { emptyPromptDraftState } from "@bb/client-core";
 import {
   resetPluginLogoStoreForTest,
   setPluginLogoUrls,
@@ -116,14 +116,15 @@ describe("PromptBoxActionsMenu", () => {
     const setDraft = vi.fn();
     const host: PluginComposerHost = {
       scope: view.scope,
-      draft,
       textEffectKey: "plus-menu-update-test",
       getCurrent: () => draft,
+      subscribeDraft: () => () => {},
       setDraft,
       focus: () => document.getElementById("composer-focus-target")?.focus(),
     };
     const pluginItems: readonly PluginComposerPlusMenuContribution[] = [
       {
+        key: "update-plugin/1/tools/update",
         pluginId: "update-plugin",
         customizationId: "tools",
         generation: 1,
@@ -176,14 +177,15 @@ describe("PromptBoxActionsMenu", () => {
     const draft = emptyPromptDraftState();
     const host: PluginComposerHost = {
       scope: view.scope,
-      draft,
       textEffectKey: "plus-menu-test",
       getCurrent: () => draft,
+      subscribeDraft: () => () => {},
       setDraft: vi.fn(),
       focus: vi.fn(),
     };
     const pluginItems: readonly PluginComposerPlusMenuContribution[] = [
       {
+        key: "alpha/1/tools/improve",
         pluginId: "alpha",
         customizationId: "tools",
         generation: 1,
@@ -197,6 +199,7 @@ describe("PromptBoxActionsMenu", () => {
         },
       },
       {
+        key: "zeta/1/tools/rewrite",
         pluginId: "zeta",
         customizationId: "tools",
         generation: 1,
@@ -218,6 +221,7 @@ describe("PromptBoxActionsMenu", () => {
             compactIconUrl: null,
             logoUrl: null,
             logoDarkUrl: null,
+            icons: new Map(),
           },
         ],
         [
@@ -228,6 +232,7 @@ describe("PromptBoxActionsMenu", () => {
             compactIconUrl: null,
             logoUrl: null,
             logoDarkUrl: null,
+            icons: new Map(),
           },
         ],
       ]),

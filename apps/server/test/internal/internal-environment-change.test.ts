@@ -93,6 +93,9 @@ describe("internal environment change websocket hints", () => {
         .get();
       expect(updatedSession?.status).toBe("active");
       expect(updatedSession?.leaseExpiresAt).toBeGreaterThan(Date.now());
+      expect(socket.send).toHaveBeenCalledWith(
+        JSON.stringify({ type: "heartbeat-ack" }),
+      );
       expect(socket.close).not.toHaveBeenCalled();
     });
   });

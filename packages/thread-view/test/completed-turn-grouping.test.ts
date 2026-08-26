@@ -4,6 +4,7 @@ import { groupCompletedTurnMessages } from "../src/completed-turn-grouping.js";
 import type { CompletedTurnMessageGroups } from "../src/completed-turn-grouping.js";
 import type {
   EventProjectionAssistantTextMessage,
+  EventProjectionCommandMessage,
   EventProjectionMessage,
   EventProjectionOperationMessage,
   EventProjectionTurnRequest,
@@ -35,6 +36,23 @@ function assistantMessage(
     ...messageBase(args),
     kind: "assistant-text",
     text: args.id,
+    status: "completed",
+  };
+}
+
+function commandMessage(args: MessageBaseArgs): EventProjectionCommandMessage {
+  return {
+    ...messageBase(args),
+    kind: "command",
+    callId: args.id,
+    command: "pnpm test",
+    cwd: "/repo",
+    parsedIntents: [],
+    source: null,
+    output: "",
+    exitCode: 0,
+    completedAt: args.seq,
+    approvalStatus: null,
     status: "completed",
   };
 }
@@ -173,6 +191,82 @@ describe("groupCompletedTurnMessages", () => {
     expect(summarySourceMessageIds(groups)).toEqual([]);
   });
 
+  it("uses one summary group when no messages are ungroupable", () => {
+    const messages = [
+      commandMessage({ id: "command-1", seq: 1 }),
+      commandMessage({ id: "command-2", seq: 2 }),
+    ];
+    const groups = groupCompletedTurnMessages(
+      completedTurn(messages, undefined),
+    );
+
+    expect(groups.summaryItems).toMatchObject([
+      {
+        kind: "summary",
+        startedAt: 1,
+        completedAt: 2,
+        segmentIndex: null,
+        summaryCount: 2,
+      },
+    ]);
+    expect(summarySourceMessageIds(groups)).toEqual([
+      ["command-1", "command-2"],
+    ]);
+  });
+
+  it("keeps an assistant response visible when more assistant text follows it directly", () => {
+    const answer = assistantMessage({ id: "answer", seq: 1 });
+    const hookReply = assistantMessage({ id: "hook-reply", seq: 2 });
+    const groups = groupCompletedTurnMessages(
+      completedTurn([answer, hookReply], hookReply),
+    );
+
+    expect(groups.summaryItems).toEqual([
+      { kind: "ungrouped-message", message: answer },
+    ]);
+    expect(groups.terminalMessages).toEqual([hookReply]);
+  });
+
+  it("keeps narration that precedes work visible and keeps the response that precedes the terminal text", () => {
+    const narration = assistantMessage({ id: "narration", seq: 1 });
+    const command = commandMessage({ id: "command", seq: 2 });
+    const answer = assistantMessage({ id: "answer", seq: 3 });
+    const hookReply = assistantMessage({ id: "hook-reply", seq: 4 });
+    const groups = groupCompletedTurnMessages(
+      completedTurn([narration, command, answer, hookReply], hookReply),
+    );
+
+    expect(groups.summaryItems).toMatchObject([
+      { kind: "ungrouped-message", message: { id: "narration" } },
+      {
+        kind: "summary",
+        sourceMessages: [{ id: "command" }],
+      },
+      { kind: "ungrouped-message", message: { id: "answer" } },
+    ]);
+    expect(groups.terminalMessages).toEqual([hookReply]);
+  });
+
+  it("keeps every response in a run of adjacent assistant texts", () => {
+    const first = assistantMessage({ id: "first", seq: 1 });
+    const second = assistantMessage({ id: "second", seq: 2 });
+    const command = commandMessage({ id: "command", seq: 3 });
+    const terminal = assistantMessage({ id: "terminal", seq: 4 });
+    const groups = groupCompletedTurnMessages(
+      completedTurn([first, second, command, terminal], terminal),
+    );
+
+    expect(groups.summaryItems).toMatchObject([
+      { kind: "ungrouped-message", message: { id: "first" } },
+      { kind: "ungrouped-message", message: { id: "second" } },
+      {
+        kind: "summary",
+        sourceMessages: [{ id: "command" }],
+      },
+    ]);
+    expect(groups.terminalMessages).toEqual([terminal]);
+  });
+
   it("preserves the last assistant message before an ungroupable user message", () => {
     const assistantBefore = assistantMessage({
       id: "assistant-before",
@@ -266,16 +360,19 @@ describe("groupCompletedTurnMessages", () => {
   });
 
   it("slices terminal and trailing messages out of the summary groups", () => {
-    const before = assistantMessage({ id: "before", seq: 1 });
+    const before = commandMessage({ id: "before", seq: 1 });
     const terminal = assistantMessage({ id: "terminal", seq: 2 });
     const trailing = assistantMessage({ id: "trailing", seq: 3 });
     const groups = groupCompletedTurnMessages(
       completedTurn([before, terminal, trailing], terminal),
     );
 
-    expect(summarySourceMessageIds(groups)).toEqual([]);
-    expect(groups.summaryItems).toEqual([
-      { kind: "ungrouped-message", message: before },
+    expect(summarySourceMessageIds(groups)).toEqual([["before"]]);
+    expect(groups.summaryItems).toMatchObject([
+      {
+        kind: "summary",
+        sourceMessages: [{ id: "before" }],
+      },
     ]);
     expect(groups.terminalMessages.map((message) => message.id)).toEqual([
       "terminal",

@@ -4,15 +4,19 @@ import { providerInfoSchema } from "../src/provider-types.js";
 describe("provider info schema", () => {
   const baseProviderInfo = {
     id: "codex",
+    pluginId: "provider-codex",
     displayName: "Codex",
     logoUrl: null,
+    maintenance: { health: true, usage: true, installation: false },
     capabilities: {
-      supportsArchive: true,
-      supportsRename: true,
+      supportsThreadArchive: true,
+      supportsThreadRename: true,
       supportsServiceTier: true,
-      supportsUserQuestion: false,
+      supportsNativeUserQuestion: false,
       supportsFork: true,
-      supportedPermissionModes: ["accept-edits", "auto", "full"],
+      supportsSessionRewind: true,
+      modelCatalogScope: "workspace",
+      permissionModes: ["accept-edits", "auto", "full"],
     },
     available: true,
   };

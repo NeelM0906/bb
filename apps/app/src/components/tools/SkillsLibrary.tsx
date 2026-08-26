@@ -21,9 +21,11 @@ import { getToolsOwnedCollectionRoutePath } from "@/components/tools/tools-navig
 import {
   SkillDetailDialogView,
   SkillsOverview,
+  type ProviderRoster,
 } from "@/components/tools/SkillsCollection";
+import { useSystemProviders } from "@/hooks/queries/system-queries";
 import { isSkillEditable } from "@/components/tools/skill-taxonomy";
-import { CREATE_SKILL_PROMPT } from "@/lib/create-resource-prompts";
+import { CREATE_SKILL_PROMPT } from "@bb/client-core";
 import {
   buildRegistrySkillReferencePrompt,
   fetchRegistrySkillDetail,
@@ -54,6 +56,19 @@ import { CreateWithTemplatesButton } from "@/components/create-via-prompt-exampl
 import { useLocalOpenTargets } from "@/hooks/useLocalOpenTargets";
 
 const EMPTY_SKILLS: readonly SkillSummary[] = [];
+
+/**
+ * Skill rows carry only a provider id, and provider ids are open-ended (every
+ * custom ACP agent is one), so the server roster is what turns them into names
+ * a user can tell apart.
+ */
+function useProviderRoster(): ProviderRoster {
+  const providers = useSystemProviders().data;
+  return useMemo(
+    () => new Map((providers ?? []).map((provider) => [provider.id, provider])),
+    [providers],
+  );
+}
 const REGISTRY_LIST_STALE_TIME_MS = 30 * 60_000;
 
 /**
@@ -72,6 +87,7 @@ function SkillDetailPage({
   onClose: () => void;
   onEdit: (skill: SkillSummary) => void;
 }) {
+  const providerRoster = useProviderRoster();
   const [selectedPath, setSelectedPath] = useState("SKILL.md");
   useEffect(() => {
     setSelectedPath("SKILL.md");
@@ -92,6 +108,7 @@ function SkillDetailPage({
   return (
     <SkillDetailDialogView
       skill={skill}
+      providerRoster={providerRoster}
       files={filesQuery.data?.files ?? ["SKILL.md"]}
       selectedPath={selectedPath}
       onSelectPath={setSelectedPath}
@@ -128,6 +145,7 @@ function SkillDetailPage({
 }
 
 export function SkillsLibrary() {
+  const providerRoster = useProviderRoster();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -570,6 +588,7 @@ export function SkillsLibrary() {
       ) : (
         <SkillsOverview
           skills={skills}
+          providerRoster={providerRoster}
           isLoading={isLoading}
           hasError={hasError}
           query={libraryQuery}

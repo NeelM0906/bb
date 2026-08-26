@@ -1,4 +1,5 @@
-import { chmod, copyFile, mkdir, stat } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { chmod, copyFile, mkdir, rm, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -6,25 +7,52 @@ import { bundleTargets } from "./bundle-manifest.mjs";
 import {
   createNativeExternalPatterns,
   externalPackagePatterns,
-  generateTemplatesIfRequested,
+  finalizeSplitOutput,
+  splitOutputOptions,
 } from "../../../scripts/build-utils.mjs";
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(scriptsDir, "..");
 const workspaceRoot = resolve(packageRoot, "..", "..");
 
-async function main() {
-  await import("../../../packages/plugin-build/scripts/generate-runtime-export-manifest.mjs");
-  await generateTemplatesIfRequested(true);
+/**
+ * esbuild `define` that inlines the SDK declaration bundles for
+ * packages/templates/src/plugin-sdk-dts.ts. Read from the
+ * @get-bb/plugin-sdk#build:types output, a turbo dependency of this build.
+ */
+function pluginSdkDeclarationsDefine() {
+  const typesDir = resolve(
+    workspaceRoot,
+    "packages",
+    "plugin-sdk",
+    "bundled-types",
+  );
+  const declarations = {
+    root: readFileSync(resolve(typesDir, "bb-plugin-sdk.d.ts"), "utf8"),
+    app: readFileSync(resolve(typesDir, "bb-plugin-sdk-app.d.ts"), "utf8"),
+  };
+  return {
+    __BB_PLUGIN_SDK_DTS_JSON__: JSON.stringify(JSON.stringify(declarations)),
+  };
+}
 
+async function main() {
   for (const target of bundleTargets) {
     await mkdir(dirname(target.outfile), { recursive: true });
+    const split = target.splitting ? splitOutputOptions(target.outfile) : null;
+    if (split) {
+      // Chunk names carry content hashes; drop the previous build's chunks.
+      await rm(split.chunkDir, { force: true, recursive: true });
+    }
     await build({
       banner: {
         js: target.banner,
       },
       bundle: true,
       conditions: ["source"],
+      define: target.inlinePluginSdkDeclarations
+        ? pluginSdkDeclarationsDefine()
+        : undefined,
       entryPoints: [target.entryPoint],
       external: [
         ...createNativeExternalPatterns({
@@ -35,11 +63,14 @@ async function main() {
       format: "esm",
       legalComments: "none",
       minify: true,
-      outfile: target.outfile,
+      ...(split ? split.esbuild : { outfile: target.outfile }),
       platform: "node",
       sourcemap: false,
       target: "node22",
     });
+    if (split) {
+      await finalizeSplitOutput(target.outfile);
+    }
     if (target.executable) {
       await chmod(target.outfile, 0o755);
     }

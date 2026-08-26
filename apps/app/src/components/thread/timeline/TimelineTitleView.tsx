@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment } from "react";
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 import {
   assertNever,
@@ -15,6 +15,7 @@ import {
 import { cn } from "@bb/shared-ui/lib/utils";
 import { DiffStatsTally } from "@/components/ui/diff-stats-tally.js";
 import { RouteAnchor } from "@/components/ui/app-route-anchor.js";
+import { useSecondTick } from "@/hooks/useSecondTick";
 
 /**
  * Resolves a title's declared action to a click callback. Return `null` to
@@ -35,9 +36,8 @@ export type TimelineTitleLinkResolver = (
   link: TimelineTitleLink,
 ) => string | null;
 
-export interface TimelineTitleViewProps {
+interface TimelineTitleViewProps {
   title: TimelineTitle;
-  className?: string;
   onTitleAction?: TimelineTitleActionResolver;
   resolveSegmentLinkHref?: TimelineTitleLinkResolver;
 }
@@ -210,26 +210,20 @@ function renderSegment(
 }
 
 /**
- * Ticks the displayed elapsed time locally while the row is still active.
- * The truth is `startedAt` (the wall-clock when the work began); the App
- * derives `now - startedAt` and ticks once per second until the row reaches
- * a terminal status (at which point a static `completedAt - startedAt` is
- * shown by the caller instead). Stays empty until the elapsed time crosses
- * the visible threshold (>1s) to avoid sub-second flicker on row entry.
+ * Ticks the displayed elapsed time while the row is still active. The truth
+ * is `startedAt` (the wall-clock when the work began); the App derives
+ * `now - startedAt` from the shared 1 Hz ticker — one interval for every
+ * in-flight row on screen, paused while the document is hidden — until the
+ * row reaches a terminal status (at which point a static
+ * `completedAt - startedAt` is shown by the caller instead). Stays empty
+ * until the elapsed time crosses the visible threshold (>1s) to avoid
+ * sub-second flicker on row entry.
  */
 function LiveDurationText({ startedAt }: { startedAt: number }) {
-  const [tick, setTick] = useState(() => Date.now() - startedAt);
+  const elapsedMs = useSecondTick() - startedAt;
 
-  useEffect(() => {
-    setTick(Date.now() - startedAt);
-    const interval = window.setInterval(() => {
-      setTick(Date.now() - startedAt);
-    }, 1_000);
-    return () => window.clearInterval(interval);
-  }, [startedAt]);
-
-  if (tick <= 1_000) return null;
-  return <>{durationToCompactString(tick)}</>;
+  if (elapsedMs <= 1_000) return null;
+  return <>{durationToCompactString(elapsedMs)}</>;
 }
 
 function renderDecoration(
@@ -242,8 +236,8 @@ function renderDecoration(
   switch (decoration.kind) {
     case "duration": {
       const durationClass = decoration.em
-        ? cn("shrink-0 whitespace-pre", emToneClass(tone))
-        : baseClass;
+        ? cn("shrink-0 whitespace-pre tabular-nums", emToneClass(tone))
+        : cn(baseClass, "tabular-nums");
       return (
         <span key={index} className={durationClass}>
           {decoration.completedAt !== null ? (
@@ -275,7 +269,9 @@ function renderDecoration(
               "inline-flex items-baseline gap-1",
             )}
           >
-            {durationText ? <span>{durationText}</span> : null}
+            {durationText ? (
+              <span className="tabular-nums">{durationText}</span>
+            ) : null}
             {renderStatusDecorationText(
               decoration.status,
               // Only an emphasized error — one that is the row's primary signal,
@@ -342,7 +338,6 @@ function renderDecoration(
 
 export function TimelineTitleView({
   title,
-  className,
   onTitleAction,
   resolveSegmentLinkHref,
 }: TimelineTitleViewProps) {
@@ -351,10 +346,7 @@ export function TimelineTitleView({
 
   return (
     <span
-      className={cn(
-        "inline-flex min-w-0 max-w-full items-baseline gap-1 overflow-hidden whitespace-nowrap text-sm leading-5",
-        className,
-      )}
+      className="inline-flex min-w-0 max-w-full items-baseline gap-1 overflow-hidden whitespace-nowrap text-sm leading-5"
       title={title.plain}
     >
       {/* Literal whitespace text nodes between flex items keep the

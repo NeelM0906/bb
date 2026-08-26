@@ -8,9 +8,10 @@ import { assignIfDefined } from "@bb/config/objects";
 
 interface ResolveLocalBbExecutablePathOptions {
   cliExecutablePath?: string;
+  cliRuntimePath?: string;
 }
 
-export interface PrepareRuntimeShellEnvOptions {
+interface PrepareRuntimeShellEnvOptions {
   bbExecutableDirectory: string;
   /**
    * Absolute path to the daemon-managed `bb` executable. Defaults to
@@ -23,7 +24,7 @@ export interface PrepareRuntimeShellEnvOptions {
   inheritedPath?: string;
 }
 
-export interface ResolveUserShellPathOptions {
+interface ResolveUserShellPathOptions {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   spawnUserShellEnv?: SpawnUserShellEnv;
@@ -61,6 +62,10 @@ const USER_SHELL_ENV_FORCE_KILL_AFTER_MS = 1_000;
 
 function getDefaultCliExecutablePath(): string {
   return fileURLToPath(new URL("../../cli/bin/bb", import.meta.url));
+}
+
+function getDefaultCliRuntimePath(): string {
+  return fileURLToPath(new URL("../../cli/dist/index.js", import.meta.url));
 }
 
 function getErrorCode(error: unknown): string | undefined {
@@ -105,6 +110,26 @@ async function resolveCliEntryPath(cliExecutablePath: string): Promise<string> {
   }
 
   return cliEntryPath;
+}
+
+async function requireCliRuntimePath(cliRuntimePath: string): Promise<void> {
+  const resolvedCliRuntimePath = resolve(cliRuntimePath);
+
+  try {
+    const stats = await fs.stat(resolvedCliRuntimePath);
+    if (!stats.isFile()) {
+      throw new Error(
+        `Resolved bb CLI runtime is not a file: ${resolvedCliRuntimePath}`,
+      );
+    }
+  } catch (error) {
+    if (getErrorCode(error) === "ENOENT") {
+      throw new Error(
+        `Missing built bb CLI runtime at ${resolvedCliRuntimePath}. Build @bb/cli before starting the host daemon.`,
+      );
+    }
+    throw error;
+  }
 }
 
 function prependPath(
@@ -302,6 +327,13 @@ function parsePathFromUserShellEnv(stdout: string): string | null {
 export async function resolveUserShellPath(
   options: ResolveUserShellPathOptions = {},
 ): Promise<string | null> {
+  return resolveUserShellPathWithPrevious(options, null);
+}
+
+async function resolveUserShellPathWithPrevious(
+  options: ResolveUserShellPathOptions,
+  previousPath: string | null,
+): Promise<string | null> {
   const env = options.env ?? process.env;
   const shell = resolveUserShellCommand(
     env,
@@ -313,7 +345,8 @@ export async function resolveUserShellPath(
 
   const spawnUserShellEnv =
     options.spawnUserShellEnv ?? defaultSpawnUserShellEnv;
-  for (const shellArgs of userShellEnvArgSets(shell)) {
+  const shellArgSets = userShellEnvArgSets(shell);
+  for (const [index, shellArgs] of shellArgSets.entries()) {
     const result = await spawnUserShellEnv({
       command: shell,
       args: shellArgs,
@@ -325,15 +358,41 @@ export async function resolveUserShellPath(
       result.signal !== null ||
       result.status !== 0
     ) {
+      if (index === 0 && previousPath !== null) {
+        return previousPath;
+      }
       continue;
     }
     const path = parsePathFromUserShellEnv(result.stdout);
     if (path !== null) {
       return path;
     }
+    // The plain-login fallback is good enough to start a daemon that has no
+    // shell PATH yet. During a refresh, however, replacing a previously good
+    // interactive PATH after one slow or failed probe can resolve an entirely
+    // different npm prefix and provider executable. Keep the last answer and
+    // let a later successful interactive probe update it.
+    if (index === 0 && previousPath !== null) {
+      return previousPath;
+    }
   }
 
   return null;
+}
+
+/**
+ * Re-resolves the user's interactive shell PATH without downgrading a known
+ * answer to the plain-login fallback after a transient probe failure.
+ */
+export function createUserShellPathResolver(
+  options: ResolveUserShellPathOptions = {},
+): () => Promise<string | null> {
+  let previousPath: string | null = null;
+  return async () => {
+    const path = await resolveUserShellPathWithPrevious(options, previousPath);
+    if (path !== null) previousPath = path;
+    return path;
+  };
 }
 
 /**
@@ -344,11 +403,20 @@ export async function resolveLocalBbExecutablePath(
 ): Promise<string> {
   const resolvedCliExecutablePath =
     options.cliExecutablePath ?? getDefaultCliExecutablePath();
-  return resolveCliEntryPath(resolvedCliExecutablePath);
+  const cliEntryPath = await resolveCliEntryPath(resolvedCliExecutablePath);
+  const cliRuntimePath =
+    options.cliRuntimePath ??
+    (options.cliExecutablePath === undefined
+      ? getDefaultCliRuntimePath()
+      : undefined);
+  if (cliRuntimePath !== undefined) {
+    await requireCliRuntimePath(cliRuntimePath);
+  }
+  return cliEntryPath;
 }
 
 /** Platform-stable name of the bb CLI file inside `BB_CLI_DIR` / daemon dist. */
-export function bbExecutableFileName(): string {
+function bbExecutableFileName(): string {
   return "bb";
 }
 
@@ -383,14 +451,5 @@ export function prepareRuntimeShellEnv(
         ? undefined
         : String(options.hostDaemonPort),
   });
-  // Provider process spawning strips inherited BB_* variables, so the
-  // documented Claude CLI override must be forwarded explicitly for the
-  // bridge to see it.
-  assignIfDefined({
-    key: "BB_CLAUDE_CODE_EXECUTABLE",
-    target: shellEnv,
-    value: process.env.BB_CLAUDE_CODE_EXECUTABLE,
-  });
-
   return shellEnv;
 }

@@ -8,6 +8,7 @@ import {
   useSyncExternalStore,
   type ComponentType,
   type ReactElement,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import { act, render, type RenderResult } from "@testing-library/react";
@@ -18,6 +19,7 @@ import {
   type ComposerView,
   type PluginAppDefinition,
   type PluginAppSetup,
+  type PluginCodeThemeState,
   type PluginContentScriptDisposer,
   type PluginContentScriptRegistration,
   type PluginComposerApi,
@@ -29,9 +31,12 @@ import {
   type PluginHomepageSectionRegistration,
   type PluginMessageActionRegistration,
   type PluginMessageDirectiveRegistration,
+  type PluginDiffRendererRegistration,
   type PluginNavPanelRegistration,
   type PluginNewThreadPanelActionRegistration,
   type PluginPendingInteractionRegistration,
+  type PluginProviderIconRegistration,
+  type PluginTimelineRendererRegistration,
   type PluginRealtimeConnectionState,
   type PluginRpcClient,
   type PluginSdkApp,
@@ -42,7 +47,9 @@ import {
   type PluginSidebarThreadActions,
   type PluginSidebarThreadPullRequestState,
   type PluginSidebarThreadSplit,
+  type PluginProvidersState,
   type PluginSidebarThreadsState,
+  type PluginSourceCodeRendererRegistration,
   type PluginThreadHeaderActionRegistration,
   type PluginThreadListRegistration,
   type PluginThreadPanelActionRegistration,
@@ -50,30 +57,33 @@ import {
   type PluginRpcResult,
   type StandardSchemaV1InferInput,
   type MarkdownProps,
+  type UrlLinkProps,
+  type ExperimentalFileLinkProps,
+  type ExperimentalFileOpenOptions,
+  type ExperimentalAppPanel,
+  type ExperimentalFixedTabTargetState,
+  type ExperimentalOpenFixedTabOptions,
+  type ExperimentalPluginFixedTabReference,
   type NewThreadComposerProps,
+  type ExperimentalPermissionModePickerProps,
+  type ExperimentalProviderModelPickerProps,
   type ThreadChatProps,
+  type DiffProps,
+  type SourceCodeProps,
   type JsonValue,
-} from "@bb/plugin-sdk";
+} from "@get-bb/plugin-sdk";
 import { isComposerDraftEmpty } from "../internal/composer-view.js";
-import {
-  collectComposerCustomization,
-  normalizePluginThreadRowStatus,
-  PLUGIN_SLOT_ID_PATTERN,
-  requireComponent,
-  requireMessageDirectiveId,
-  requireNonEmptyString,
-  requireOptionalString,
-  requireSlotId,
-  requireUniqueId,
-} from "../internal/composer-customization-validation.js";
+import { normalizePluginThreadRowStatus } from "../internal/composer-customization-validation.js";
+import { normalizeExperimentalFileOpenOptions } from "../internal/file-navigation-validation.js";
+import { collectPluginAppRegistrations } from "../internal/plugin-app-collector.js";
 
 /**
- * `@bb/plugin-sdk/testing/app` — the frontend plugin test harness. Tests a
+ * `@get-bb/plugin-sdk/testing/app` — the frontend plugin test harness. Tests a
  * plugin's `app.tsx` source directly under vitest + jsdom, without the bb
  * host or the esbuild bundle:
  *
  * - {@link installTestPluginRuntime} fills `globalThis.__bbPluginRuntime.
- *   pluginSdkApp` with a test implementation of the `@bb/plugin-sdk/app`
+ *   pluginSdkApp` with a test implementation of the `@get-bb/plugin-sdk/app`
  *   surface (the same seam `bb plugin build` shims to the real app). It must
  *   run BEFORE the plugin's `app.tsx` module evaluates, because that module
  *   binds the runtime at import time — so import `app.tsx` through
@@ -100,7 +110,6 @@ export interface RpcCall {
   method: string;
   input: unknown;
 }
-
 export type NavigateCall =
   | { method: "toThread"; threadId: string }
   | { method: "toProject"; projectId: string }
@@ -116,7 +125,23 @@ export type NavigateCall =
   | {
       method: "openThreadPanel";
       options: Parameters<BbNavigate["openThreadPanel"]>[0];
+    }
+  | { method: "openUrl"; url: string }
+  | {
+      method: "experimental_openFilePreview";
+      options: ExperimentalFileOpenOptions;
+    }
+  | {
+      method: "experimental_openFileExternally";
+      options: ExperimentalFileOpenOptions;
     };
+
+export interface ExperimentalFixedTabOpenCall {
+  surface: ExperimentalOpenFixedTabOptions<JsonValue>["surface"];
+  panelId: string;
+  tabId: string;
+  target?: JsonValue;
+}
 
 export interface ComposerLog {
   /** Latest plain text in this isolated composer scope. */
@@ -154,12 +179,28 @@ interface SlotEnv {
   bbContext: BbContext;
   navigate: BbNavigate;
   navigateCalls: NavigateCall[];
+  appPanel: ExperimentalAppPanel;
+  experimental_fixedTabOpenCalls: ExperimentalFixedTabOpenCall[];
+  fixedTabTarget: TestFixedTabTargetStore;
   composer: TestComposerStore;
   composerLog: ComposerLog;
   sidebarThreads: PluginSidebarThreadsState;
   sidebarActions: PluginSidebarThreadActions;
   sidebarActionCalls: SidebarActionCall[];
   sidebarPullRequests: ReadonlyMap<string, PluginSidebarPullRequest>;
+  providers: PluginProvidersState;
+  codeTheme: PluginCodeThemeState;
+}
+
+interface TestFixedTabTargetStore {
+  clear(sequence: number): void;
+  getSnapshot(): {
+    panelId: string;
+    sequence: number;
+    tabId: string;
+    target: JsonValue;
+  } | null;
+  subscribe(listener: () => void): () => void;
 }
 
 /** One recorded `experimental_useSidebarThreadActions()` call. */
@@ -195,14 +236,14 @@ function useSlotEnv(hook: string): SlotEnv {
   const env = useContext(SlotEnvContext);
   if (!env) {
     throw new Error(
-      `${hook}() needs the test slot environment — mount the component via renderSlot(...) from @bb/plugin-sdk/testing/app`,
+      `${hook}() needs the test slot environment — mount the component via renderSlot(...) from @get-bb/plugin-sdk/testing/app`,
     );
   }
   return env;
 }
 
 // ---------------------------------------------------------------------------
-// The fake @bb/plugin-sdk/app runtime.
+// The fake @get-bb/plugin-sdk/app runtime.
 // ---------------------------------------------------------------------------
 
 /** Same shape (and checks) as the BB app's real definePluginApp. */
@@ -294,6 +335,97 @@ function TestMarkdown({ content, className }: MarkdownProps) {
   );
 }
 
+/** Anchor-faithful stand-in backed by the same navigation recorder as the hook. */
+function TestUrlLink({
+  href,
+  onClick,
+  rel,
+  target,
+  ...anchorProps
+}: UrlLinkProps) {
+  const navigate = useSlotEnv("UrlLink").navigate;
+  const normalizedTarget = target?.toLowerCase();
+  const opensNewBrowsingContext =
+    normalizedTarget !== undefined &&
+    normalizedTarget !== "" &&
+    normalizedTarget !== "_self" &&
+    normalizedTarget !== "_parent" &&
+    normalizedTarget !== "_top" &&
+    normalizedTarget !== "_unfencedtop";
+  const relTokens = rel?.split(/\s+/u).filter(Boolean) ?? [];
+  const normalizedRelTokens = relTokens.map((token) => token.toLowerCase());
+  const resolvedRel =
+    opensNewBrowsingContext && !normalizedRelTokens.includes("opener")
+      ? [
+          ...relTokens,
+          ...(normalizedRelTokens.includes("noopener") ? [] : ["noopener"]),
+          ...(normalizedRelTokens.includes("noreferrer") ? [] : ["noreferrer"]),
+        ].join(" ")
+      : rel;
+  return (
+    <a
+      {...anchorProps}
+      href={href}
+      target={target}
+      rel={resolvedRel}
+      onClick={(event: ReactMouseEvent<HTMLAnchorElement>) => {
+        onClick?.(event);
+        if (
+          event.defaultPrevented ||
+          event.button !== 0 ||
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.shiftKey ||
+          event.currentTarget.hasAttribute("download") ||
+          event.currentTarget.hasAttribute("target")
+        ) {
+          return;
+        }
+        if (navigate.openUrl(href)) event.preventDefault();
+      }}
+    />
+  );
+}
+
+/** Anchor-faithful file-link stand-in backed by the navigation recorder. */
+function TestFileLink({
+  target,
+  location = null,
+  onClick,
+  ...anchorProps
+}: ExperimentalFileLinkProps) {
+  const navigate = useSlotEnv("experimental_FileLink").navigate;
+  const options = normalizeExperimentalFileOpenOptions({ target, location });
+  const href =
+    options === null
+      ? undefined
+      : `./${encodeURIComponent(options.target.path)}`;
+  return (
+    <a
+      {...anchorProps}
+      href={href}
+      onClick={(event: ReactMouseEvent<HTMLAnchorElement>) => {
+        onClick?.(event);
+        if (
+          options === null ||
+          event.defaultPrevented ||
+          event.button !== 0 ||
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.shiftKey ||
+          event.currentTarget.hasAttribute("download")
+        ) {
+          return;
+        }
+        event.preventDefault();
+        navigate.experimental_openFilePreview(options);
+      }}
+    />
+  );
+}
+
 /**
  * Stand-in for the host-owned new-thread composer: a textarea plus a submit
  * button that calls `onSubmit` with a fixed, obviously-synthetic request, so
@@ -369,6 +501,204 @@ function TestNewThreadComposer({
   );
 }
 
+function TestProviderModelPicker({
+  value,
+  onChange,
+  routing,
+  allowProviderChange = true,
+  align = "start",
+  disabled,
+  className,
+}: ExperimentalProviderModelPickerProps) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const reasoningLevels = [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "ultracode",
+    "max",
+    "ultra",
+  ] as const;
+
+  return (
+    <div
+      data-testid="bb-provider-model-picker"
+      data-routing-kind={routing?.kind ?? "primary"}
+      data-routing-id={
+        routing === undefined
+          ? ""
+          : routing.kind === "host"
+            ? routing.hostId
+            : routing.environmentId
+      }
+      data-disabled={disabled ? "true" : "false"}
+      data-provider-change-allowed={allowProviderChange ? "true" : "false"}
+      data-align={align}
+      className={className}
+    >
+      <fieldset disabled={disabled} className="contents">
+        <input
+          aria-label="Provider ID"
+          disabled={!allowProviderChange}
+          value={draft.providerId}
+          onChange={(event) =>
+            setDraft((current) => ({
+              ...current,
+              providerId: event.target.value,
+            }))
+          }
+        />
+        <input
+          aria-label="Model"
+          value={draft.model}
+          onChange={(event) =>
+            setDraft((current) => ({ ...current, model: event.target.value }))
+          }
+        />
+        <input
+          aria-label="Reasoning level"
+          value={draft.reasoningLevel}
+          onChange={(event) => {
+            const reasoningLevel = reasoningLevels.find(
+              (candidate) => candidate === event.target.value,
+            );
+            if (reasoningLevel === undefined) return;
+            setDraft((current) => ({ ...current, reasoningLevel }));
+          }}
+        />
+        <select
+          aria-label="Service tier"
+          value={draft.serviceTier ?? ""}
+          onChange={(event) =>
+            setDraft((current) => {
+              const serviceTier = event.target.value;
+              if (serviceTier !== "fast" && serviceTier !== "default") {
+                const next = { ...current };
+                delete next.serviceTier;
+                return next;
+              }
+              return { ...current, serviceTier };
+            })
+          }
+        >
+          <option value="">Unsupported</option>
+          <option value="default">Default</option>
+          <option value="fast">Fast</option>
+        </select>
+        <button type="button" onClick={() => onChange(draft)}>
+          Apply execution selection
+        </button>
+      </fieldset>
+    </div>
+  );
+}
+
+function TestPermissionModePicker({
+  providerId,
+  value,
+  onChange,
+  routing,
+  align = "end",
+  disabled,
+  className,
+}: ExperimentalPermissionModePickerProps) {
+  return (
+    <select
+      aria-label="Permission mode"
+      value={value}
+      disabled={disabled}
+      data-testid="bb-permission-mode-picker"
+      data-provider-id={providerId}
+      data-align={align}
+      data-routing-kind={routing?.kind ?? "primary"}
+      data-routing-id={
+        routing === undefined
+          ? ""
+          : routing.kind === "host"
+            ? routing.hostId
+            : routing.environmentId
+      }
+      className={className}
+      onChange={(event) => {
+        const permissionMode = event.target.value;
+        if (
+          permissionMode === "accept-edits" ||
+          permissionMode === "auto" ||
+          permissionMode === "full"
+        ) {
+          onChange(permissionMode);
+        }
+      }}
+    >
+      <option value="accept-edits">Accept Edits</option>
+      <option value="auto">Approve for me</option>
+      <option value="full">Full Access</option>
+    </select>
+  );
+}
+
+/**
+ * Stand-in for the host-owned source viewer: emits the raw source in a
+ * recognizable wrapper carrying the resolved presentation, so plugin tests can
+ * assert what they asked the host to render without the real highlighter.
+ */
+function TestSourceCode({
+  content,
+  path,
+  overflow = "scroll",
+  highlightedLines = null,
+  className,
+}: SourceCodeProps) {
+  return (
+    <pre
+      data-testid="bb-source-code"
+      data-path={path}
+      data-overflow={overflow}
+      data-highlighted-lines={
+        highlightedLines === null
+          ? ""
+          : `${highlightedLines.start}-${highlightedLines.end}`
+      }
+      className={className}
+    >
+      {content}
+    </pre>
+  );
+}
+
+/**
+ * Stand-in for the host-owned diff viewer: emits the raw patch in a
+ * recognizable wrapper carrying the resolved presentation.
+ */
+function TestDiff({
+  patch,
+  path,
+  view = "unified",
+  overflow = "scroll",
+  showLineNumbers = true,
+  experimental_fullFileContents,
+  className,
+}: DiffProps) {
+  return (
+    <pre
+      data-testid="bb-diff"
+      data-path={path}
+      data-view={view}
+      data-overflow={overflow}
+      data-show-line-numbers={showLineNumbers ? "true" : "false"}
+      data-has-full-file-contents={
+        experimental_fullFileContents === undefined ? "false" : "true"
+      }
+      className={className}
+    >
+      {patch}
+    </pre>
+  );
+}
+
 const testPluginSdkApp = {
   definePluginApp,
   useRpc<
@@ -415,6 +745,37 @@ const testPluginSdkApp = {
   useBbNavigate(): BbNavigate {
     return useSlotEnv("useBbNavigate").navigate;
   },
+  experimental_useAppPanel(): ExperimentalAppPanel {
+    return useSlotEnv("experimental_useAppPanel").appPanel;
+  },
+  experimental_useFixedTabTarget<Target extends JsonValue>(
+    tab: ExperimentalPluginFixedTabReference<Target>,
+  ): ExperimentalFixedTabTargetState<Target> | null {
+    const store = useSlotEnv("experimental_useFixedTabTarget").fixedTabTarget;
+    const state = useSyncExternalStore(
+      store.subscribe,
+      store.getSnapshot,
+      store.getSnapshot,
+    );
+    if (
+      state === null ||
+      state.panelId !== tab.panelId ||
+      state.tabId !== tab.id ||
+      tab.experimental_target === undefined
+    ) {
+      return null;
+    }
+    try {
+      if (!tab.experimental_target.validate(state.target)) return null;
+    } catch {
+      return null;
+    }
+    return {
+      clear: () => store.clear(state.sequence),
+      sequence: state.sequence,
+      target: state.target,
+    };
+  },
   useComposer(): PluginComposerApi {
     const composer = useSlotEnv("useComposer").composer;
     const version = useSyncExternalStore(
@@ -433,9 +794,21 @@ const testPluginSdkApp = {
   },
   ThreadChat: TestThreadChat,
   Markdown: TestMarkdown,
+  experimental_FileLink: TestFileLink,
+  UrlLink: TestUrlLink,
   experimental_NewThreadComposer: TestNewThreadComposer,
+  experimental_ProviderModelPicker: TestProviderModelPicker,
+  experimental_PermissionModePicker: TestPermissionModePicker,
+  experimental_SourceCode: TestSourceCode,
+  experimental_Diff: TestDiff,
   experimental_useSidebarThreads(): PluginSidebarThreadsState {
     return useSlotEnv("experimental_useSidebarThreads").sidebarThreads;
+  },
+  experimental_useProviders(): PluginProvidersState {
+    return useSlotEnv("experimental_useProviders").providers;
+  },
+  experimental_useCodeTheme(): PluginCodeThemeState {
+    return useSlotEnv("experimental_useCodeTheme").codeTheme;
   },
   experimental_useSidebarThreadActions(): PluginSidebarThreadActions {
     return useSlotEnv("experimental_useSidebarThreadActions").sidebarActions;
@@ -498,7 +871,7 @@ interface PluginRuntimeHost {
 /**
  * Install the test runtime at `globalThis.__bbPluginRuntime.pluginSdkApp`.
  * Idempotent per module instance; must run before the plugin's `app.tsx`
- * (and therefore `@bb/plugin-sdk/app`) is imported.
+ * (and therefore `@get-bb/plugin-sdk/app`) is imported.
  */
 export function installTestPluginRuntime(): void {
   const host = globalThis as PluginRuntimeHost;
@@ -524,8 +897,12 @@ export interface CapturedPluginApp {
   threadLists: PluginThreadListRegistration[];
   threadHeaderActions: PluginThreadHeaderActionRegistration[];
   fileOpeners: PluginFileOpenerRegistration[];
+  sourceCodeRenderers: PluginSourceCodeRendererRegistration[];
+  diffRenderers: PluginDiffRendererRegistration[];
   messageDirectives: PluginMessageDirectiveRegistration[];
   messageActions: PluginMessageActionRegistration[];
+  providerIcons: PluginProviderIconRegistration[];
+  timelineRenderers: PluginTimelineRendererRegistration[];
   contentScripts: PluginContentScriptRegistration[];
 }
 
@@ -535,306 +912,6 @@ export type PluginAppSource =
   | PluginAppDefinition
   | PluginAppModule
   | (() => Promise<PluginAppDefinition | PluginAppModule>);
-
-/**
- * Uses the same registration validation as the BB app collector so a
- * registration the host would reject fails here with the same message.
- */
-function collectRegistrations(
-  definition: PluginAppDefinition,
-): CapturedPluginApp {
-  const captured: CapturedPluginApp = {
-    homepageSections: [],
-    settingsSections: [],
-    navPanels: [],
-    threadPanelActions: [],
-    newThreadPanelActions: [],
-    composerCustomizations: [],
-    pendingInteractions: [],
-    sidebarFooterActions: [],
-    threadLists: [],
-    threadHeaderActions: [],
-    fileOpeners: [],
-    messageDirectives: [],
-    messageActions: [],
-    contentScripts: [],
-  };
-  const seenIds = {
-    homepageSection: new Set<string>(),
-    settingsSection: new Set<string>(),
-    navPanel: new Set<string>(),
-    threadPanelAction: new Set<string>(),
-    newThreadPanelAction: new Set<string>(),
-    composerCustomization: new Set<string>(),
-    pendingInteraction: new Set<string>(),
-    sidebarFooterAction: new Set<string>(),
-    threadList: new Set<string>(),
-    threadHeaderAction: new Set<string>(),
-    fileOpener: new Set<string>(),
-    messageDirective: new Set<string>(),
-    messageAction: new Set<string>(),
-    contentScript: new Set<string>(),
-  };
-
-  definition.setup({
-    slots: {
-      homepageSection(registration) {
-        const kind = "slots.homepageSection";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.homepageSection, id);
-        captured.homepageSections.push({
-          id,
-          title: requireNonEmptyString(kind, "title", registration.title),
-          component: requireComponent(kind, registration.component),
-        });
-      },
-      settingsSection(registration) {
-        const kind = "slots.settingsSection";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.settingsSection, id);
-        const title = requireOptionalString(kind, "title", registration.title);
-        const description = requireOptionalString(
-          kind,
-          "description",
-          registration.description,
-        );
-        captured.settingsSections.push({
-          id,
-          ...(title !== undefined ? { title } : {}),
-          ...(description !== undefined ? { description } : {}),
-          component: requireComponent(kind, registration.component),
-        });
-      },
-      navPanel(registration) {
-        const kind = "slots.navPanel";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.navPanel, id);
-        const path = requireNonEmptyString(kind, "path", registration.path);
-        if (!PLUGIN_SLOT_ID_PATTERN.test(path)) {
-          throw new Error(
-            `${kind}: "path" must match ${String(PLUGIN_SLOT_ID_PATTERN)} (it becomes a URL segment), got ${JSON.stringify(path)}`,
-          );
-        }
-        if (
-          registration.headerContent !== undefined &&
-          typeof registration.headerContent !== "function"
-        ) {
-          throw new Error(
-            `${kind}: "headerContent" must be a React component function when set`,
-          );
-        }
-        if (
-          registration.experimental_sidebarAccessory !== undefined &&
-          typeof registration.experimental_sidebarAccessory !== "function"
-        ) {
-          throw new Error(
-            `${kind}: "experimental_sidebarAccessory" must be a React component function when set`,
-          );
-        }
-        captured.navPanels.push({
-          id,
-          title: requireNonEmptyString(kind, "title", registration.title),
-          icon: requireNonEmptyString(kind, "icon", registration.icon),
-          path,
-          component: requireComponent(kind, registration.component),
-          ...(registration.experimental_sidebarAccessory !== undefined
-            ? {
-                experimental_sidebarAccessory:
-                  registration.experimental_sidebarAccessory,
-              }
-            : {}),
-          ...(registration.headerContent !== undefined
-            ? { headerContent: registration.headerContent }
-            : {}),
-        });
-      },
-      threadPanelAction(registration) {
-        const kind = "slots.threadPanelAction";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.threadPanelAction, id);
-        if (
-          registration.run !== undefined &&
-          typeof registration.run !== "function"
-        ) {
-          throw new Error(`${kind}: "run" must be a function when set`);
-        }
-        if (
-          registration.layout !== undefined &&
-          registration.layout !== "padded" &&
-          registration.layout !== "flush"
-        ) {
-          throw new Error(`${kind}: "layout" must be "padded" or "flush"`);
-        }
-        captured.threadPanelActions.push({
-          id,
-          title: requireNonEmptyString(kind, "title", registration.title),
-          ...(registration.icon !== undefined
-            ? { icon: requireNonEmptyString(kind, "icon", registration.icon) }
-            : {}),
-          component: requireComponent(kind, registration.component),
-          ...(registration.layout !== undefined
-            ? { layout: registration.layout }
-            : {}),
-          ...(registration.run !== undefined ? { run: registration.run } : {}),
-        });
-      },
-      experimental_newThreadPanelAction(registration) {
-        const kind = "slots.experimental_newThreadPanelAction";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.newThreadPanelAction, id);
-        if (
-          registration.run !== undefined &&
-          typeof registration.run !== "function"
-        ) {
-          throw new Error(`${kind}: "run" must be a function when set`);
-        }
-        if (
-          registration.layout !== undefined &&
-          registration.layout !== "padded" &&
-          registration.layout !== "flush"
-        ) {
-          throw new Error(`${kind}: "layout" must be "padded" or "flush"`);
-        }
-        captured.newThreadPanelActions.push({
-          id,
-          title: requireNonEmptyString(kind, "title", registration.title),
-          ...(registration.icon !== undefined
-            ? { icon: requireNonEmptyString(kind, "icon", registration.icon) }
-            : {}),
-          component: requireComponent(kind, registration.component),
-          ...(registration.layout !== undefined
-            ? { layout: registration.layout }
-            : {}),
-          ...(registration.run !== undefined ? { run: registration.run } : {}),
-        });
-      },
-      pendingInteraction(registration) {
-        const kind = "slots.pendingInteraction";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.pendingInteraction, id);
-        captured.pendingInteractions.push({
-          id,
-          component: requireComponent(kind, registration.component),
-        });
-      },
-      sidebarFooterAction(registration) {
-        const kind = "slots.sidebarFooterAction";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.sidebarFooterAction, id);
-        if (typeof registration.run !== "function") {
-          throw new Error(`${kind}: "run" must be a function`);
-        }
-        captured.sidebarFooterActions.push({
-          id,
-          title: requireNonEmptyString(kind, "title", registration.title),
-          icon: requireNonEmptyString(kind, "icon", registration.icon),
-          run: registration.run,
-        });
-      },
-      experimental_threadList(registration) {
-        const kind = "slots.experimental_threadList";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.threadList, id);
-        const description = requireOptionalString(
-          kind,
-          "description",
-          registration.description,
-        );
-        captured.threadLists.push({
-          id,
-          title: requireNonEmptyString(kind, "title", registration.title),
-          ...(description !== undefined ? { description } : {}),
-          component: requireComponent(kind, registration.component),
-        });
-      },
-      experimental_threadHeaderAction(registration) {
-        const kind = "slots.experimental_threadHeaderAction";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.threadHeaderAction, id);
-        captured.threadHeaderActions.push({
-          id,
-          title: requireNonEmptyString(kind, "title", registration.title),
-          component: requireComponent(kind, registration.component),
-        });
-      },
-      fileOpener(registration) {
-        const kind = "slots.fileOpener";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.fileOpener, id);
-        const rawExtensions = registration?.extensions;
-        if (!Array.isArray(rawExtensions) || rawExtensions.length === 0) {
-          throw new Error(
-            `${kind}: "extensions" must be a non-empty array of lowercase extensions without the dot`,
-          );
-        }
-        const extensions = rawExtensions.map((extension) => {
-          if (typeof extension !== "string" || !/^[a-z0-9]+$/.test(extension)) {
-            throw new Error(
-              `${kind}: extensions must be lowercase alphanumerics without the dot, got ${JSON.stringify(extension)}`,
-            );
-          }
-          return extension;
-        });
-        captured.fileOpeners.push({
-          id,
-          title: requireNonEmptyString(kind, "title", registration.title),
-          extensions,
-          component: requireComponent(kind, registration.component),
-        });
-      },
-      messageDirective(registration) {
-        const kind = "slots.messageDirective";
-        const id = requireMessageDirectiveId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.messageDirective, id);
-        captured.messageDirectives.push({
-          id,
-          component: requireComponent(kind, registration.component),
-        });
-      },
-      messageAction(registration) {
-        const kind = "slots.messageAction";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.messageAction, id);
-        if (typeof registration.run !== "function") {
-          throw new Error(`${kind}: "run" must be a function`);
-        }
-        captured.messageActions.push({
-          id,
-          title: requireNonEmptyString(kind, "title", registration.title),
-          ...(registration.icon !== undefined
-            ? { icon: requireNonEmptyString(kind, "icon", registration.icon) }
-            : {}),
-          run: registration.run,
-        });
-      },
-    },
-    composer: {
-      customize(registration) {
-        const customization = collectComposerCustomization(
-          registration,
-          seenIds.composerCustomization,
-          (reason) => console.warn(reason),
-        );
-        if (customization !== null) {
-          captured.composerCustomizations.push(customization);
-        }
-      },
-    },
-    contentScripts: {
-      register(registration) {
-        const kind = "contentScripts.register";
-        const id = requireSlotId(kind, registration?.id);
-        requireUniqueId(kind, seenIds.contentScript, id);
-        if (typeof registration.mount !== "function") {
-          throw new Error(`${kind}: "mount" must be a function`);
-        }
-        captured.contentScripts.push({ id, mount: registration.mount });
-      },
-    },
-  });
-
-  return captured;
-}
 
 /**
  * Install the test runtime, resolve the plugin app definition, and capture
@@ -852,10 +929,10 @@ export async function loadPluginApp(
     : (resolved as PluginAppModule).default;
   if (!isPluginAppDefinition(definition)) {
     throw new Error(
-      "the bundle's default export is not definePluginApp(...) from @bb/plugin-sdk/app",
+      "the bundle's default export is not definePluginApp(...) from @get-bb/plugin-sdk/app",
     );
   }
-  return collectRegistrations(definition);
+  return collectPluginAppRegistrations(definition);
 }
 
 export interface ContentScriptTestMountOptions {
@@ -1035,6 +1112,16 @@ export interface RenderSlotOptions<
    */
   sidebarThreads?: Partial<PluginSidebarThreadsState>;
   /**
+   * The provider directory `experimental_useProviders()` reports. Omitted →
+   * a ready, empty list. Pass `{ status: "loading" }` to test that branch.
+   */
+  providers?: Partial<PluginProvidersState>;
+  /**
+   * The code theme `experimental_useCodeTheme()` reports. Omitted → a light
+   * mode with no resolved document, the state a plugin sees on first paint.
+   */
+  codeTheme?: Partial<PluginCodeThemeState>;
+  /**
    * Pull requests `experimental_useSidebarThreadPullRequest()` reports, keyed
    * by thread id. Omitted → every thread reports none.
    */
@@ -1043,6 +1130,20 @@ export interface RenderSlotOptions<
   openThreadPanel?: (
     options: Parameters<BbNavigate["openThreadPanel"]>[0],
   ) => boolean;
+  /** Host acceptance for URL intents from the hook or `UrlLink`. */
+  openUrl?: (url: string) => boolean;
+  /** Host acceptance for preview intents from the hook or file link. */
+  openFilePreview?: (options: ExperimentalFileOpenOptions) => boolean;
+  /** Host acceptance for preferred-external file intents. */
+  openFileExternally?: (options: ExperimentalFileOpenOptions) => boolean;
+  /** Host acceptance for an owner-scoped fixed-tab selection. */
+  experimental_openFixedTab?: (call: ExperimentalFixedTabOpenCall) => boolean;
+  /** Initial session target visible to `experimental_useFixedTabTarget`. */
+  experimental_fixedTabTarget?: {
+    panelId: string;
+    tabId: string;
+    target: JsonValue;
+  };
 }
 
 /** Host-originated inputs a slot test can drive deterministically. */
@@ -1068,6 +1169,8 @@ export interface RenderedSlotInspectionState {
   readonly rpcCalls: RpcCall[];
   /** Every `useBbNavigate()` call, in order. */
   readonly navigateCalls: NavigateCall[];
+  /** Every validated `experimental_useAppPanel().openFixedTab` call. */
+  readonly experimental_fixedTabOpenCalls: ExperimentalFixedTabOpenCall[];
   /** Every `experimental_useSidebarThreadActions()` call, in order. */
   readonly sidebarActionCalls: SidebarActionCall[];
   /** Everything written through `useComposer()`. */
@@ -1189,6 +1292,73 @@ export function renderSlot<
   };
 
   const navigateCalls: NavigateCall[] = [];
+  const experimental_fixedTabOpenCalls: ExperimentalFixedTabOpenCall[] = [];
+  let fixedTabTargetSnapshot =
+    options.experimental_fixedTabTarget === undefined
+      ? null
+      : {
+          panelId: options.experimental_fixedTabTarget.panelId,
+          sequence: 1,
+          tabId: options.experimental_fixedTabTarget.tabId,
+          target: strictJsonRoundTrip(
+            options.experimental_fixedTabTarget.target,
+            "fixed tab target",
+          ),
+        };
+  const fixedTabTargetListeners = new Set<() => void>();
+  const fixedTabTarget: TestFixedTabTargetStore = {
+    getSnapshot: () => fixedTabTargetSnapshot,
+    subscribe(listener) {
+      fixedTabTargetListeners.add(listener);
+      return () => fixedTabTargetListeners.delete(listener);
+    },
+    clear(sequence) {
+      if (fixedTabTargetSnapshot?.sequence !== sequence) return;
+      fixedTabTargetSnapshot = null;
+      for (const listener of fixedTabTargetListeners) listener();
+    },
+  };
+  const appPanel: ExperimentalAppPanel = {
+    openFixedTab(panelOptions) {
+      let target: JsonValue | undefined;
+      if (panelOptions.target !== undefined) {
+        try {
+          target = strictJsonRoundTrip(
+            panelOptions.target,
+            "fixed tab open target",
+          );
+        } catch {
+          return false;
+        }
+        if (panelOptions.tab.experimental_target === undefined) return false;
+        try {
+          if (!panelOptions.tab.experimental_target.validate(target)) {
+            return false;
+          }
+        } catch {
+          return false;
+        }
+      }
+      const call: ExperimentalFixedTabOpenCall = {
+        surface: panelOptions.surface,
+        panelId: panelOptions.tab.panelId,
+        tabId: panelOptions.tab.id,
+        ...(target === undefined ? {} : { target }),
+      };
+      experimental_fixedTabOpenCalls.push(call);
+      const accepted = options.experimental_openFixedTab?.(call) ?? false;
+      if (accepted && target !== undefined) {
+        fixedTabTargetSnapshot = {
+          panelId: panelOptions.tab.panelId,
+          sequence: (fixedTabTargetSnapshot?.sequence ?? 0) + 1,
+          tabId: panelOptions.tab.id,
+          target,
+        };
+        for (const listener of fixedTabTargetListeners) listener();
+      }
+      return accepted;
+    },
+  };
   const sidebarActionCalls: SidebarActionCall[] = [];
   const sidebarPullRequests = new Map(
     Object.entries(options.sidebarPullRequests ?? {}),
@@ -1197,6 +1367,15 @@ export function renderSlot<
     status: options.sidebarThreads?.status ?? "ready",
     threads: options.sidebarThreads?.threads ?? [],
     projects: options.sidebarThreads?.projects ?? [],
+  };
+  const providers: PluginProvidersState = {
+    status: options.providers?.status ?? "ready",
+    providers: options.providers?.providers ?? [],
+  };
+  const codeTheme: PluginCodeThemeState = {
+    mode: options.codeTheme?.mode ?? "light",
+    name: options.codeTheme?.name ?? "pierre-light",
+    theme: options.codeTheme?.theme ?? null,
   };
   const sidebarActions: PluginSidebarThreadActions = {
     open(threadId, openOptions) {
@@ -1254,6 +1433,24 @@ export function renderSlot<
         options: panelOptions,
       });
       return options.openThreadPanel?.(panelOptions) ?? false;
+    },
+    openUrl(url) {
+      navigateCalls.push({ method: "openUrl", url });
+      return options.openUrl?.(url) ?? false;
+    },
+    experimental_openFilePreview(fileOptions) {
+      navigateCalls.push({
+        method: "experimental_openFilePreview",
+        options: fileOptions,
+      });
+      return options.openFilePreview?.(fileOptions) ?? false;
+    },
+    experimental_openFileExternally(fileOptions) {
+      navigateCalls.push({
+        method: "experimental_openFileExternally",
+        options: fileOptions,
+      });
+      return options.openFileExternally?.(fileOptions) ?? false;
     },
   };
 
@@ -1363,12 +1560,17 @@ export function renderSlot<
     bbContext: { projectId, threadId },
     navigate,
     navigateCalls,
+    appPanel,
+    experimental_fixedTabOpenCalls,
+    fixedTabTarget,
     composer,
     composerLog,
     sidebarThreads,
     sidebarActions,
     sidebarActionCalls,
     sidebarPullRequests,
+    providers,
+    codeTheme,
   };
 
   const releaseComposerOwnership = (): void => {
@@ -1437,6 +1639,7 @@ export function renderSlot<
     setComposerText,
     setComposerScope,
     navigateCalls,
+    experimental_fixedTabOpenCalls,
     sidebarActionCalls,
     composer: composerLog,
     behavior: {
@@ -1448,6 +1651,7 @@ export function renderSlot<
     inspection: {
       rpcCalls,
       navigateCalls,
+      experimental_fixedTabOpenCalls,
       sidebarActionCalls,
       composer: composerLog,
     },

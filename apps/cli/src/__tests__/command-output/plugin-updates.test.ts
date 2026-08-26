@@ -18,6 +18,7 @@ const pluginList = (id: string, source: string) => ({
       rootDir: `/plugins/${id}`,
       version: "1.0.0",
       provenance: "direct",
+      publisherLabel: null,
       isOrphanedBuiltin: false,
       sourceDisplay: `npm · ${id} · tracks compatible`,
       updateState: {},
@@ -193,6 +194,32 @@ describe("bb plugin update commands", () => {
     expect(output).not.toContain("other@1.0.0");
   });
 
+  it("list annotates only CLI commands shadowed by core", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        plugins: [
+          {
+            ...pluginList("shadower", "path:/shadower").plugins[0],
+            cliCommand: { name: "thread", summary: "Shadow threads" },
+          },
+          {
+            ...pluginList("notes", "path:/notes").plugins[0],
+            cliCommand: { name: "notes", summary: "Take notes" },
+          },
+        ],
+      }),
+    );
+
+    await runCommand(["plugin", "list"], register);
+
+    const output = collectLogPayloads(vi.mocked(console.log)).join("\n");
+    expect(output).toContain(
+      'command: bb plugin run shadower — Shadow threads (core command "bb thread" takes precedence)',
+    );
+    expect(output).toContain("command: bb notes — Take notes");
+    expect(output).not.toContain('core command "bb notes"');
+  });
+
   it("skips pinned plugins with manual reinstall guidance", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       jsonResponse({
@@ -210,7 +237,7 @@ describe("bb plugin update commands", () => {
     await runCommand(["plugin", "update", "notes"], register);
 
     expect(collectLogPayloads(vi.mocked(console.log)).join("\n")).toContain(
-      "remove and reinstall with a tracking npm range or git branch",
+      "remove and reinstall with a tracking npm range, git branch, or git semver range",
     );
     expect(fetch).toHaveBeenCalledTimes(1);
   });

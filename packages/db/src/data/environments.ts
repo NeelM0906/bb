@@ -559,8 +559,8 @@ export function requireEnvironmentLifecycleEventApplied(
   return outcome.environment;
 }
 
-function applyEnvironmentLifecycleEventRecord(
-  db: EnvironmentWriteConnection,
+export function applyEnvironmentLifecycleEventInTransaction(
+  db: DbTransaction,
   args: ApplyEnvironmentLifecycleEventArgs,
 ): ApplyEnvironmentLifecycleEventOutcome {
   const environment = getEnvironment(db, args.environmentId);
@@ -672,18 +672,11 @@ export function applyEnvironmentLifecycleEvent(
   args: ApplyEnvironmentLifecycleEventArgs,
 ): ApplyEnvironmentLifecycleEventOutcome {
   const outcome = db.transaction(
-    (tx) => applyEnvironmentLifecycleEventRecord(tx, args),
+    (tx) => applyEnvironmentLifecycleEventInTransaction(tx, args),
     { behavior: "immediate" },
   );
   if (outcome.applied) {
     notifier.notifyEnvironment(args.environmentId, outcome.changes);
   }
   return outcome;
-}
-
-export function applyEnvironmentLifecycleEventInTransaction(
-  tx: DbTransaction,
-  args: ApplyEnvironmentLifecycleEventArgs,
-): ApplyEnvironmentLifecycleEventOutcome {
-  return applyEnvironmentLifecycleEventRecord(tx, args);
 }

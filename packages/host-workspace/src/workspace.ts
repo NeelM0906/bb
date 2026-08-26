@@ -12,6 +12,7 @@ import path from "node:path";
 import {
   getPullRequestForCurrentBranch,
   runPullRequestActionForCurrentBranch,
+  type GitHostCliOptions,
   type GitHostPullRequestAction,
   type GitHostPullRequestLookup,
 } from "./git-host.js";
@@ -23,7 +24,6 @@ import {
   getCurrentBranch,
   hasRef,
   hasUncommittedChanges,
-  listBranches,
   parseNameStatusEntries,
   parseNameStatusSourceEntries,
   parseNumstatEntriesZ,
@@ -36,7 +36,11 @@ import {
   runGit,
   runGitWithNullRecordLimit,
   type GitCommandResult,
+  type GitProcessOptions,
+  type GitNullRecordFormat,
   type GitNullRecordLimitResult,
+  type NameStatusSourceEntry,
+  type NumstatEntry,
   type RunGitOptions,
   runShellPipeline,
   summarizeNumstat,
@@ -59,6 +63,10 @@ export interface DiffOptions {
 
 export interface StatusOptions {
   mergeBaseBranch?: string;
+  /** Maximum untracked files whose line stats may be enriched. */
+  maxUntrackedLineStatFiles?: number;
+  /** Maximum aggregate untracked bytes whose line stats may be enriched. */
+  maxUntrackedLineStatBytes?: number;
 }
 
 export type DiffResult = ThreadGitDiffResponse;
@@ -71,11 +79,6 @@ export interface CommitOptions {
 export interface CommitResult {
   commitSha: string;
   commitSubject: string;
-}
-
-export interface FetchOptions {
-  remote?: string;
-  branch?: string;
 }
 
 export interface SquashMergeOptions {
@@ -102,7 +105,7 @@ type DiffSummary = {
 
 export interface DiffFilesArgs {
   target: WorkspaceDiffTarget;
-  /** Maximum returned files; one extra sentinel entry reports overflow. */
+  /** Maximum returned files; `truncated` reports additional changed files. */
   maxFiles: number;
 }
 
@@ -110,6 +113,8 @@ export interface DiffFilesResult {
   files: RawDiffFileStat[];
   shortstat: string;
   mergeBaseRef: string | null;
+  /** True when more changed files exist beyond the returned bounded slice. */
+  truncated: boolean;
 }
 
 export interface DiffPatchArgs {
@@ -217,6 +222,19 @@ type DiffStatArtifacts = {
   untrackedPaths: string[];
 };
 
+type BoundedDiffStatArtifacts = {
+  trackedEntries: NameStatusSourceEntry[];
+  numstat: string;
+  mergeBaseRef: string | null;
+  untrackedPaths: string[];
+  truncated: boolean;
+};
+
+type UntrackedStatusNumstatEnrichment = {
+  entries: NumstatEntry[];
+  complete: boolean;
+};
+
 type ReadTrackedPatchByPathArgs = {
   target: WorkspaceDiffTarget;
   paths: string[];
@@ -245,6 +263,7 @@ interface ListWorkspaceFilesRecursivelyArgs {
 }
 
 const WORKSPACE_STATUS_GIT_TIMEOUT_MS = 15_000;
+const WORKSPACE_STATUS_UNTRACKED_ENRICHMENT_TIMEOUT_MS = 10_000;
 const TEMPORARY_UNTRACKED_INDEX_ADD_ATTEMPTS = 3;
 const DIFF_NUMSTAT_BASE_BUFFER_BYTES = 64 * 1024;
 const DIFF_NUMSTAT_PER_FILE_BUFFER_BYTES = 16 * 1024;
@@ -542,27 +561,28 @@ function buildDiffOutputGitOptions(
 async function readHeadNumstat(
   workspacePath: string,
   timeoutMs?: number,
+  options: GitProcessOptions = {},
 ): Promise<string> {
   const runUncommittedDiff = createUncommittedDiffRunner(
     workspacePath,
-    timeoutMs,
+    options,
   );
   const result = await runUncommittedDiff(
     (baseRef) => ["diff", "--numstat", "-z", baseRef, "--"],
-    { cwd: workspacePath, timeoutMs },
+    { cwd: workspacePath, timeoutMs, ...options },
   );
   return result.stdout;
 }
 
 async function readEmptyTreeSha(
   workspacePath: string,
-  timeoutMs?: number,
+  options: Pick<RunGitOptions, "shellPath" | "timeoutMs"> = {},
 ): Promise<string> {
   // An unborn branch has no HEAD tree. Compare the index and working tree to
   // Git's empty tree so staged files remain visible before the first commit.
   const emptyTree = await runGit(["hash-object", "-t", "tree", os.devNull], {
     cwd: workspacePath,
-    timeoutMs,
+    ...options,
   });
   const emptyTreeSha = emptyTree.stdout.trim();
   if (emptyTreeSha.length === 0) {
@@ -581,20 +601,24 @@ type UncommittedDiffRunner = (
 
 function createUncommittedDiffRunner(
   workspacePath: string,
-  defaultTimeoutMs?: number,
+  gitProcessOptions: GitProcessOptions = {},
 ): UncommittedDiffRunner {
   let emptyTreeShaPromise: Promise<string> | null = null;
 
   return async (buildArgs, options) => {
     if (emptyTreeShaPromise !== null) {
-      return runGit(buildArgs(await emptyTreeShaPromise), options);
+      return runGit(buildArgs(await emptyTreeShaPromise), {
+        ...options,
+        ...gitProcessOptions,
+      });
     }
 
     const headArgs = buildArgs("HEAD");
     const headResult = await runGit(headArgs, {
       ...options,
+      ...gitProcessOptions,
       allowFailure: true,
-      timeoutMs: options.timeoutMs ?? defaultTimeoutMs,
+      timeoutMs: options.timeoutMs,
     });
     if (headResult.exitCode === 0) {
       return headResult;
@@ -607,19 +631,24 @@ function createUncommittedDiffRunner(
       );
     }
 
-    emptyTreeShaPromise ??= readEmptyTreeSha(
-      workspacePath,
-      options.timeoutMs ?? defaultTimeoutMs,
-    );
-    return runGit(buildArgs(await emptyTreeShaPromise), options);
+    emptyTreeShaPromise ??= readEmptyTreeSha(workspacePath, {
+      timeoutMs: options.timeoutMs,
+      ...gitProcessOptions,
+    });
+    return runGit(buildArgs(await emptyTreeShaPromise), {
+      ...options,
+      ...gitProcessOptions,
+    });
   };
 }
 
 export class Workspace {
   readonly path: string;
+  private readonly gitProcessOptions: GitProcessOptions;
 
-  constructor(path: string) {
+  constructor(path: string, gitProcessOptions: GitProcessOptions = {}) {
     this.path = path;
+    this.gitProcessOptions = { ...gitProcessOptions };
   }
 
   static withMutations<T>(
@@ -629,11 +658,50 @@ export class Workspace {
     return withCheckoutMutationLocks(
       workspaces.map((workspace) => workspace.path),
       work,
+      undefined,
+      workspaces[0]?.gitProcessOptions,
     );
   }
 
   withMutation<T>(work: WorkspaceMutationWork<T>): Promise<T> {
-    return withCheckoutMutationLock(this.path, work);
+    return withCheckoutMutationLock(
+      this.path,
+      work,
+      undefined,
+      this.gitProcessOptions,
+    );
+  }
+
+  private runGit(
+    args: string[],
+    options: RunGitOptions,
+  ): Promise<GitCommandResult> {
+    return runGit(args, { ...options, ...this.gitProcessOptions });
+  }
+
+  private runGitWithNullRecordLimit(
+    args: string[],
+    options: RunGitOptions,
+    recordFormat: GitNullRecordFormat,
+    maxRecords: number,
+  ): Promise<GitNullRecordLimitResult> {
+    return runGitWithNullRecordLimit(
+      args,
+      { ...options, ...this.gitProcessOptions },
+      recordFormat,
+      maxRecords,
+    );
+  }
+
+  private runShellPipeline(
+    script: string,
+    positionalArgs: string[],
+    options: Parameters<typeof runShellPipeline>[2],
+  ): Promise<GitCommandResult> {
+    return runShellPipeline(script, positionalArgs, {
+      ...options,
+      ...this.gitProcessOptions,
+    });
   }
 
   get exists(): Promise<boolean> {
@@ -641,11 +709,11 @@ export class Workspace {
   }
 
   get isGitRepo(): Promise<boolean> {
-    return detectGitRepo(this.path);
+    return detectGitRepo(this.path, this.gitProcessOptions);
   }
 
   get currentBranch(): Promise<string | undefined> {
-    return getCurrentBranch(this.path);
+    return getCurrentBranch(this.path, this.gitProcessOptions);
   }
 
   /**
@@ -654,7 +722,9 @@ export class Workspace {
    * surface as "unavailable". Never throws — see
    * {@link getPullRequestForCurrentBranch}.
    */
-  async getPullRequest(): Promise<GitHostPullRequestLookup> {
+  async getPullRequest(
+    options: GitHostCliOptions = {},
+  ): Promise<GitHostPullRequestLookup> {
     // A vanished workspace (deleted worktree dir) means the lookup cannot
     // run; without this check getCurrentBranch folds it into "no branch" and
     // the missing workspace would masquerade as "no PR exists".
@@ -664,20 +734,23 @@ export class Workspace {
         message: `Workspace path no longer exists: ${this.path}`,
       };
     }
-    const branch = await getCurrentBranch(this.path);
+    const branch = await getCurrentBranch(this.path, this.gitProcessOptions);
     if (!branch) {
       return { outcome: "none" };
     }
     return getPullRequestForCurrentBranch({
       cwd: this.path,
       localBranch: branch,
+      ...this.gitProcessOptions,
+      ...options,
     });
   }
 
   async runPullRequestAction(
     action: PullRequestActionOptions,
+    options: GitHostCliOptions = {},
   ): Promise<void> {
-    const branch = await getCurrentBranch(this.path);
+    const branch = await getCurrentBranch(this.path, this.gitProcessOptions);
     if (!branch) {
       throw new WorkspaceError(
         "invalid_request",
@@ -688,66 +761,112 @@ export class Workspace {
       cwd: this.path,
       localBranch: branch,
       action,
+      ...this.gitProcessOptions,
+      ...options,
     });
   }
 
   async getStatus(options: StatusOptions = {}): Promise<WorkspaceStatus> {
+    const maxUntrackedLineStatFiles = options.maxUntrackedLineStatFiles;
+    const maxUntrackedLineStatBytes = options.maxUntrackedLineStatBytes;
+    const hasLineStatFileBudget = maxUntrackedLineStatFiles !== undefined;
+    const hasLineStatByteBudget = maxUntrackedLineStatBytes !== undefined;
+    if (hasLineStatFileBudget !== hasLineStatByteBudget) {
+      throw new WorkspaceError(
+        "invalid_request",
+        "Untracked line-stat file and byte budgets must be provided together",
+      );
+    }
+    if (
+      maxUntrackedLineStatFiles !== undefined &&
+      maxUntrackedLineStatBytes !== undefined
+    ) {
+      assertPositiveInteger(
+        maxUntrackedLineStatFiles,
+        "maxUntrackedLineStatFiles",
+      );
+      assertPositiveInteger(
+        maxUntrackedLineStatBytes,
+        "maxUntrackedLineStatBytes",
+      );
+    }
     await ensureGitRepo(this.path, {
       timeoutMs: WORKSPACE_STATUS_GIT_TIMEOUT_MS,
+      ...this.gitProcessOptions,
     });
 
     const mergeBaseBranch = options.mergeBaseBranch;
-    const [
-      statusOutput,
-      diffOutput,
-      checkout,
-      defaultBranch,
-      mergeBaseData,
-    ] = await Promise.all([
-      // --no-optional-locks: this runs on the watcher polling cadence and
-      // must not take index.lock under a concurrent commit.
-      runGit(
-        [
-          "--no-optional-locks",
-          "status",
-          "--porcelain=v1",
-          "--branch",
-          "--untracked-files=all",
-        ],
-        { cwd: this.path, timeoutMs: WORKSPACE_STATUS_GIT_TIMEOUT_MS },
-      ),
-      readHeadNumstat(this.path, WORKSPACE_STATUS_GIT_TIMEOUT_MS),
-      getCheckoutRef(this.path, {
-        timeoutMs: WORKSPACE_STATUS_GIT_TIMEOUT_MS,
-      }),
-      readDefaultBranch(this.path, {
-        timeoutMs: WORKSPACE_STATUS_GIT_TIMEOUT_MS,
-      }),
-      mergeBaseBranch
-        ? this.readMergeBaseStatus(
-            mergeBaseBranch,
-            WORKSPACE_STATUS_GIT_TIMEOUT_MS,
-          )
-        : null,
-    ]);
+    const [statusOutput, diffOutput, checkout, defaultBranch, mergeBaseData] =
+      await Promise.all([
+        // --no-optional-locks: this runs on the watcher polling cadence and
+        // must not take index.lock under a concurrent commit.
+        this.runGit(
+          [
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "--branch",
+            "--untracked-files=all",
+          ],
+          { cwd: this.path, timeoutMs: WORKSPACE_STATUS_GIT_TIMEOUT_MS },
+        ),
+        readHeadNumstat(
+          this.path,
+          WORKSPACE_STATUS_GIT_TIMEOUT_MS,
+          this.gitProcessOptions,
+        ),
+        getCheckoutRef(this.path, {
+          timeoutMs: WORKSPACE_STATUS_GIT_TIMEOUT_MS,
+          ...this.gitProcessOptions,
+        }),
+        readDefaultBranch(this.path, {
+          timeoutMs: WORKSPACE_STATUS_GIT_TIMEOUT_MS,
+          ...this.gitProcessOptions,
+        }),
+        mergeBaseBranch
+          ? this.readMergeBaseStatus(
+              mergeBaseBranch,
+              WORKSPACE_STATUS_GIT_TIMEOUT_MS,
+            )
+          : null,
+      ]);
 
     const entries = parsePorcelainEntries(statusOutput.stdout);
-    // Automatic status runs on the watcher polling cadence. Keep its process
-    // count and content reads independent of the number of untracked files:
-    // tracked line stats come from the single HEAD diff above, while untracked
-    // files remain visible with unknown per-file stats.
-    const numstatEntries = parseNumstatEntriesZ(diffOutput);
-    const numstatByPath = new Map(
-      numstatEntries.map((entry) => [entry.path, entry] as const),
+    const untrackedPaths = entries
+      .filter((entry) => entry.status === "??")
+      .map((entry) => entry.path);
+    const trackedNumstatEntries = parseNumstatEntriesZ(diffOutput);
+    const untrackedNumstatEnrichment =
+      maxUntrackedLineStatFiles !== undefined &&
+      maxUntrackedLineStatBytes !== undefined
+        ? await this.readBoundedUntrackedStatusNumstat({
+            paths: untrackedPaths,
+            maxFiles: maxUntrackedLineStatFiles,
+            maxBytes: maxUntrackedLineStatBytes,
+          })
+        : { entries: [], complete: false };
+    const trackedNumstatByPath = new Map(
+      trackedNumstatEntries.map((entry) => [entry.path, entry] as const),
+    );
+    const untrackedNumstatByPath = new Map(
+      untrackedNumstatEnrichment.entries.map(
+        (entry) => [entry.path, entry] as const,
+      ),
     );
     let workingTreeInsertions = 0;
     let workingTreeDeletions = 0;
-    for (const entry of numstatEntries) {
+    for (const entry of [
+      ...trackedNumstatEntries,
+      ...untrackedNumstatEnrichment.entries,
+    ]) {
       if (entry.insertions !== null) workingTreeInsertions += entry.insertions;
       if (entry.deletions !== null) workingTreeDeletions += entry.deletions;
     }
     const files: WorkspaceFileStatus[] = entries.map((entry) => {
-      const numstat = numstatByPath.get(entry.path);
+      const numstat =
+        entry.status === "??"
+          ? untrackedNumstatByPath.get(entry.path)
+          : trackedNumstatByPath.get(entry.path);
       return {
         path: entry.path,
         status: resolveWorkspaceFileStatusKind({
@@ -759,7 +878,7 @@ export class Workspace {
         deletions: numstat?.deletions ?? null,
       };
     });
-    const hasUntracked = entries.some((entry) => entry.status === "??");
+    const hasUntracked = untrackedPaths.length > 0;
     const hasTrackedChanges = entries.some((entry) => entry.status !== "??");
     const hasDirtyEntries = entries.length > 0;
     const hasCommittedChanges =
@@ -776,7 +895,7 @@ export class Workspace {
         state,
         insertions: workingTreeInsertions,
         deletions: workingTreeDeletions,
-        lineStatsComplete: !hasUntracked,
+        lineStatsComplete: !hasUntracked || untrackedNumstatEnrichment.complete,
         files,
       },
       branch: {
@@ -796,23 +915,34 @@ export class Workspace {
   }
 
   async getLocalStateFingerprint(): Promise<string> {
+    await ensureGitRepo(this.path, {
+      timeoutMs: WORKSPACE_STATUS_GIT_TIMEOUT_MS,
+      ...this.gitProcessOptions,
+    });
     const [headSha, status] = await Promise.all([
       this.getHeadSha(),
-      this.getStatus(),
+      this.runGit(
+        [
+          "--no-optional-locks",
+          "status",
+          "--porcelain=v1",
+          "--branch",
+          "--untracked-files=normal",
+        ],
+        { cwd: this.path, timeoutMs: WORKSPACE_STATUS_GIT_TIMEOUT_MS },
+      ),
     ]);
     return JSON.stringify({
-      checkout: status.checkout,
-      currentBranch: status.branch.currentBranch,
       headSha,
-      workingTree: status.workingTree,
+      porcelain: status.stdout,
     });
   }
 
   async getSharedGitRefsFingerprint(): Promise<string> {
-    await ensureGitRepo(this.path);
+    await ensureGitRepo(this.path, this.gitProcessOptions);
 
     const [refs, remoteHead] = await Promise.all([
-      runGit(
+      this.runGit(
         [
           "for-each-ref",
           "--format=%(refname)%00%(objectname)",
@@ -821,7 +951,7 @@ export class Workspace {
         ],
         { cwd: this.path },
       ),
-      runGit(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], {
+      this.runGit(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], {
         cwd: this.path,
         allowFailure: true,
       }),
@@ -834,7 +964,7 @@ export class Workspace {
   }
 
   async getDiff(options: DiffOptions = {}): Promise<DiffResult> {
-    await ensureGitRepo(this.path);
+    await ensureGitRepo(this.path, this.gitProcessOptions);
 
     const target = options.target ?? { type: "uncommitted" as const };
     return this.buildDiffSummary({
@@ -853,7 +983,7 @@ export class Workspace {
    * these raw stats into product tiering — the daemon stays policy-free.
    */
   async diffFiles(args: DiffFilesArgs): Promise<DiffFilesResult> {
-    await ensureGitRepo(this.path);
+    await ensureGitRepo(this.path, this.gitProcessOptions);
     assertPositiveInteger(args.maxFiles, "maxFiles");
 
     const stats = await this.readBoundedDiffStatArtifacts(
@@ -865,51 +995,42 @@ export class Workspace {
         (entry) => [entry.path, entry] as const,
       ),
     );
-    const files: RawDiffFileStat[] = parseNameStatusSourceEntries(
-      stats.nameStatus,
-    ).map((entry) => {
-      const numstat = numstatByPath.get(entry.path);
-      const binary =
-        numstat !== undefined &&
-        numstat.insertions === null &&
-        numstat.deletions === null;
-      return {
-        path: entry.path,
-        previousPath: entry.previousPath,
-        statusLetter: normalizeNameStatusLetter(entry.status),
-        additions: binary ? 0 : (numstat?.insertions ?? 0),
-        deletions: binary ? 0 : (numstat?.deletions ?? 0),
-        binary,
-        origin: "tracked",
-      };
-    });
-
-    const overflowCount = args.maxFiles + 1;
-    if (files.length + stats.untrackedPaths.length > args.maxFiles) {
-      const overflowFiles = files.slice(0, overflowCount);
-      const untrackedSlots = overflowCount - overflowFiles.length;
-      if (untrackedSlots > 0) {
-        overflowFiles.push(
-          ...stats.untrackedPaths
-            .slice(0, untrackedSlots)
-            .map(toUntrackedDiffFilePlaceholder),
-        );
-      }
-      return {
-        files: overflowFiles,
-        shortstat: stats.shortstat,
-        mergeBaseRef: stats.mergeBaseRef,
-      };
-    }
-
+    const trackedFiles: RawDiffFileStat[] = stats.trackedEntries.map(
+      (entry) => {
+        const numstat = numstatByPath.get(entry.path);
+        const binary =
+          numstat !== undefined &&
+          numstat.insertions === null &&
+          numstat.deletions === null;
+        return {
+          path: entry.path,
+          previousPath: entry.previousPath,
+          statusLetter: normalizeNameStatusLetter(entry.status),
+          additions: binary ? 0 : (numstat?.insertions ?? 0),
+          deletions: binary ? 0 : (numstat?.deletions ?? 0),
+          binary,
+          origin: "tracked",
+        };
+      },
+    );
     const untrackedFiles = await this.readUntrackedDiffFileStats(
       stats.untrackedPaths,
     );
+    const files = [...trackedFiles, ...untrackedFiles];
+    const summary = files.reduce(
+      (result, file) => ({
+        changedFiles: result.changedFiles + 1,
+        insertions: result.insertions + file.additions,
+        deletions: result.deletions + file.deletions,
+      }),
+      { changedFiles: 0, insertions: 0, deletions: 0 },
+    );
 
     return {
-      files: [...files, ...untrackedFiles],
-      shortstat: stats.shortstat,
+      files,
+      shortstat: formatShortstat(summary),
       mergeBaseRef: stats.mergeBaseRef,
+      truncated: stats.truncated,
     };
   }
 
@@ -923,10 +1044,10 @@ export class Workspace {
    * count.
    */
   async diffPatch(args: DiffPatchArgs): Promise<DiffPatchEntry[]> {
-    await ensureGitRepo(this.path);
+    await ensureGitRepo(this.path, this.gitProcessOptions);
 
     const untrackedForTarget = this.targetIncludesUntracked(args.target)
-      ? new Set(await this.listUntrackedPaths())
+      ? new Set(await this.listRequestedUntrackedPaths(args.paths))
       : new Set<string>();
 
     const untrackedPaths = args.paths.filter((p) => untrackedForTarget.has(p));
@@ -966,9 +1087,9 @@ export class Workspace {
   }
 
   async getHeadSha(): Promise<string | null> {
-    await ensureGitRepo(this.path);
+    await ensureGitRepo(this.path, this.gitProcessOptions);
 
-    const result = await runGit(["rev-parse", "HEAD"], {
+    const result = await this.runGit(["rev-parse", "HEAD"], {
       allowFailure: true,
       cwd: this.path,
     });
@@ -984,12 +1105,8 @@ export class Workspace {
     );
   }
 
-  async getBranches(): Promise<string[]> {
-    return listBranches(this.path);
-  }
-
   async listFiles(): Promise<string[]> {
-    const gitResult = await runGit(
+    const gitResult = await this.runGit(
       ["ls-files", "--cached", "--others", "--exclude-standard"],
       { allowFailure: true, cwd: this.path },
     );
@@ -1013,15 +1130,15 @@ export class Workspace {
   }
 
   async commit(options: CommitOptions): Promise<CommitResult> {
-    await ensureGitRepo(this.path);
+    await ensureGitRepo(this.path, this.gitProcessOptions);
 
     return this.withMutation(async () => {
-      await runGit(["add", "-A"], { cwd: this.path });
+      await this.runGit(["add", "-A"], { cwd: this.path });
       // Detect "nothing to commit" deterministically inside the mutation lock,
       // so a commit racing a concurrent commit (or an already-clean tree)
       // surfaces as a typed no_changes condition the server maps to 409,
       // instead of a generic git failure that surfaces as a 502.
-      const staged = await runGit(["diff", "--cached", "--quiet"], {
+      const staged = await this.runGit(["diff", "--cached", "--quiet"], {
         cwd: this.path,
         allowFailure: true,
       });
@@ -1032,10 +1149,14 @@ export class Workspace {
       if (options.noVerify) {
         commitArgs.push("--no-verify");
       }
-      await runGit(commitArgs, { cwd: this.path });
-      const commitSha = await revParse(this.path, "HEAD");
+      await this.runGit(commitArgs, { cwd: this.path });
+      const commitSha = await revParse(
+        this.path,
+        "HEAD",
+        this.gitProcessOptions,
+      );
       const commitSubject = (
-        await runGit(["log", "-1", "--pretty=%s"], { cwd: this.path })
+        await this.runGit(["log", "-1", "--pretty=%s"], { cwd: this.path })
       ).stdout.trim();
 
       return { commitSha, commitSubject };
@@ -1043,99 +1164,17 @@ export class Workspace {
   }
 
   async reset(): Promise<void> {
-    await ensureGitRepo(this.path);
+    await ensureGitRepo(this.path, this.gitProcessOptions);
     await this.withMutation(async () => {
-      await runGit(["reset", "--hard", "HEAD"], { cwd: this.path });
-      await runGit(["clean", "-fd"], { cwd: this.path });
-    });
-  }
-
-  async fetch(options: FetchOptions = {}): Promise<void> {
-    await ensureGitRepo(this.path);
-
-    const remote = options.remote ?? "origin";
-    const args = ["fetch", remote];
-    if (options.branch) {
-      args.push(options.branch);
-    }
-
-    await runGit(args, { cwd: this.path });
-  }
-
-  async checkoutBranch(branchName: string): Promise<void> {
-    await ensureGitRepo(this.path);
-
-    await this.withMutation(async () => {
-      if ((await this.currentBranch) === branchName) {
-        return;
-      }
-
-      if (await hasRef(this.path, `refs/heads/${branchName}`)) {
-        await runGit(["checkout", branchName], { cwd: this.path });
-        return;
-      }
-
-      if (await hasRef(this.path, `refs/remotes/origin/${branchName}`)) {
-        await runGit(["checkout", "-B", branchName, `origin/${branchName}`], {
-          cwd: this.path,
-        });
-        await runGit(
-          ["branch", "--set-upstream-to", `origin/${branchName}`, branchName],
-          { cwd: this.path },
-        );
-        return;
-      }
-
-      await runGit(["checkout", "-B", branchName], { cwd: this.path });
-    });
-  }
-
-  async detachHead(): Promise<void> {
-    await ensureGitRepo(this.path);
-
-    await this.withMutation(async () => {
-      if ((await this.currentBranch) === undefined) {
-        return;
-      }
-
-      await runGit(["checkout", "--detach"], { cwd: this.path });
-    });
-  }
-
-  async stash(message = "bb-workspace-stash"): Promise<string | null> {
-    await ensureGitRepo(this.path);
-
-    return this.withMutation(async () => {
-      if (!(await hasUncommittedChanges(this.path))) {
-        return null;
-      }
-
-      await runGit(["stash", "push", "--include-untracked", "-m", message], {
-        cwd: this.path,
-      });
-      const ref = await runGit(["stash", "list", "-1", "--format=%gd"], {
-        cwd: this.path,
-      });
-      return ref.stdout.trim() || null;
-    });
-  }
-
-  async stashPop(ref?: string): Promise<void> {
-    await ensureGitRepo(this.path);
-
-    const args = ["stash", "pop"];
-    if (ref) {
-      args.push(ref);
-    }
-    await this.withMutation(async () => {
-      await runGit(args, { cwd: this.path });
+      await this.runGit(["reset", "--hard", "HEAD"], { cwd: this.path });
+      await this.runGit(["clean", "-fd"], { cwd: this.path });
     });
   }
 
   async squashMergeInto(
     options: SquashMergeOptions,
   ): Promise<SquashMergeResult> {
-    await ensureGitRepo(this.path);
+    await ensureGitRepo(this.path, this.gitProcessOptions);
 
     const sourceBranch = await this.currentBranch;
     if (!sourceBranch) {
@@ -1152,31 +1191,41 @@ export class Workspace {
     try {
       await runGitWithWorktreeMetadataLock(
         ["worktree", "add", "--detach", tempDir, target.baseRef],
-        { cwd: this.path },
+        { cwd: this.path, ...this.gitProcessOptions },
       );
-      const squashCommit = await new Workspace(tempDir).withMutation(
-        async () => {
-          await runGit(["merge", "--squash", sourceBranch], { cwd: tempDir });
-          // A squash of a branch with no committed work ahead of the target
-          // stages nothing; surface that as a typed no_changes condition the
-          // server maps to 409, not a generic git "nothing to commit" failure.
-          const staged = await runGit(["diff", "--cached", "--quiet"], {
+      const squashCommit = await new Workspace(
+        tempDir,
+        this.gitProcessOptions,
+      ).withMutation(async () => {
+        await this.runGit(["merge", "--squash", sourceBranch], {
+          cwd: tempDir,
+        });
+        // A squash of a branch with no committed work ahead of the target
+        // stages nothing; surface that as a typed no_changes condition the
+        // server maps to 409, not a generic git "nothing to commit" failure.
+        const staged = await this.runGit(["diff", "--cached", "--quiet"], {
+          cwd: tempDir,
+          allowFailure: true,
+        });
+        if (staged.exitCode === 0) {
+          throw new WorkspaceError("no_changes", "No changes to merge");
+        }
+        await this.runGit(
+          ["commit", "--no-verify", "-m", options.commitMessage],
+          {
             cwd: tempDir,
-            allowFailure: true,
-          });
-          if (staged.exitCode === 0) {
-            throw new WorkspaceError("no_changes", "No changes to merge");
-          }
-          await runGit(["commit", "--no-verify", "-m", options.commitMessage], {
-            cwd: tempDir,
-          });
-          const commitSha = await revParse(tempDir, "HEAD");
-          const commitSubject = (
-            await runGit(["log", "-1", "--pretty=%s"], { cwd: tempDir })
-          ).stdout.trim();
-          return { commitSha, commitSubject };
-        },
-      );
+          },
+        );
+        const commitSha = await revParse(
+          tempDir,
+          "HEAD",
+          this.gitProcessOptions,
+        );
+        const commitSubject = (
+          await this.runGit(["log", "-1", "--pretty=%s"], { cwd: tempDir })
+        ).stdout.trim();
+        return { commitSha, commitSubject };
+      });
       await this.publishSquashMergeCommit({
         targetBranch: options.targetBranch,
         target,
@@ -1194,6 +1243,7 @@ export class Workspace {
         ["worktree", "remove", tempDir, "--force"],
         {
           cwd: this.path,
+          ...this.gitProcessOptions,
           allowFailure: true,
         },
       );
@@ -1215,16 +1265,20 @@ export class Workspace {
     targetBranch: string,
   ): Promise<SquashMergeTarget> {
     const localRef = `refs/heads/${targetBranch}`;
-    if (await hasRef(this.path, localRef)) {
+    if (await hasRef(this.path, localRef, this.gitProcessOptions)) {
       return {
         kind: "local",
         baseRef: localRef,
-        expectedSha: await revParse(this.path, localRef),
+        expectedSha: await revParse(
+          this.path,
+          localRef,
+          this.gitProcessOptions,
+        ),
       };
     }
 
     const directRemoteRef = `refs/remotes/${targetBranch}`;
-    if (await hasRef(this.path, directRemoteRef)) {
+    if (await hasRef(this.path, directRemoteRef, this.gitProcessOptions)) {
       throw new WorkspaceError(
         "non_local_target_branch",
         `Cannot squash merge into remote branch ${targetBranch}; select a local branch`,
@@ -1232,7 +1286,7 @@ export class Workspace {
     }
 
     const remoteRef = `refs/remotes/origin/${targetBranch}`;
-    if (await hasRef(this.path, remoteRef)) {
+    if (await hasRef(this.path, remoteRef, this.gitProcessOptions)) {
       throw new WorkspaceError(
         "non_local_target_branch",
         `Cannot squash merge into remote-only branch ${targetBranch}; select a local branch`,
@@ -1252,22 +1306,30 @@ export class Workspace {
       args.targetBranch,
     );
     if (checkedOutTargetPath !== null) {
-      await new Workspace(checkedOutTargetPath).withMutation(async () => {
-        if (await hasUncommittedChanges(checkedOutTargetPath)) {
+      await new Workspace(
+        checkedOutTargetPath,
+        this.gitProcessOptions,
+      ).withMutation(async () => {
+        if (
+          await hasUncommittedChanges(
+            checkedOutTargetPath,
+            this.gitProcessOptions,
+          )
+        ) {
           throw new WorkspaceError(
             "dirty_target_branch",
             `Cannot squash merge into ${args.targetBranch}: target branch is checked out at ${checkedOutTargetPath} with uncommitted changes`,
           );
         }
 
-        await runGit(["merge", "--ff-only", args.commitSha], {
+        await this.runGit(["merge", "--ff-only", args.commitSha], {
           cwd: checkedOutTargetPath,
         });
       });
       return;
     }
 
-    await runGit(
+    await this.runGit(
       [
         "update-ref",
         `refs/heads/${args.targetBranch}`,
@@ -1287,7 +1349,7 @@ export class Workspace {
   }
 
   private async listWorktrees(): Promise<WorktreeEntry[]> {
-    const result = await runGit(["worktree", "list", "--porcelain"], {
+    const result = await this.runGit(["worktree", "list", "--porcelain"], {
       cwd: this.path,
     });
     return parseWorktreeList(result.stdout);
@@ -1333,7 +1395,7 @@ export class Workspace {
     mergeBaseBranch: string,
     timeoutMs?: number,
   ): Promise<WorkspaceCommitSummary[]> {
-    const log = await runGit(
+    const log = await this.runGit(
       [
         "log",
         "--cherry-pick",
@@ -1367,8 +1429,11 @@ export class Workspace {
   ): Promise<WorkspaceStatus["mergeBase"]> {
     const [mergeBaseRef, aheadBehindCounts, commits, nameStatus, numstat] =
       await Promise.all([
-        readMergeBaseRef(this.path, mergeBaseBranch, { timeoutMs }),
-        runGit(
+        readMergeBaseRef(this.path, mergeBaseBranch, {
+          timeoutMs,
+          ...this.gitProcessOptions,
+        }),
+        this.runGit(
           [
             "rev-list",
             // Ignore patch-equivalent commits so squash-merged branches are not still ahead.
@@ -1380,7 +1445,7 @@ export class Workspace {
           { cwd: this.path, allowFailure: true, timeoutMs },
         ),
         this.readPatchUniqueCommitSummaries(mergeBaseBranch, timeoutMs),
-        runGit(
+        this.runGit(
           [
             "diff",
             "--no-ext-diff",
@@ -1390,7 +1455,7 @@ export class Workspace {
           ],
           { cwd: this.path, allowFailure: true, timeoutMs },
         ),
-        runGit(
+        this.runGit(
           [
             "diff",
             "--no-ext-diff",
@@ -1517,7 +1582,7 @@ export class Workspace {
     mergeBaseBranch: string,
     timeoutMs?: number,
   ): Promise<boolean> {
-    const branchPatchIdResult = await runShellPipeline(
+    const branchPatchIdResult = await this.runShellPipeline(
       'git diff "$1".."$2" | git patch-id --stable',
       [mergeBaseRef, "HEAD"],
       { cwd: this.path, allowFailure: true, timeoutMs },
@@ -1542,7 +1607,7 @@ export class Workspace {
     // if the user opens a branch that's thousands of commits behind, we'll
     // miss detection and report the branch as ahead — the fallback is
     // pessimistic but correct.
-    const basePatchIdsResult = await runShellPipeline(
+    const basePatchIdsResult = await this.runShellPipeline(
       'git log -p -n 1000 --format="commit %H" "$1".."$2" | git patch-id --stable',
       [mergeBaseRef, mergeBaseBranch],
       { cwd: this.path, allowFailure: true, timeoutMs },
@@ -1560,133 +1625,213 @@ export class Workspace {
   }
 
   /**
-   * Reads at most `maxFiles + 1` tracked/untracked paths before deciding
-   * whether the diff table of contents can be built. Only an in-cap snapshot
-   * proceeds to numstat work, whose output buffer is sized from the admitted
-   * record count. The shortstat is then derived from that bounded numstat.
+   * Enriches a small untracked status snapshot with exact Git numstat data.
+   * This is optional presentation work: exceeding either budget, hitting the
+   * enrichment deadline, a concurrent file disappearance, a directory-like
+   * untracked entry, or a Git failure degrades to incomplete line counts
+   * instead of making workspace status unavailable. Eligible files can still
+   * carry exact per-file counts when another entry is ineligible.
+   */
+  private async readBoundedUntrackedStatusNumstat(args: {
+    paths: string[];
+    maxFiles: number;
+    maxBytes: number;
+  }): Promise<UntrackedStatusNumstatEnrichment> {
+    if (args.paths.length === 0) {
+      return { entries: [], complete: true };
+    }
+    if (args.paths.length > args.maxFiles) {
+      return { entries: [], complete: false };
+    }
+
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<UntrackedStatusNumstatEnrichment>(
+      (resolve) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          resolve({ entries: [], complete: false });
+        }, WORKSPACE_STATUS_UNTRACKED_ENRICHMENT_TIMEOUT_MS);
+      },
+    );
+    try {
+      return await Promise.race([
+        this.readUntrackedStatusNumstatWithinBudget(args, controller.signal),
+        deadline,
+      ]);
+    } finally {
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  private async readUntrackedStatusNumstatWithinBudget(
+    args: { paths: string[]; maxBytes: number },
+    signal: AbortSignal,
+  ): Promise<UntrackedStatusNumstatEnrichment> {
+    try {
+      const candidates = await Promise.all(
+        args.paths.map(async (relativePath) => {
+          try {
+            const stats = await fs.lstat(path.join(this.path, relativePath));
+            return stats.isFile() || stats.isSymbolicLink()
+              ? { path: relativePath, size: stats.size }
+              : null;
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              "code" in error &&
+              error.code === "ENOENT"
+            ) {
+              return null;
+            }
+            throw error;
+          }
+        }),
+      );
+      const eligible = candidates.filter(
+        (candidate): candidate is { path: string; size: number } =>
+          candidate !== null,
+      );
+      let totalBytes = 0;
+      for (const candidate of eligible) {
+        totalBytes += candidate.size;
+        if (totalBytes > args.maxBytes) {
+          return { entries: [], complete: false };
+        }
+      }
+      if (eligible.length === 0) {
+        return { entries: [], complete: false };
+      }
+
+      return await this.withTemporaryUntrackedIndex(
+        eligible.map((candidate) => candidate.path),
+        async (env, indexedPaths) => {
+          if (indexedPaths.length === 0) {
+            return { entries: [], complete: false };
+          }
+          const result = await this.runGit(
+            ["diff", "--no-ext-diff", "--numstat", "-z"],
+            {
+              cwd: this.path,
+              env,
+              signal,
+              timeoutMs: WORKSPACE_STATUS_GIT_TIMEOUT_MS,
+              maxBufferBytes:
+                DIFF_NUMSTAT_BASE_BUFFER_BYTES +
+                indexedPaths.length * DIFF_NUMSTAT_PER_FILE_BUFFER_BYTES,
+            },
+          );
+          const parsed = parseNumstatEntriesZ(result.stdout);
+          const parsedPaths = new Set(parsed.map((entry) => entry.path));
+          return {
+            entries: parsed,
+            complete:
+              eligible.length === args.paths.length &&
+              indexedPaths.length === eligible.length &&
+              indexedPaths.every((relativePath) =>
+                parsedPaths.has(relativePath),
+              ),
+          };
+        },
+        { signal, timeoutMs: WORKSPACE_STATUS_GIT_TIMEOUT_MS },
+      );
+    } catch {
+      return { entries: [], complete: false };
+    }
+  }
+
+  /**
+   * Reads at most `maxFiles + 1` tracked/untracked records and returns an exact
+   * bounded slice. Name-status and numstat use the same complete diff universe,
+   * so Git cannot reclassify an add/delete pair as a rename merely because a
+   * later stat pass sees a smaller pathspec.
    */
   private async readBoundedDiffStatArtifacts(
     target: WorkspaceDiffTarget,
     maxFiles: number,
-  ): Promise<DiffStatArtifacts> {
+  ): Promise<BoundedDiffStatArtifacts> {
     const range = await this.resolveTrackedDiffRange(target);
     if (range === null) {
       return {
-        nameStatus: "",
+        trackedEntries: [],
         numstat: "",
-        shortstat: "",
         mergeBaseRef: null,
         untrackedPaths: [],
+        truncated: false,
       };
     }
 
     const overflowCount = maxFiles + 1;
-    const nameStatus = await this.runTrackedNameStatusWithLimit(
-      range,
-      overflowCount,
+    const [nameStatus, numstat] = await Promise.all([
+      this.runTrackedDiffWithLimit({
+        range,
+        outputArgs: ["--name-status", "-M", "-z"],
+        recordFormat: "name-status",
+        maxRecords: overflowCount,
+      }),
+      this.runTrackedDiffWithLimit({
+        range,
+        outputArgs: ["--numstat", "-M", "-z"],
+        recordFormat: "numstat",
+        maxRecords: overflowCount,
+      }),
+    ]);
+    const enumeratedTrackedEntries = parseNameStatusSourceEntries(
+      nameStatus.stdout,
     );
-    const trackedEntries = parseNameStatusSourceEntries(nameStatus.stdout);
-    if (trackedEntries.length >= overflowCount) {
-      return {
-        nameStatus: nameStatus.stdout,
-        numstat: "",
-        shortstat: "",
-        mergeBaseRef: range.mergeBaseRef,
-        untrackedPaths: [],
-      };
-    }
+    const trackedTruncated =
+      nameStatus.recordLimitReached ||
+      enumeratedTrackedEntries.length > maxFiles;
+    const trackedEntries = enumeratedTrackedEntries.slice(0, maxFiles);
 
     const remainingFileSlots = maxFiles - trackedEntries.length;
-    const untrackedPaths = this.targetIncludesUntracked(target)
-      ? await this.listUntrackedPathsLimited(remainingFileSlots + 1)
-      : [];
-    if (trackedEntries.length + untrackedPaths.length > maxFiles) {
-      return {
-        nameStatus: nameStatus.stdout,
-        numstat: "",
-        shortstat: "",
-        mergeBaseRef: range.mergeBaseRef,
-        untrackedPaths,
-      };
-    }
-
-    if (trackedEntries.length === 0) {
-      return {
-        nameStatus: "",
-        numstat: "",
-        shortstat: "",
-        mergeBaseRef: range.mergeBaseRef,
-        untrackedPaths,
-      };
-    }
-
-    const runUncommittedDiff = createUncommittedDiffRunner(this.path);
-    const runRangeGit = (
-      buildArgs: (rangeArgs: string[]) => string[],
-      options: RunGitOptions,
-    ): Promise<GitCommandResult> =>
-      range.usesUncommittedHead
-        ? runUncommittedDiff((baseRef) => buildArgs([baseRef]), options)
-        : runGit(buildArgs(range.rangeArgs), options);
-    const numstat = await runRangeGit(
-      (rangeArgs) => [
-        ...range.baseArgs,
-        "--numstat",
-        "-M",
-        "-z",
-        ...rangeArgs,
-      ],
-      {
-        cwd: this.path,
-        maxBufferBytes:
-          DIFF_NUMSTAT_BASE_BUFFER_BYTES +
-          trackedEntries.length * DIFF_NUMSTAT_PER_FILE_BUFFER_BYTES,
-        allowTruncatedStdout: true,
-      },
-    );
-    const numstatSummary = parseNumstatEntriesZ(numstat.stdout).reduce(
-      (summary, entry) => ({
-        changedFiles: summary.changedFiles + 1,
-        insertions: summary.insertions + (entry.insertions ?? 0),
-        deletions: summary.deletions + (entry.deletions ?? 0),
-      }),
-      { changedFiles: 0, insertions: 0, deletions: 0 },
+    const enumeratedUntrackedPaths =
+      !trackedTruncated && this.targetIncludesUntracked(target)
+        ? await this.listUntrackedPathsLimited(remainingFileSlots + 1)
+        : [];
+    const untrackedTruncated =
+      enumeratedUntrackedPaths.length > remainingFileSlots;
+    const untrackedPaths = enumeratedUntrackedPaths.slice(
+      0,
+      remainingFileSlots,
     );
     return {
-      nameStatus: nameStatus.stdout,
+      trackedEntries,
       numstat: numstat.stdout,
-      shortstat: formatShortstat(numstatSummary),
       mergeBaseRef: range.mergeBaseRef,
       untrackedPaths,
+      truncated: trackedTruncated || untrackedTruncated,
     };
   }
 
-  private async runTrackedNameStatusWithLimit(
-    range: ResolvedTrackedDiffRange,
-    maxRecords: number,
-  ): Promise<GitNullRecordLimitResult> {
+  private async runTrackedDiffWithLimit(args: {
+    range: ResolvedTrackedDiffRange;
+    outputArgs: string[];
+    recordFormat: GitNullRecordFormat;
+    maxRecords: number;
+  }): Promise<GitNullRecordLimitResult> {
     const buildArgs = (rangeArgs: string[]): string[] => [
-      ...range.baseArgs,
-      "--name-status",
-      "-M",
-      "-z",
+      ...args.range.baseArgs,
+      ...args.outputArgs,
       ...rangeArgs,
     ];
-    if (!range.usesUncommittedHead) {
-      return runGitWithNullRecordLimit(
-        buildArgs(range.rangeArgs),
+    if (!args.range.usesUncommittedHead) {
+      return this.runGitWithNullRecordLimit(
+        buildArgs(args.range.rangeArgs),
         { cwd: this.path },
-        "name-status",
-        maxRecords,
+        args.recordFormat,
+        args.maxRecords,
       );
     }
 
     const headArgs = buildArgs(["HEAD"]);
-    const headResult = await runGitWithNullRecordLimit(
+    const headResult = await this.runGitWithNullRecordLimit(
       headArgs,
       { cwd: this.path, allowFailure: true },
-      "name-status",
-      maxRecords,
+      args.recordFormat,
+      args.maxRecords,
     );
     if (headResult.exitCode === 0) {
       return headResult;
@@ -1699,12 +1844,15 @@ export class Workspace {
       );
     }
 
-    const emptyTreeSha = await readEmptyTreeSha(this.path);
-    return runGitWithNullRecordLimit(
+    const emptyTreeSha = await readEmptyTreeSha(
+      this.path,
+      this.gitProcessOptions,
+    );
+    return this.runGitWithNullRecordLimit(
       buildArgs([emptyTreeSha]),
       { cwd: this.path },
-      "name-status",
-      maxRecords,
+      args.recordFormat,
+      args.maxRecords,
     );
   }
 
@@ -1730,6 +1878,7 @@ export class Workspace {
         const mergeBaseRef = await readMergeBaseRef(
           this.path,
           target.mergeBaseBranch,
+          this.gitProcessOptions,
         );
         if (!mergeBaseRef) {
           return {
@@ -1747,6 +1896,7 @@ export class Workspace {
         const mergeBaseRef = await readMergeBaseRef(
           this.path,
           target.mergeBaseBranch,
+          this.gitProcessOptions,
         );
         if (!mergeBaseRef) {
           return {
@@ -1762,17 +1912,36 @@ export class Workspace {
       }
       case "commit": {
         const [nameStatus, numstat, shortstat] = await Promise.all([
-          runGit(
-            ["show", "--format=", "--no-ext-diff", "--name-status", "-M", "-z", target.sha],
+          this.runGit(
+            [
+              "show",
+              "--format=",
+              "--no-ext-diff",
+              "--name-status",
+              "-M",
+              "-z",
+              target.sha,
+            ],
             { cwd: this.path },
           ),
-          runGit(
-            ["show", "--format=", "--no-ext-diff", "--numstat", "-M", "-z", target.sha],
+          this.runGit(
+            [
+              "show",
+              "--format=",
+              "--no-ext-diff",
+              "--numstat",
+              "-M",
+              "-z",
+              target.sha,
+            ],
             { cwd: this.path },
           ),
-          runGit(["show", "--format=", "--no-ext-diff", "--shortstat", target.sha], {
-            cwd: this.path,
-          }),
+          this.runGit(
+            ["show", "--format=", "--no-ext-diff", "--shortstat", target.sha],
+            {
+              cwd: this.path,
+            },
+          ),
         ]);
         return {
           nameStatus: nameStatus.stdout,
@@ -1793,14 +1962,17 @@ export class Workspace {
     rangeArgs: string[],
   ): Promise<{ nameStatus: string; numstat: string; shortstat: string }> {
     const [nameStatus, numstat, shortstat] = await Promise.all([
-      runGit(
+      this.runGit(
         ["diff", "--no-ext-diff", "--name-status", "-M", "-z", ...rangeArgs],
         { cwd: this.path },
       ),
-      runGit(["diff", "--no-ext-diff", "--numstat", "-M", "-z", ...rangeArgs], {
-        cwd: this.path,
-      }),
-      runGit(["diff", "--no-ext-diff", "--shortstat", ...rangeArgs], {
+      this.runGit(
+        ["diff", "--no-ext-diff", "--numstat", "-M", "-z", ...rangeArgs],
+        {
+          cwd: this.path,
+        },
+      ),
+      this.runGit(["diff", "--no-ext-diff", "--shortstat", ...rangeArgs], {
         cwd: this.path,
       }),
     ]);
@@ -1816,7 +1988,10 @@ export class Workspace {
     numstat: string;
     shortstat: string;
   }> {
-    const runUncommittedDiff = createUncommittedDiffRunner(this.path);
+    const runUncommittedDiff = createUncommittedDiffRunner(
+      this.path,
+      this.gitProcessOptions,
+    );
     const [nameStatus, numstat, shortstat] = await Promise.all([
       runUncommittedDiff(
         (baseRef) => [
@@ -1860,7 +2035,7 @@ export class Workspace {
       return [];
     }
     return this.withTemporaryUntrackedIndex(untrackedPaths, async (env) => {
-      const numstat = await runGit(
+      const numstat = await this.runGit(
         ["diff", "--no-ext-diff", "--numstat", "-z"],
         { cwd: this.path, env },
       );
@@ -1897,11 +2072,11 @@ export class Workspace {
       args.paths,
       async (env, indexedPaths) => {
         const [nameStatus, patch] = await Promise.all([
-          runGit(["diff", "--no-ext-diff", "--name-status", "-z"], {
+          this.runGit(["diff", "--no-ext-diff", "--name-status", "-z"], {
             cwd: this.path,
             env,
           }),
-          runGit(["diff", "--no-ext-diff", "--binary"], {
+          this.runGit(["diff", "--no-ext-diff", "--binary"], {
             ...buildDiffOutputGitOptions(
               this.path,
               combinedPageBufferBudget(
@@ -1924,7 +2099,7 @@ export class Workspace {
 
         const patchByPath = new Map<string, string>();
         for (const relativePath of indexedPaths) {
-          const result = await runGit(
+          const result = await this.runGit(
             [
               "diff",
               "--no-ext-diff",
@@ -2044,14 +2219,17 @@ export class Workspace {
       return null;
     }
 
-    const runUncommittedDiff = createUncommittedDiffRunner(this.path);
+    const runUncommittedDiff = createUncommittedDiffRunner(
+      this.path,
+      this.gitProcessOptions,
+    );
     const runRangeGit = (
       buildArgs: (rangeArgs: string[]) => string[],
       options: RunGitOptions,
     ): Promise<GitCommandResult> =>
       range.usesUncommittedHead
         ? runUncommittedDiff((baseRef) => buildArgs([baseRef]), options)
-        : runGit(buildArgs(range.rangeArgs), options);
+        : this.runGit(buildArgs(range.rangeArgs), options);
 
     const fullNameStatus = await runRangeGit(
       (rangeArgs) => [
@@ -2120,6 +2298,7 @@ export class Workspace {
         const mergeBaseRef = await readMergeBaseRef(
           this.path,
           target.mergeBaseBranch,
+          this.gitProcessOptions,
         );
         if (!mergeBaseRef) {
           return null;
@@ -2166,6 +2345,7 @@ export class Workspace {
         const mergeBaseRef = await readMergeBaseRef(
           this.path,
           args.target.mergeBaseBranch,
+          this.gitProcessOptions,
         );
         if (!mergeBaseRef) {
           return {
@@ -2193,6 +2373,7 @@ export class Workspace {
         const mergeBaseRef = await readMergeBaseRef(
           this.path,
           args.target.mergeBaseBranch,
+          this.gitProcessOptions,
         );
         if (!mergeBaseRef) {
           return {
@@ -2217,21 +2398,21 @@ export class Workspace {
       case "commit": {
         const sha = args.target.sha;
         const [diff, shortstat, files] = await Promise.all([
-          runGit(
+          this.runGit(
             withDiffPathspec(
               ["show", "--format=", "--no-ext-diff", "--binary", sha],
               args.paths,
             ),
             buildDiffOutputGitOptions(this.path, args.maxDiffBytes),
           ),
-          runGit(
+          this.runGit(
             withDiffPathspec(
               ["show", "--format=", "--shortstat", sha],
               args.paths,
             ),
             { cwd: this.path },
           ),
-          runGit(
+          this.runGit(
             withDiffPathspec(
               ["show", "--format=", "--name-status", sha],
               args.paths,
@@ -2259,21 +2440,21 @@ export class Workspace {
     options: DiffOutputLimits & DiffPathSubset = {},
   ): Promise<[string, string, string]> {
     const [diff, shortstat, files] = await Promise.all([
-      runGit(
+      this.runGit(
         withDiffPathspec(
           ["diff", "--no-ext-diff", "--binary", ...diffArgs],
           options.paths,
         ),
         buildDiffOutputGitOptions(this.path, options.maxDiffBytes),
       ),
-      runGit(
+      this.runGit(
         withDiffPathspec(
           ["diff", "--no-ext-diff", "--shortstat", ...shortstatArgs],
           options.paths,
         ),
         { cwd: this.path },
       ),
-      runGit(
+      this.runGit(
         withDiffPathspec(
           ["diff", "--no-ext-diff", "--name-status", ...filesArgs],
           options.paths,
@@ -2289,21 +2470,21 @@ export class Workspace {
     args: ReadDiffArtifactsArgs,
   ): Promise<DiffArtifactsWithTruncation> {
     const [trackedDiff, trackedNumstat, trackedFiles] = await Promise.all([
-      runGit(
+      this.runGit(
         withDiffPathspec(
           ["diff", "--no-ext-diff", "--binary", ...args.diffArgs],
           args.paths,
         ),
         buildDiffOutputGitOptions(this.path, args.maxDiffBytes),
       ),
-      runGit(
+      this.runGit(
         withDiffPathspec(
           ["diff", "--no-ext-diff", "--numstat", ...args.numstatArgs],
           args.paths,
         ),
         { cwd: this.path },
       ),
-      runGit(
+      this.runGit(
         withDiffPathspec(
           ["diff", "--no-ext-diff", "--name-status", ...args.filesArgs],
           args.paths,
@@ -2327,9 +2508,11 @@ export class Workspace {
     args: AppendUntrackedDiffArtifactsArgs,
   ): Promise<DiffArtifactsWithTruncation> {
     const untrackedPaths =
-      args.paths === undefined && args.maxUntrackedFiles !== undefined
-        ? await this.listUntrackedPathsLimited(args.maxUntrackedFiles + 1)
-        : await this.listUntrackedPaths();
+      args.paths !== undefined
+        ? await this.listRequestedUntrackedPaths(args.paths)
+        : args.maxUntrackedFiles !== undefined
+          ? await this.listUntrackedPathsLimited(args.maxUntrackedFiles + 1)
+          : await this.listUntrackedPaths();
     const requestedUntrackedPaths =
       args.paths === undefined
         ? untrackedPaths
@@ -2390,15 +2573,15 @@ export class Workspace {
     }
     return this.withTemporaryUntrackedIndex(args.relativePaths, async (env) => {
       const [diff, numstat, files] = await Promise.all([
-        runGit(["diff", "--no-ext-diff", "--binary"], {
+        this.runGit(["diff", "--no-ext-diff", "--binary"], {
           ...buildDiffOutputGitOptions(this.path, args.maxDiffBytes),
           env,
         }),
-        runGit(["diff", "--no-ext-diff", "--numstat"], {
+        this.runGit(["diff", "--no-ext-diff", "--numstat"], {
           cwd: this.path,
           env,
         }),
-        runGit(["diff", "--no-ext-diff", "--name-status"], {
+        this.runGit(["diff", "--no-ext-diff", "--name-status"], {
           ...buildDiffOutputGitOptions(this.path, args.maxFileListBytes),
           env,
         }),
@@ -2414,7 +2597,10 @@ export class Workspace {
   private async readUncommittedDiffArtifacts(
     args: DiffOutputLimits & DiffPathSubset & { maxUntrackedFiles?: number },
   ): Promise<DiffArtifactsWithTruncation> {
-    const runUncommittedDiff = createUncommittedDiffRunner(this.path);
+    const runUncommittedDiff = createUncommittedDiffRunner(
+      this.path,
+      this.gitProcessOptions,
+    );
     const [trackedDiff, trackedNumstat, trackedFiles] = await Promise.all([
       runUncommittedDiff(
         (baseRef) =>
@@ -2464,6 +2650,7 @@ export class Workspace {
       env: NodeJS.ProcessEnv,
       indexedPaths: readonly string[],
     ) => Promise<T>,
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<T> {
     const tempDir = await createTempDir("bb-untracked-index-");
     const indexPath = path.join(tempDir, "index");
@@ -2477,7 +2664,12 @@ export class Workspace {
         attempt += 1
       ) {
         candidates = await this.filterExistingUntrackedPaths(candidates);
-        await runGit(["read-tree", "--empty"], { cwd: this.path, env });
+        await this.runGit(["read-tree", "--empty"], {
+          cwd: this.path,
+          env,
+          signal: options.signal,
+          timeoutMs: options.timeoutMs,
+        });
         if (candidates.length === 0) {
           return await work(env, []);
         }
@@ -2485,7 +2677,7 @@ export class Workspace {
           pathspecPath,
           candidates.map((value) => `:(literal)${value}\0`).join(""),
         );
-        const add = await runGit(
+        const add = await this.runGit(
           [
             "add",
             "--sparse",
@@ -2493,7 +2685,13 @@ export class Workspace {
             `--pathspec-from-file=${pathspecPath}`,
             "--pathspec-file-nul",
           ],
-          { cwd: this.path, env, allowFailure: true },
+          {
+            cwd: this.path,
+            env,
+            allowFailure: true,
+            signal: options.signal,
+            timeoutMs: options.timeoutMs,
+          },
         );
         if (add.exitCode === 0) {
           return await work(env, candidates);
@@ -2514,7 +2712,12 @@ export class Workspace {
       // A path kept disappearing during every bounded retry. Reset any partial
       // alternate-index state and let callers return placeholders/empty patches
       // for this stale snapshot instead of rejecting the whole batch.
-      await runGit(["read-tree", "--empty"], { cwd: this.path, env });
+      await this.runGit(["read-tree", "--empty"], {
+        cwd: this.path,
+        env,
+        signal: options.signal,
+        timeoutMs: options.timeoutMs,
+      });
       return await work(env, []);
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -2545,15 +2748,36 @@ export class Workspace {
   }
 
   private async listUntrackedPaths(): Promise<string[]> {
-    const untrackedFilesOutput = await runGit(
+    const untrackedFilesOutput = await this.runGit(
       ["ls-files", "--others", "--exclude-standard", "-z"],
       { cwd: this.path },
     );
     return parseNullSeparatedLines(untrackedFilesOutput.stdout);
   }
 
+  /** Lists only the caller's requested paths that are currently untracked. */
+  private async listRequestedUntrackedPaths(
+    relativePaths: readonly string[],
+  ): Promise<string[]> {
+    if (relativePaths.length === 0) {
+      return [];
+    }
+    const untrackedFilesOutput = await this.runGit(
+      [
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+        ...relativePaths.map((relativePath) => `:(literal)${relativePath}`),
+      ],
+      { cwd: this.path },
+    );
+    return parseNullSeparatedLines(untrackedFilesOutput.stdout);
+  }
+
   private async listUntrackedPathsLimited(maxPaths: number): Promise<string[]> {
-    const untrackedFilesOutput = await runGitWithNullRecordLimit(
+    const untrackedFilesOutput = await this.runGitWithNullRecordLimit(
       ["ls-files", "--others", "--exclude-standard", "-z"],
       { cwd: this.path },
       "single",

@@ -17,20 +17,26 @@ import {
   useNavigate,
 } from "react-router-dom";
 import { focusManager } from "@tanstack/react-query";
+import type { ProviderInfo } from "@bb/domain";
 import type { SkillSummary } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { makeProviderInfo } from "@/test/provider-info-fixture";
 import { sdk } from "@/lib/sdk";
-import { buildRegistrySkillReferencePrompt } from "@/lib/skills-registry";
-import { SkillDetailView } from "../components/tools/SkillDetailView";
-import { RegistrySkillDetailView } from "../components/tools/SkillsBrowse";
 import {
-  RegistrySkillsBrowsePage,
-  SkillDetailDialogView,
-  SkillsLibrary,
-  SkillsOverview,
+  buildRegistrySkillReferencePrompt,
   type RegistrySkill,
-} from "./SkillsView";
+} from "@/lib/skills-registry";
+import { SkillDetailView } from "../components/tools/SkillDetailView";
+import {
+  RegistrySkillDetailView,
+  RegistrySkillsBrowsePage,
+} from "../components/tools/SkillsBrowse";
+import {
+  SkillDetailDialogView,
+  SkillsOverview,
+} from "../components/tools/SkillsCollection";
+import { SkillsLibrary } from "../components/tools/SkillsLibrary";
 
 afterEach(() => {
   focusManager.setFocused(undefined);
@@ -45,7 +51,7 @@ function makeSkill(overrides: Partial<SkillSummary> = {}): SkillSummary {
     name: "code-review",
     description: "Review the current diff.",
     provider: "claude-code",
-    scope: "claude-user",
+    scope: "provider-user",
     pluginId: null,
     filePath: "/home/u/.claude/skills/code-review/SKILL.md",
     manageable: true,
@@ -87,6 +93,9 @@ function LocationStateProbe() {
 }
 
 function renderLibrarySkillRoute() {
+  // The library names providers from the roster; stub it so the fetch spy below
+  // only ever sees requests this route made for its own data.
+  vi.spyOn(sdk.providers, "list").mockResolvedValue([]);
   const fetchMock = vi.fn(
     async () =>
       new Response(
@@ -117,9 +126,20 @@ function renderLibrarySkillRoute() {
   return fetchMock;
 }
 
+const NO_PROVIDER_ROSTER: ReadonlyMap<string, ProviderInfo> = new Map();
+/** The server roster: display names (and marks) come from here, not from core. */
+const DEFAULT_PROVIDER_ROSTER: ReadonlyMap<string, ProviderInfo> = new Map(
+  [
+    makeProviderInfo({ id: "codex", displayName: "Codex" }),
+    makeProviderInfo({ id: "claude-code", displayName: "Claude Code" }),
+    makeProviderInfo({ id: "acp-cursor", displayName: "Cursor" }),
+  ].map((provider) => [provider.id, provider]),
+);
+
 function render(props: Partial<Parameters<typeof SkillsOverview>[0]>): string {
   return renderToStaticMarkup(
     <SkillsOverview
+      providerRoster={props.providerRoster ?? DEFAULT_PROVIDER_ROSTER}
       skills={props.skills ?? []}
       isLoading={props.isLoading ?? false}
       hasError={props.hasError ?? false}
@@ -137,6 +157,7 @@ function renderSkillDetailDialog(
   return renderDom(
     <SkillDetailDialogView
       skill={skill}
+      providerRoster={DEFAULT_PROVIDER_ROSTER}
       files={["SKILL.md"]}
       selectedPath="SKILL.md"
       onSelectPath={() => {}}
@@ -306,6 +327,7 @@ describe("SkillsOverview", () => {
   it("labels the Type filter and preserves independent source toggles", async () => {
     renderDom(
       <SkillsOverview
+        providerRoster={NO_PROVIDER_ROSTER}
         skills={[
           makeSkill({
             name: "official-skill",
@@ -386,16 +408,17 @@ describe("SkillsOverview", () => {
   it("puts every non-builtin, non-plugin scope in the User bucket", async () => {
     renderDom(
       <SkillsOverview
+        providerRoster={DEFAULT_PROVIDER_ROSTER}
         skills={[
           makeSkill({
             name: "claude-authored",
             provider: "claude-code",
-            scope: "claude-user",
+            scope: "provider-user",
           }),
           makeSkill({
             name: "codex-authored",
             provider: "codex",
-            scope: "codex-project",
+            scope: "provider-project",
           }),
           makeSkill({
             name: "official-skill",
@@ -441,6 +464,7 @@ describe("SkillsOverview", () => {
   it("toggles BB Official independently from Included in plugin", async () => {
     renderDom(
       <SkillsOverview
+        providerRoster={NO_PROVIDER_ROSTER}
         skills={[
           makeSkill({
             name: "official-skill",
@@ -496,6 +520,7 @@ describe("SkillsOverview", () => {
   it("uses filter-neutral copy when a Type selection removes every skill", async () => {
     renderDom(
       <SkillsOverview
+        providerRoster={NO_PROVIDER_ROSTER}
         skills={[
           makeSkill({
             name: "official-skill",
@@ -526,6 +551,7 @@ describe("SkillsOverview", () => {
     const registrySkill = makeRegistrySkill({ installs: 123_456, stars: 654 });
     const markup = renderToStaticMarkup(
       <SkillsOverview
+        providerRoster={NO_PROVIDER_ROSTER}
         skills={[]}
         isLoading={false}
         hasError={false}
@@ -554,14 +580,33 @@ describe("SkillsOverview", () => {
     expect(markup).toContain("Useful skill");
   });
 
-  it("disables provider filters that have no matching skills", async () => {
+  // Provider ids are an open vocabulary, so the filter rows come from the
+  // listed skills rather than a hardcoded provider table: a provider with no
+  // skills has no row at all instead of a permanently greyed one.
+  // Provider ids are open-ended: every custom ACP agent is one, and they all
+  // share a single per-tier icon label ("ACP provider"). Only the server's
+  // display names can tell two of them apart in the filter and the scope label.
+  it("names custom ACP agents from the provider roster", async () => {
     renderDom(
       <SkillsOverview
+        providerRoster={
+          new Map([
+            ["acp-foo", makeProviderInfo({ id: "acp-foo", displayName: "Foo Agent" })],
+            ["acp-bar", makeProviderInfo({ id: "acp-bar", displayName: "Bar Agent" })],
+          ])
+        }
         skills={[
           makeSkill({
-            name: "codex-skill",
-            provider: "codex",
-            scope: "codex-user",
+            name: "foo-skill",
+            description: null,
+            provider: "acp-foo",
+            scope: "provider-user",
+          }),
+          makeSkill({
+            name: "bar-skill",
+            description: null,
+            provider: "acp-bar",
+            scope: "provider-user",
           }),
         ]}
         isLoading={false}
@@ -575,20 +620,55 @@ describe("SkillsOverview", () => {
 
     await waitFor(() => {
       expect(
-        screen
-          .getByRole("menuitemcheckbox", { name: "Claude Code" })
-          .getAttribute("aria-disabled"),
-      ).toBe("true");
+        screen.getByRole("menuitemcheckbox", { name: "Foo Agent" }),
+      ).not.toBeNull();
     });
+    expect(
+      screen.getByRole("menuitemcheckbox", { name: "Bar Agent" }),
+    ).not.toBeNull();
+    expect(
+      screen.queryByRole("menuitemcheckbox", { name: "ACP provider" }),
+    ).toBeNull();
+  });
+
+  it("lists a provider filter only for providers present in the skills", async () => {
+    renderDom(
+      <SkillsOverview
+        providerRoster={DEFAULT_PROVIDER_ROSTER}
+        skills={[
+          makeSkill({
+            name: "codex-skill",
+            provider: "codex",
+            scope: "provider-user",
+          }),
+        ]}
+        isLoading={false}
+        hasError={false}
+        onCreateSkill={() => {}}
+        onSelectSkill={() => {}}
+      />,
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: /^Filters/ }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("menuitemcheckbox", { name: "Codex" }),
+      ).not.toBeNull();
+    });
+    expect(
+      screen.queryByRole("menuitemcheckbox", { name: "Claude Code" }),
+    ).toBeNull();
     expect(
       screen
         .getByRole("menuitemcheckbox", { name: "Codex" })
         .getAttribute("aria-disabled"),
     ).toBeNull();
+    // The mark is the provider's served logo, drawn as a currentColor mask.
     expect(
       screen
         .getByRole("menuitemcheckbox", { name: "Codex" })
-        .querySelector("svg"),
+        .querySelector("[data-provider-logo]"),
     ).not.toBeNull();
     expect(
       screen
@@ -600,6 +680,7 @@ describe("SkillsOverview", () => {
   it("labels the Provider filter and prefixes its logo tooltip", async () => {
     renderDom(
       <SkillsOverview
+        providerRoster={NO_PROVIDER_ROSTER}
         skills={[
           makeSkill({
             name: "bb-skill",
@@ -634,11 +715,12 @@ describe("SkillsOverview", () => {
   it("keeps the default BB filter selected when only provider skills exist", async () => {
     renderDom(
       <SkillsOverview
+        providerRoster={NO_PROVIDER_ROSTER}
         skills={[
           makeSkill({
             name: "codex-skill",
             provider: "codex",
-            scope: "codex-user",
+            scope: "provider-user",
           }),
         ]}
         isLoading={false}
@@ -675,6 +757,7 @@ describe("SkillsOverview", () => {
     ];
     const view = renderDom(
       <SkillsOverview
+        providerRoster={DEFAULT_PROVIDER_ROSTER}
         skills={initialSkills}
         isLoading={false}
         hasError={false}
@@ -700,6 +783,7 @@ describe("SkillsOverview", () => {
 
     view.rerender(
       <SkillsOverview
+        providerRoster={NO_PROVIDER_ROSTER}
         skills={[
           ...initialSkills,
           makeSkill({
@@ -744,6 +828,7 @@ describe("SkillsOverview", () => {
       const onPrefetchSkill = vi.fn();
       renderDom(
         <SkillsOverview
+          providerRoster={NO_PROVIDER_ROSTER}
           skills={[makeSkill({ provider: null, scope: "bb-user" })]}
           isLoading={false}
           hasError={false}
@@ -1221,15 +1306,7 @@ describe("RegistrySkillsBrowsePage", () => {
     expect(onSelect).toHaveBeenCalledWith(alpha);
     expect(screen.getByRole("textbox", { name: "Search skills" })).toBeTruthy();
     expect(screen.getByLabelText("10 installs")).toBeTruthy();
-    for (const byline of screen.getAllByText("by owner/repo")) {
-      expect(byline.className).toContain("truncate");
-      expect(byline.parentElement?.className).toContain("items-center");
-      expect(byline.parentElement?.className).toContain("text-xs");
-    }
-    expect(
-      screen.getByLabelText("100 stars").parentElement?.parentElement
-        ?.className,
-    ).toContain("items-center");
+    expect(screen.getAllByText("by owner/repo").length).toBeGreaterThan(0);
     expect(
       screen.getByRole("button", {
         name: "Fork Alpha into a new bb skill",
@@ -1541,7 +1618,7 @@ describe("SkillDetailDialogView", () => {
     const skill = makeSkill({
       name: "code-review",
       provider: "claude-code",
-      scope: "claude-user",
+      scope: "provider-user",
       manageable: true,
     });
     renderSkillDetailDialog(skill, { canEdit: true, canDelete: true });

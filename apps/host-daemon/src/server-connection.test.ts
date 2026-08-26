@@ -51,6 +51,7 @@ function createSession(args: CreateSessionArgs): HostDaemonSessionOpenResponse {
     leaseTimeoutMs: args.leaseTimeoutMs,
     retiredEnvironmentIds: [],
     connectShares: { generation: 0, ports: [] },
+    pluginHostGenerations: [],
     sessionId: args.sessionId,
     watchSet: {
       generation: 0,
@@ -83,8 +84,10 @@ function createServerClientFixture(args: CreateServerClientFixtureArgs = {}) {
   };
   const serverClient = {
     openSession,
+    getRuntimePolicy: unused,
     fetchProjectAttachment: unused,
     fetchSkillTree: unused,
+    fetchPluginHostArtifact: unused,
     postEvents: unused,
     callTool: unused,
     registerInteractiveRequest: unused,
@@ -170,6 +173,7 @@ function createConnectionFixture(args: ConnectionFixtureArgs = {}) {
     hostName: "Server Connection Test Host",
     hostType: "persistent",
     instanceId: "instance-server-connection-test",
+    localApiPort: 38_887,
     logger,
     ...(args.machineCredential !== undefined
       ? { machineCredential: args.machineCredential }
@@ -303,7 +307,10 @@ describe("ServerConnection", () => {
     try {
       await fixture.connection.start();
       expect(fixture.openSession).toHaveBeenCalledWith(
-        expect.objectContaining({ connectMachineId: "machine-cloud-1" }),
+        expect.objectContaining({
+          connectMachineId: "machine-cloud-1",
+          localApiPort: 38_887,
+        }),
       );
     } finally {
       await fixture.connection.shutdown();
@@ -341,6 +348,107 @@ describe("ServerConnection", () => {
           websocketReadyState: 1,
         }),
         "Host daemon heartbeat timer delayed",
+      );
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
+  it("reports a system-suspension gap without calling it a heartbeat stall", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const { connection, logger, webSocket } = createConnectionFixture({
+      heartbeatIntervalMs: 5_000,
+      leaseTimeoutMs: 30_000,
+    });
+    try {
+      await connection.start();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      vi.setSystemTime(300_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.anything(),
+        "Host daemon heartbeat timer delayed",
+      );
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ gapMs: 300_000 }),
+        "Host daemon resumed after likely system suspension",
+      );
+      expect(webSocket.sockets[0]?.reconnect).not.toHaveBeenCalled();
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
+  it("grants a fresh acknowledgement lease after a shorter heartbeat delay", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const { connection, logger, webSocket } = createConnectionFixture({
+      heartbeatIntervalMs: 5_000,
+      leaseTimeoutMs: 30_000,
+    });
+    try {
+      await connection.start();
+      const socket = webSocket.sockets[0];
+      if (!socket) {
+        throw new Error("Expected test socket");
+      }
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      vi.setSystemTime(35_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ gapMs: 35_000 }),
+        "Host daemon heartbeat timer delayed",
+      );
+      expect(socket.reconnect).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(socket.reconnect).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(socket.reconnect).toHaveBeenCalledWith(
+        1013,
+        "heartbeat-ack-timeout",
+      );
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
+  it("reconnects when server heartbeat acknowledgements stop", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const { connection, logger, webSocket } = createConnectionFixture({
+      heartbeatIntervalMs: 5_000,
+      leaseTimeoutMs: 30_000,
+    });
+    try {
+      await connection.start();
+      const socket = webSocket.sockets[0];
+      if (!socket) {
+        throw new Error("Expected test socket");
+      }
+
+      await vi.advanceTimersByTimeAsync(25_000);
+      socket.onmessage?.({ data: JSON.stringify({ type: "heartbeat-ack" }) });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(socket.reconnect).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(socket.reconnect).toHaveBeenCalledWith(
+        1013,
+        "heartbeat-ack-timeout",
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lastAcknowledgedAt: 25_000,
+          leaseTimeoutMs: 30_000,
+          sessionId: "session-1",
+        }),
+        "Server heartbeat acknowledgements stopped; reconnecting",
       );
     } finally {
       await connection.shutdown();
@@ -426,13 +534,10 @@ describe("ServerConnection", () => {
           type: "host-rpc.request",
           requestId: "invalid-transcription",
           command: {
-            type: "codex.voice.transcribe",
-            model: "gpt-4o-mini-transcribe",
-            audioBase64: "",
-            mimeType: "audio/webm",
-            filename: "prompt.webm",
-            prompt: null,
-            timeoutMs: 10_000,
+            type: "thread.stop",
+            intent: "interrupt",
+            environmentId: "",
+            threadId: "",
           },
         }),
       });
@@ -441,7 +546,7 @@ describe("ServerConnection", () => {
         JSON.stringify({
           type: "host-rpc.response",
           requestId: "invalid-transcription",
-          commandType: "codex.voice.transcribe",
+          commandType: "thread.stop",
           ok: false,
           errorCode: "invalid_command",
           errorMessage: "Invalid host RPC command",
@@ -451,7 +556,7 @@ describe("ServerConnection", () => {
       expect(setSession).not.toHaveBeenLastCalledWith(null);
       expect(logger.warn).toHaveBeenCalledWith(
         expect.objectContaining({
-          commandType: "codex.voice.transcribe",
+          commandType: "thread.stop",
           requestId: "invalid-transcription",
         }),
         "Rejected invalid host RPC command",

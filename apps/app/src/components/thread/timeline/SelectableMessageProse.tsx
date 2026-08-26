@@ -20,7 +20,7 @@ export interface MessageProseSelection {
   sourceSeqEnd?: number;
 }
 
-export interface SelectableMessageProseProps {
+interface SelectableMessageProseProps {
   children: ReactNode;
   className?: string;
   /**
@@ -63,7 +63,7 @@ export function isSelectionWithinNode(
   );
 }
 
-function firstClientRect(range: Range): DOMRect | null {
+export function firstClientRect(range: Range): DOMRect | null {
   const rects = range.getClientRects();
   for (let index = 0; index < rects.length; index += 1) {
     const rect = rects.item(index);
@@ -133,9 +133,7 @@ export function anchorPointFromMouseEvent(
   return { x: event.clientX, y: event.clientY };
 }
 
-export function usesLiveSelectionRange(
-  pointerType: string | undefined,
-): boolean {
+function usesLiveSelectionRange(pointerType: string | undefined): boolean {
   return (
     pointerType !== undefined && pointerType !== "" && pointerType !== "mouse"
   );
@@ -408,9 +406,17 @@ function handleSharedKeyUp(): void {
 }
 
 function attachSharedDocumentListeners(): void {
-  document.addEventListener("pointerdown", handleSharedPointerDown);
-  document.addEventListener("pointerup", handleSharedPointerRelease);
-  document.addEventListener("pointercancel", handleSharedPointerCancel);
+  // Passive: none of the pointer handlers call preventDefault, so declare it
+  // and keep every tap off the compositor's blocking-handler list.
+  document.addEventListener("pointerdown", handleSharedPointerDown, {
+    passive: true,
+  });
+  document.addEventListener("pointerup", handleSharedPointerRelease, {
+    passive: true,
+  });
+  document.addEventListener("pointercancel", handleSharedPointerCancel, {
+    passive: true,
+  });
   document.addEventListener("mouseup", handleSharedPointerRelease);
   document.addEventListener("selectionchange", handleSharedSelectionChange);
   document.addEventListener("keyup", handleSharedKeyUp);

@@ -1,4 +1,8 @@
-import type { JsonObject, ThreadEventScope } from "@bb/domain";
+import type {
+  JsonObject,
+  ThreadEventItemPresentation,
+  ThreadEventScope,
+} from "@bb/domain";
 import type {
   EventProjectionApprovalLifecycleStatus,
   EventProjectionMessage,
@@ -31,6 +35,7 @@ import {
   findExecMessageInHistoryCells,
   flushActiveToolCell,
   isProviderExecutionMessage,
+  isWebActivityMessage,
   type ToolActivityCell,
   type ViewProviderExecutionMessage,
   type ViewWebActivityMessage,
@@ -71,6 +76,7 @@ interface RunningExecutionBase {
   completedAt: number | null;
   status: ViewProviderExecutionMessage["status"];
   outputBuffer: VisibleTextBuffer;
+  presentation?: ThreadEventItemPresentation;
 }
 
 interface PendingExecutionOutput {
@@ -101,16 +107,17 @@ interface RunningToolCallExecution extends RunningExecutionBase {
   kind: "tool-call";
   toolName: string | null;
   toolArgs: JsonObject | null;
-  statusLabels?: { pending: string; completed: string };
-  parsedIntents: EventProjectionToolParsedIntent[];
   approvalStatus: EventProjectionApprovalLifecycleStatus | null;
 }
 
 interface RunningDelegationExecution extends RunningExecutionBase {
   kind: "delegation";
   toolName: string | null;
+  childRef: string | null;
+  background: boolean;
   subagentType?: string;
   description?: string;
+  model?: string;
 }
 
 type RunningExecCall =
@@ -127,7 +134,7 @@ export interface ToolActivityProjectionState {
   toolActivity: ToolActivityState;
 }
 
-export interface ToolActivityState {
+interface ToolActivityState {
   runningCallsById: Map<string, RunningExecCall>;
   pendingOutputsByCallId: Map<string, PendingExecutionOutput>;
   activeCell: ToolActivityCell | null;
@@ -143,7 +150,7 @@ interface MergeCallSummaryOptions {
   visibleOutput?: string;
 }
 
-export interface InterruptPendingToolActivityArgs {
+interface InterruptPendingToolActivityArgs {
   completedAt: number | null;
   turnIds?: ReadonlySet<string>;
 }
@@ -293,6 +300,9 @@ function createRunningExecutionBase({
     ...(incoming.parentToolCallId
       ? { parentToolCallId: incoming.parentToolCallId }
       : {}),
+    ...(incoming.presentation
+      ? { presentation: incoming.presentation }
+      : {}),
     output: getVisibleTextBufferText(outputBuffer) ?? "",
     completedAt: incoming.completedAt ?? null,
     status: incoming.status ?? "pending",
@@ -335,10 +345,6 @@ function createRunningExecCall(
         kind: "tool-call",
         toolName: incoming.toolName ?? null,
         toolArgs: incoming.toolArgs ?? null,
-        ...(incoming.statusLabels
-          ? { statusLabels: incoming.statusLabels }
-          : {}),
-        parsedIntents: incoming.parsedIntents ?? [],
         approvalStatus: incoming.approvalStatus ?? null,
       };
     case "delegation":
@@ -346,8 +352,11 @@ function createRunningExecCall(
         ...base,
         kind: "delegation",
         toolName: incoming.toolName ?? null,
+        childRef: incoming.childRef ?? null,
+        background: incoming.background ?? false,
         subagentType: incoming.subagentType,
         description: incoming.description,
+        model: incoming.model,
       };
   }
 }
@@ -373,31 +382,55 @@ interface CommandExecutionFieldsSource {
 
 interface ToolCallExecutionFieldsTarget {
   approvalStatus: EventProjectionApprovalLifecycleStatus | null;
-  parsedIntents: EventProjectionToolParsedIntent[];
   toolArgs: JsonObject | null;
   toolName: string | null;
-  statusLabels?: { pending: string; completed: string };
 }
 
 interface ToolCallExecutionFieldsSource {
   approvalStatus?: EventProjectionApprovalLifecycleStatus | null;
-  parsedIntents?: EventProjectionToolParsedIntent[];
   status?: EventProjectionToolCallMessage["status"];
   toolArgs?: JsonObject | null;
   toolName?: string | null;
-  statusLabels?: { pending: string; completed: string };
 }
 
 interface DelegationExecutionFieldsTarget {
+  background: boolean;
+  childRef: string | null;
   description?: string;
+  model?: string;
   subagentType?: string;
   toolName: string | null;
 }
 
 interface DelegationExecutionFieldsSource {
+  background?: boolean;
+  childRef?: string | null;
   description?: string;
+  model?: string;
   subagentType?: string;
   toolName?: string | null;
+}
+
+interface PresentedExecutionFieldsTarget {
+  presentation?: ThreadEventItemPresentation;
+}
+
+interface PresentedExecutionFieldsSource {
+  presentation?: ThreadEventItemPresentation;
+}
+
+/**
+ * The latest presentation wins: the assembler echoes the opened presentation
+ * onto a close that carries none, so whatever an end event carries is the
+ * bridge's final word on the row.
+ */
+function mergePresentation(
+  target: PresentedExecutionFieldsTarget,
+  incoming: PresentedExecutionFieldsSource,
+): void {
+  if (incoming.presentation) {
+    target.presentation = incoming.presentation;
+  }
 }
 
 function mergeCommandExecutionFields(
@@ -432,12 +465,6 @@ function mergeToolCallExecutionFields(
   if (incoming.toolArgs && !target.toolArgs) {
     target.toolArgs = incoming.toolArgs;
   }
-  if (incoming.statusLabels && !target.statusLabels)
-    target.statusLabels = incoming.statusLabels;
-  target.parsedIntents = chooseParsedIntents(
-    target.parsedIntents,
-    incoming.parsedIntents ?? [],
-  );
   target.approvalStatus = applyApprovalStatusDelta(
     target.approvalStatus,
     buildApprovalStatusDelta(incoming.approvalStatus, incoming.status),
@@ -451,11 +478,25 @@ function mergeDelegationExecutionFields(
   if (incoming.toolName && !target.toolName) {
     target.toolName = incoming.toolName;
   }
+  if (incoming.childRef && !target.childRef) {
+    target.childRef = incoming.childRef;
+  }
+  if (incoming.background === true) {
+    target.background = true;
+  }
   if (incoming.subagentType && !target.subagentType) {
     target.subagentType = incoming.subagentType;
   }
-  if (incoming.description && !target.description) {
+  // A v3 delegation's progress snapshots revise the label; a legacy
+  // delegation's description is set once from its arguments.
+  if (
+    incoming.description &&
+    (!target.description || incoming.childRef !== undefined)
+  ) {
     target.description = incoming.description;
+  }
+  if (incoming.model && !target.model) {
+    target.model = incoming.model;
   }
 }
 
@@ -478,6 +519,7 @@ function mergeRunningExecutionMetadata(
   existing: RunningExecCall,
   incoming: ProviderExecutionUpdate,
 ): void {
+  mergePresentation(existing, incoming);
   switch (incoming.kind) {
     case "command":
       if (existing.kind !== "command") return;
@@ -706,6 +748,10 @@ function interruptPendingToolMessage(
     case "web-search":
     case "web-fetch":
     case "image-view":
+    case "file-read":
+    case "search":
+    case "plan-steps":
+    case "extension":
       if (message.status === "pending") {
         message.status = "interrupted";
         message.completedAt = completedAt;
@@ -717,12 +763,7 @@ function interruptPendingToolMessage(
 function isInterruptibleToolMessage(
   message: EventProjectionMessage,
 ): message is InterruptibleToolMessage {
-  return (
-    isProviderExecutionMessage(message) ||
-    message.kind === "web-search" ||
-    message.kind === "web-fetch" ||
-    message.kind === "image-view"
-  );
+  return isProviderExecutionMessage(message) || isWebActivityMessage(message);
 }
 
 type ExecutionMergeTarget = RunningExecCall | ViewProviderExecutionMessage;
@@ -765,6 +806,7 @@ function mergeExecutionSummary(
         `Cannot merge ${target.kind} with ${incoming.kind} for call ${incoming.callId}`,
       );
     }
+    mergePresentation(target, incoming);
     switch (incoming.kind) {
       case "command":
         if (target.kind !== "command") return;
@@ -901,6 +943,7 @@ function createExecMessage(
     ...(call.parentToolCallId
       ? { parentToolCallId: call.parentToolCallId }
       : {}),
+    ...(call.presentation ? { presentation: call.presentation } : {}),
     callId: call.callId,
     output: call.output,
     completedAt: call.completedAt,
@@ -924,9 +967,12 @@ function createExecMessage(
     return {
       ...base,
       kind: "delegation",
-      toolName: call.toolName ?? "Agent",
+      toolName: call.toolName ?? "delegation",
+      childRef: call.childRef,
+      background: call.background,
       subagentType: call.subagentType,
       description: call.description,
+      model: call.model,
       childProjection: emptyEventProjection(),
     };
   }
@@ -936,8 +982,6 @@ function createExecMessage(
     kind: "tool-call",
     toolName: call.toolName ?? "tool",
     toolArgs: call.toolArgs,
-    ...(call.statusLabels ? { statusLabels: call.statusLabels } : {}),
-    parsedIntents: call.parsedIntents,
     approvalStatus: call.approvalStatus,
   };
 }

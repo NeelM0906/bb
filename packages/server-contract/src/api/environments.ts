@@ -8,7 +8,7 @@ import {
   workspaceDiffTargetSchema,
   workspaceStatusSchema,
 } from "@bb/domain";
-import { workspaceResolutionFailureSchema } from "@bb/host-daemon-contract";
+import { workspaceResolutionFailureSchema } from "@bb/host-daemon-contract/workspace";
 import { apiErrorSchema } from "../errors.js";
 import {
   branchListQuerySchema,
@@ -181,9 +181,6 @@ export const pullRequestMergeOptionsSchema = z
     method: pullRequestMergeMethodSchema,
   })
   .strict();
-export type PullRequestMergeOptions = z.infer<
-  typeof pullRequestMergeOptionsSchema
->;
 
 export const environmentActionRequestSchema = z.discriminatedUnion("action", [
   z
@@ -278,28 +275,10 @@ export type EnvironmentActionResponse = z.infer<
   typeof environmentActionResponseSchema
 >;
 
-export const environmentActionFailureDetailsSchema = z.discriminatedUnion(
-  "kind",
-  [
-    z.object({
-      kind: z.literal("commit_failed"),
-      errorMessage: z.string(),
-    }),
-    z.object({
-      kind: z.literal("squash_merge_conflict"),
-      conflictFiles: z.array(z.string()),
-    }),
-    z.object({
-      kind: z.literal("squash_merge_commit_failed"),
-      stage: z.enum(["prep_commit", "squash_commit"]),
-      errorMessage: z.string(),
-    }),
-    z.object({
-      kind: z.literal("workspace_unavailable"),
-      failure: workspaceResolutionFailureSchema,
-    }),
-  ],
-);
+export const environmentActionFailureDetailsSchema = z.object({
+  kind: z.literal("workspace_unavailable"),
+  failure: workspaceResolutionFailureSchema,
+});
 export type EnvironmentActionFailureDetails = z.infer<
   typeof environmentActionFailureDetailsSchema
 >;
@@ -314,9 +293,6 @@ export type EnvironmentActionApiError = z.infer<
 export const environmentWorkspaceNotApplicableReasonSchema = z.enum([
   "non_git_environment",
 ]);
-export type EnvironmentWorkspaceNotApplicableReason = z.infer<
-  typeof environmentWorkspaceNotApplicableReasonSchema
->;
 
 const environmentWorkspaceNotApplicableOutcomeSchema = z
   .object({
@@ -474,19 +450,6 @@ export const diffPatchEntrySchema = z.object({
 });
 export type DiffPatchEntry = z.infer<typeof diffPatchEntrySchema>;
 
-// `too_many_files` is specific to the diff table of contents: the server
-// declines to enumerate a diff whose TOC exceeds the server's
-// `WORKSPACE_DIFF_MAX_FILES`
-// entry cap. `/status` and `/diff` never produce it, so it stays off the shared
-// `environmentWorkspaceNotApplicableReasonSchema`.
-const diffFilesNotApplicableOutcomeSchema = z
-  .object({
-    outcome: z.literal("not_applicable"),
-    reason: z.enum(["non_git_environment", "too_many_files"]),
-    message: z.string().min(1),
-  })
-  .strict();
-
 export const environmentDiffFilesResponseSchema = z.discriminatedUnion(
   "outcome",
   [
@@ -494,6 +457,8 @@ export const environmentDiffFilesResponseSchema = z.discriminatedUnion(
       .object({
         outcome: z.literal("available"),
         files: z.array(diffFileEntrySchema),
+        /** True when the response contains only the bounded leading file slice. */
+        truncated: z.boolean(),
         shortstat: z.string(),
         /** Required + nullable: null = no merge-base for the current target. */
         mergeBaseRef: z.string().nullable(),
@@ -507,7 +472,7 @@ export const environmentDiffFilesResponseSchema = z.discriminatedUnion(
         initialPatches: z.array(diffPatchEntrySchema),
       })
       .strict(),
-    diffFilesNotApplicableOutcomeSchema,
+    environmentWorkspaceNotApplicableOutcomeSchema,
     z
       .object({
         outcome: z.literal("unavailable"),

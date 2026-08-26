@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "ff13d2b7-a76d-4ad2-b076-3195c5b2d061",
-  "prevId": "211e3c87-37c5-4f00-a1ef-818c244a1900",
+  "id": "73bdd293-977a-41a5-a79f-bdfcff3d60c1",
+  "prevId": "5133013f-d577-4d0c-8c55-9411c15ba6a4",
   "tables": {
     "app_settings": {
       "name": "app_settings",
@@ -417,58 +417,6 @@
         }
       },
       "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "environment_path_canonicalizations": {
-      "name": "environment_path_canonicalizations",
-      "columns": {
-        "environment_id": {
-          "name": "environment_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "canonical_path": {
-          "name": "canonical_path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "path": {
-          "name": "path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "confirmed_at": {
-          "name": "confirmed_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "environment_path_canonicalizations_environment_id_environments_id_fk": {
-          "name": "environment_path_canonicalizations_environment_id_environments_id_fk",
-          "tableFrom": "environment_path_canonicalizations",
-          "tableTo": "environments",
-          "columnsFrom": [
-            "environment_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
@@ -1153,6 +1101,13 @@
           "notNull": false,
           "autoincrement": false
         },
+        "catalog_marketplace_name": {
+          "name": "catalog_marketplace_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "source_kind": {
           "name": "source_kind",
           "type": "text",
@@ -1226,6 +1181,27 @@
         },
         "source_git_ref_kind": {
           "name": "source_git_ref_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "source_git_range": {
+          "name": "source_git_range",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "source_git_tag_prefix": {
+          "name": "source_git_tag_prefix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "source_git_resolved_tag": {
+          "name": "source_git_resolved_tag",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
@@ -1685,6 +1661,13 @@
           "notNull": false,
           "autoincrement": false
         },
+        "git_checkout_root": {
+          "name": "git_checkout_root",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "path": {
           "name": "path",
           "type": "text",
@@ -1792,6 +1775,160 @@
           "name": "plugin_kv_plugin_id_key_pk"
         }
       },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "plugin_marketplace_icons": {
+      "name": "plugin_marketplace_icons",
+      "columns": {
+        "marketplace_name": {
+          "name": "marketplace_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "entry_id": {
+          "name": "entry_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_url": {
+          "name": "source_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "content_type": {
+          "name": "content_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "etag": {
+          "name": "etag",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "content_hash": {
+          "name": "content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "bytes": {
+          "name": "bytes",
+          "type": "blob",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "plugin_marketplace_icons_marketplace_name_entry_id_pk": {
+          "columns": [
+            "marketplace_name",
+            "entry_id"
+          ],
+          "name": "plugin_marketplace_icons_marketplace_name_entry_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "plugin_marketplaces": {
+      "name": "plugin_marketplaces",
+      "columns": {
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "manifest_url": {
+          "name": "manifest_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "manifest_json": {
+          "name": "manifest_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "etag": {
+          "name": "etag",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_modified": {
+          "name": "last_modified",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_successful_refresh_at": {
+          "name": "last_successful_refresh_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_attempted_refresh_at": {
+          "name": "last_attempted_refresh_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
@@ -2300,14 +2437,6 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
-        },
-        "protect_unmanaged_workspace": {
-          "name": "protect_unmanaged_workspace",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": false
         },
         "sort_key": {
           "name": "sort_key",
@@ -3478,528 +3607,6 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
-    },
-    "unmanaged_workspace_mutation_lease_events": {
-      "name": "unmanaged_workspace_mutation_lease_events",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "integer",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": true
-        },
-        "host_id": {
-          "name": "host_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "canonical_path": {
-          "name": "canonical_path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "thread_id": {
-          "name": "thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "environment_id": {
-          "name": "environment_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "request_id": {
-          "name": "request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "generation": {
-          "name": "generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "type": {
-          "name": "type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "unmanaged_workspace_mutation_lease_events_workspace_idx": {
-          "name": "unmanaged_workspace_mutation_lease_events_workspace_idx",
-          "columns": [
-            "host_id",
-            "canonical_path",
-            "id"
-          ],
-          "isUnique": false
-        },
-        "unmanaged_workspace_mutation_lease_events_request_idx": {
-          "name": "unmanaged_workspace_mutation_lease_events_request_idx",
-          "columns": [
-            "request_id"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "unmanaged_workspace_mutation_leases": {
-      "name": "unmanaged_workspace_mutation_leases",
-      "columns": {
-        "host_id": {
-          "name": "host_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "canonical_path": {
-          "name": "canonical_path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "thread_id": {
-          "name": "thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "environment_id": {
-          "name": "environment_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "request_id": {
-          "name": "request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "generation": {
-          "name": "generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "acquired_at": {
-          "name": "acquired_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "unmanaged_workspace_mutation_leases_request_idx": {
-          "name": "unmanaged_workspace_mutation_leases_request_idx",
-          "columns": [
-            "request_id"
-          ],
-          "isUnique": true
-        },
-        "unmanaged_workspace_mutation_leases_thread_idx": {
-          "name": "unmanaged_workspace_mutation_leases_thread_idx",
-          "columns": [
-            "thread_id"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "unmanaged_workspace_mutation_leases_host_id_hosts_id_fk": {
-          "name": "unmanaged_workspace_mutation_leases_host_id_hosts_id_fk",
-          "tableFrom": "unmanaged_workspace_mutation_leases",
-          "tableTo": "hosts",
-          "columnsFrom": [
-            "host_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "unmanaged_workspace_mutation_leases_thread_id_threads_id_fk": {
-          "name": "unmanaged_workspace_mutation_leases_thread_id_threads_id_fk",
-          "tableFrom": "unmanaged_workspace_mutation_leases",
-          "tableTo": "threads",
-          "columnsFrom": [
-            "thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "unmanaged_workspace_mutation_leases_environment_id_environments_id_fk": {
-          "name": "unmanaged_workspace_mutation_leases_environment_id_environments_id_fk",
-          "tableFrom": "unmanaged_workspace_mutation_leases",
-          "tableTo": "environments",
-          "columnsFrom": [
-            "environment_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "unmanaged_workspace_mutation_leases_host_id_canonical_path_pk": {
-          "columns": [
-            "host_id",
-            "canonical_path"
-          ],
-          "name": "unmanaged_workspace_mutation_leases_host_id_canonical_path_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "unmanaged_workspace_mutation_leases_generation_check": {
-          "name": "unmanaged_workspace_mutation_leases_generation_check",
-          "value": "\"unmanaged_workspace_mutation_leases\".\"generation\" > 0"
-        }
-      }
-    },
-    "unmanaged_workspace_mutation_waiters": {
-      "name": "unmanaged_workspace_mutation_waiters",
-      "columns": {
-        "sequence": {
-          "name": "sequence",
-          "type": "integer",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": true
-        },
-        "request_id": {
-          "name": "request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "host_id": {
-          "name": "host_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "canonical_path": {
-          "name": "canonical_path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "thread_id": {
-          "name": "thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "environment_id": {
-          "name": "environment_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "promoted_generation": {
-          "name": "promoted_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "unmanaged_workspace_mutation_waiters_request_idx": {
-          "name": "unmanaged_workspace_mutation_waiters_request_idx",
-          "columns": [
-            "request_id"
-          ],
-          "isUnique": true
-        },
-        "unmanaged_workspace_mutation_waiters_fifo_idx": {
-          "name": "unmanaged_workspace_mutation_waiters_fifo_idx",
-          "columns": [
-            "host_id",
-            "canonical_path",
-            "state",
-            "sequence"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "unmanaged_workspace_mutation_waiters_host_id_hosts_id_fk": {
-          "name": "unmanaged_workspace_mutation_waiters_host_id_hosts_id_fk",
-          "tableFrom": "unmanaged_workspace_mutation_waiters",
-          "tableTo": "hosts",
-          "columnsFrom": [
-            "host_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "unmanaged_workspace_mutation_waiters_thread_id_threads_id_fk": {
-          "name": "unmanaged_workspace_mutation_waiters_thread_id_threads_id_fk",
-          "tableFrom": "unmanaged_workspace_mutation_waiters",
-          "tableTo": "threads",
-          "columnsFrom": [
-            "thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "unmanaged_workspace_mutation_waiters_environment_id_environments_id_fk": {
-          "name": "unmanaged_workspace_mutation_waiters_environment_id_environments_id_fk",
-          "tableFrom": "unmanaged_workspace_mutation_waiters",
-          "tableTo": "environments",
-          "columnsFrom": [
-            "environment_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "work_admissions": {
-      "name": "work_admissions",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "thread_id": {
-          "name": "thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "host_id": {
-          "name": "host_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "command_json": {
-          "name": "command_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "waiting_reason": {
-          "name": "waiting_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "reservation_token": {
-          "name": "reservation_token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "reservation_generation": {
-          "name": "reservation_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "terminal_reason": {
-          "name": "terminal_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "work_admissions_host_status_fifo_idx": {
-          "name": "work_admissions_host_status_fifo_idx",
-          "columns": [
-            "host_id",
-            "status",
-            "created_at",
-            "id"
-          ],
-          "isUnique": false
-        },
-        "work_admissions_thread_status_idx": {
-          "name": "work_admissions_thread_status_idx",
-          "columns": [
-            "thread_id",
-            "status",
-            "created_at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "work_admissions_thread_id_threads_id_fk": {
-          "name": "work_admissions_thread_id_threads_id_fk",
-          "tableFrom": "work_admissions",
-          "tableTo": "threads",
-          "columnsFrom": [
-            "thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "work_admissions_host_id_hosts_id_fk": {
-          "name": "work_admissions_host_id_hosts_id_fk",
-          "tableFrom": "work_admissions",
-          "tableTo": "hosts",
-          "columnsFrom": [
-            "host_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "work_admissions_reservation_shape_check": {
-          "name": "work_admissions_reservation_shape_check",
-          "value": "(\n        (\"work_admissions\".\"status\" = 'running' AND \"work_admissions\".\"reservation_token\" IS NOT NULL AND \"work_admissions\".\"reservation_generation\" IS NOT NULL)\n        OR (\"work_admissions\".\"status\" != 'running')\n      )"
-        }
-      }
     }
   },
   "views": {},

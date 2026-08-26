@@ -3,6 +3,8 @@ import { PANE_FOCUS_APP_COMMAND_IDS } from "@bb/domain";
 import { useAtom, useAtomValue, useStore } from "jotai";
 import {
   Fragment,
+  lazy,
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -11,6 +13,7 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
   type SetStateAction,
 } from "react";
 import { useNavigate } from "react-router-dom";
@@ -22,7 +25,6 @@ import {
 import { useIsMutating } from "@tanstack/react-query";
 import { BbHttpError } from "@/lib/sdk";
 import { useThread } from "@/hooks/queries/thread-queries";
-import { useThreadSplitsEnabled } from "@/hooks/useThreadSplitsEnabled";
 import { useSplitWorkspaceActive } from "@/hooks/useSplitWorkspaceActive";
 import {
   dimInactiveSplitsAtom,
@@ -68,6 +70,15 @@ import {
   type PaneSecondaryPanelRegistration,
   type PaneSecondaryPanelRegistry,
 } from "./PaneContext";
+// ThreadDetailView stays a static import even though it is the largest pane
+// view. Wrapping it in React.lazy does not just add a request: the Suspense
+// retry mounts the pane at transition priority, slicing the mount across
+// thousands of scheduler tasks. Measured on the production build, the first
+// thread opened in a session took 469 ms lazy versus 242 ms static (−48%),
+// and prefetching the chunk during idle recovered only ~7 ms — the cost is
+// the suspend, not the bytes. The tradeoff is that a session which never
+// opens a thread still downloads and parses this view (~899 KB raw) as part
+// of the workspace route chunk.
 import { ThreadDetailView } from "./ThreadDetailView";
 import { RootComposeView } from "@/views/RootComposeView";
 import { PluginPanelView } from "@/views/PluginPanelView";
@@ -81,16 +92,13 @@ import { resourceRouteLabelAtom } from "@/components/layout/resourceRouteLabelAt
 import { resolveAutomationBreadcrumbs } from "@/components/tools/tools-navigation";
 import { Button } from "@bb/shared-ui/button";
 import { Icon } from "@bb/shared-ui/icon";
-import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@/components/ui/chromeStyleTokens";
-import { usePluginSlots } from "@/lib/plugin-slots";
+import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
+import { usePluginNavPanelChrome } from "@/lib/plugin-nav-panel-chrome";
 import {
   PluginPanelHeaderActions,
   PluginPanelHeaderCenter,
 } from "@/components/plugin/PluginPanelHeader";
-import {
-  getAdjacentPaneId,
-  getPaneIdAtReadingIndex,
-} from "./splitPaneCommands";
+import { getAdjacentPaneId } from "./splitPaneCommands";
 import {
   applyThreadPaneActionToLayout,
   createSinglePaneLayout,
@@ -112,8 +120,47 @@ import {
   CONTEXT_SELECTION_SURFACE_CLASS,
 } from "@/components/ui/context-selection";
 import { PaneMaximizeButton } from "./PaneMaximizeButton";
-import { SplitDimmingButton } from "./SplitDimmingButton";
 import { wsManager } from "@/lib/ws";
+
+const LazyPluginPanelRightPanelHost = lazy(() =>
+  import("@/components/plugin/PluginPanelRightPanelHost").then(
+    ({ PluginPanelRightPanelHost }) => ({ default: PluginPanelRightPanelHost }),
+  ),
+);
+
+const LazyPluginDetailPaneView = lazy(() =>
+  import("@/views/ToolsView").then(({ PluginDetailPaneView }) => ({
+    default: PluginDetailPaneView,
+  })),
+);
+
+function PluginDetailPaneView({ pluginId }: { pluginId: string }) {
+  return (
+    <Suspense fallback={null}>
+      <LazyPluginDetailPaneView pluginId={pluginId} />
+    </Suspense>
+  );
+}
+
+function PluginPagePanelHost({
+  children,
+  ...props
+}: {
+  children: ReactNode;
+  flushPageInsets?: boolean;
+  paneId?: string;
+  panelPath: string;
+  pluginId: string;
+  subPath: string;
+}) {
+  return (
+    <Suspense fallback={null}>
+      <LazyPluginPanelRightPanelHost {...props}>
+        {children}
+      </LazyPluginPanelRightPanelHost>
+    </Suspense>
+  );
+}
 
 // A `pointerdown`-relative move threshold before a pane-header drag engages.
 const PANE_DRAG_ENGAGE_DISTANCE_PX = 7;
@@ -182,30 +229,44 @@ function usePreservedSplitScrollPositions(maximizedPaneId: string | null) {
     }
     previousMaximizedPaneIdRef.current = maximizedPaneId;
 
-    const restore = () => {
+    /** Reapplies saved positions; true when any element needed correction. */
+    const restore = (): boolean => {
       const workspace = workspaceRef.current;
+      let corrected = false;
       for (const [element, position] of positionsRef.current) {
         if (workspace === null || !workspace.contains(element)) {
           positionsRef.current.delete(element);
           continue;
         }
+        if (
+          element.scrollLeft === position.left &&
+          element.scrollTop === position.top
+        ) {
+          continue;
+        }
         element.scrollLeft = position.left;
         element.scrollTop = position.top;
+        corrected = true;
       }
+      return corrected;
     };
 
     // Restore before paint, then briefly across animation frames so passive
     // timeline effects, virtualization, and browser scroll anchoring cannot
-    // overwrite the saved position while pane visibility settles.
+    // overwrite the saved position while pane visibility settles. Each frame
+    // forces layout on every tracked scroller, so the loop ends after the
+    // first frame with nothing to correct; the frame cap bounds the
+    // pathological case where something keeps fighting the restore.
     restore();
     let frame: number | null = null;
-    let framesRemaining = 30;
+    let framesRemaining = 5;
     const restoreUntilSettled = () => {
-      restore();
+      const corrected = restore();
       framesRemaining -= 1;
-      if (framesRemaining > 0) {
-        frame = window.requestAnimationFrame(restoreUntilSettled);
-      }
+      frame =
+        corrected && framesRemaining > 0
+          ? window.requestAnimationFrame(restoreUntilSettled)
+          : null;
     };
     frame = window.requestAnimationFrame(restoreUntilSettled);
     return () => {
@@ -228,7 +289,6 @@ export function SplitThreadArea(props: SplitThreadAreaProps = {}) {
 
 function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
   const { projectId, threadId } = useRouteState();
-  const threadSplitsEnabled = useThreadSplitsEnabled();
   const splitWorkspaceActive = useSplitWorkspaceActive();
   const navigate = useNavigate();
   const store = useStore();
@@ -254,13 +314,13 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
   // layout. The reconcile is idempotent, so a URL that already matches the
   // focused pane is a no-op — no history spam, no render loop.
   useEffect(() => {
-    if (!threadSplitsEnabled || currentContent === null) {
+    if (currentContent === null) {
       return;
     }
     setLayout((previous) =>
       reconcileLayoutForContent(previous, currentContent),
     );
-  }, [currentContent, setLayout, threadSplitsEnabled]);
+  }, [currentContent, setLayout]);
 
   // Effective layout for render/handlers before the effect seeds the atom.
   const layout: SplitLayout | null =
@@ -301,9 +361,6 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
   useEffect(
     () =>
       wsManager.onThreadPaneAction((signal) => {
-        if (!threadSplitsEnabled) {
-          return;
-        }
         const current = store.get(splitLayoutAtom);
         if (current === null) {
           return;
@@ -329,7 +386,7 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
           store.set(dimInactiveSplitsAtom, next.dimInactiveSplits);
         }
       }),
-    [navigate, setMaximizedPaneId, store, threadSplitsEnabled],
+    [navigate, setMaximizedPaneId, store],
   );
 
   // A maximized pane is always the focused/address-bar owner. External opens
@@ -525,7 +582,7 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
           : null;
       const startX = event.clientX;
       const startY = event.clientY;
-      beginSplitDrag(startX, startY, {
+      beginSplitDrag({
         ghostLabel: label,
         sourceEl,
         shouldEngage: (x, y) =>
@@ -584,7 +641,10 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
   // useSplitWorkspaceActive.
   if (!splitWorkspaceActive || layout === null || currentContent === null) {
     return currentContent ? (
-      <StandalonePaneContent content={currentContent} />
+      <StandalonePaneContent
+        content={currentContent}
+        paneId={layout?.focusedPaneId}
+      />
     ) : null;
   }
 
@@ -705,7 +765,7 @@ function SplitPaneCommandHandlers({
   });
   useIndexedAppCommandHandlers(PANE_FOCUS_APP_COMMAND_IDS, (index) => {
     if (!isSplitActive) return false;
-    const paneId = getPaneIdAtReadingIndex(panes, index);
+    const paneId = panes[index]?.paneId ?? null;
     if (paneId !== null) focusPane(paneId);
     return true;
   });
@@ -991,19 +1051,65 @@ function WorkspacePaneContent({
   );
 }
 
-function StandalonePaneContent({ content }: { content: PaneContent }) {
+function StandalonePaneContent({
+  content,
+  paneId,
+}: {
+  content: PaneContent;
+  paneId?: string;
+}) {
+  const navPanelChrome = usePluginNavPanelChrome();
   if (content.kind === "thread") {
     return <ThreadDetailView surface="page" />;
   }
   if (content.kind === "new-thread") {
     return <RootComposeView />;
   }
-  return (
+  if (content.kind === "plugin-detail") {
+    return <PluginDetailPaneView pluginId={content.pluginId} />;
+  }
+  const panelEntry = navPanelChrome.find(
+    (candidate) =>
+      candidate.chrome.pluginId === content.pluginId &&
+      candidate.chrome.path === content.panelPath,
+  );
+  const panel = panelEntry?.panel ?? undefined;
+  const panelChrome = panelEntry?.chrome;
+  const body = (
     <PluginPanelView
       pluginId={content.pluginId}
       panelPath={content.panelPath}
       subPath={content.subPath}
     />
+  );
+  return (
+    <PluginPagePanelHost
+      flushPageInsets
+      pluginId={content.pluginId}
+      panelPath={content.panelPath}
+      paneId={paneId}
+      subPath={content.subPath}
+    >
+      {panelChrome ? (
+        <div className="flex h-full min-h-0 flex-col">
+          <AppPageHeader
+            center={<PluginPanelHeaderCenter chrome={panelChrome} />}
+            actions={
+              panel ? (
+                <PluginPanelHeaderActions
+                  panel={panel}
+                  paneId={paneId}
+                  subPath={content.subPath}
+                />
+              ) : undefined
+            }
+          />
+          <div className="flex min-h-0 flex-1 flex-col p-4 md:p-5">{body}</div>
+        </div>
+      ) : (
+        body
+      )}
+    </PluginPagePanelHost>
   );
 }
 
@@ -1022,7 +1128,7 @@ function NonThreadPaneContent({
   isTopRow: boolean;
   ownsWindowTopLeft: boolean;
 }) {
-  const { navPanels } = usePluginSlots();
+  const navPanelChrome = usePluginNavPanelChrome();
   const resourceRouteLabel = useAtomValue(resourceRouteLabelAtom);
   const dimsInactiveSplits = useAtomValue(dimInactiveSplitsAtom);
   const { reservesWindowPanelToggle, isFocused } = useOptionalPaneContext() ?? {
@@ -1034,14 +1140,16 @@ function NonThreadPaneContent({
   const showsWindowPanelToggle = hostLayout?.pinsCornerToggle === true;
   const [desktopInfo] = useState(getBbDesktopInfo);
   const usesDesktopChrome = shouldUseMacosDesktopChrome(desktopInfo);
-  const panel =
+  const panelEntry =
     content.kind === "plugin-panel"
-      ? navPanels.find(
+      ? navPanelChrome.find(
           (candidate) =>
-            candidate.pluginId === content.pluginId &&
-            candidate.path === content.panelPath,
+            candidate.chrome.pluginId === content.pluginId &&
+            candidate.chrome.path === content.panelPath,
         )
       : undefined;
+  const panel = panelEntry?.panel ?? undefined;
+  const panelChrome = panelEntry?.chrome;
   const automationBreadcrumbs =
     content.kind === "plugin-panel"
       ? resolveAutomationBreadcrumbs(
@@ -1049,7 +1157,9 @@ function NonThreadPaneContent({
           isFocused ? resourceRouteLabel : null,
         )
       : null;
-  const label = panel?.title ?? "New thread";
+  const label =
+    panelChrome?.title ??
+    (content.kind === "plugin-detail" ? "Extension" : "New thread");
   const handlePointerDown = (event: ReactPointerEvent) => {
     if (
       event.target instanceof Element &&
@@ -1061,7 +1171,6 @@ function NonThreadPaneContent({
   };
   const actions = (
     <>
-      <SplitDimmingButton />
       {panel ? (
         <PluginPanelHeaderActions
           panel={panel}
@@ -1100,15 +1209,16 @@ function NonThreadPaneContent({
     </>
   );
 
-  return (
+  const contentMarkup = (
     <div
       className={cn(
         "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
         // Single-pane surfaces own their own padding (the compose page and
-        // plugin panels both re-apply it inside), so cancel the app layout's
-        // page padding here. Otherwise the right panel floats 20px off the
-        // window edges instead of sitting flush like it does on a thread.
-        !isBoundedPane && "-m-4 md:-m-5",
+        // plugin panels both re-apply it inside). Compose cancels the app
+        // layout's page padding here. Plugin pages leave that to
+        // PluginPagePanelHost so its main and secondary panels share the same
+        // full-bleed bounds instead of cancelling the inset twice.
+        !isBoundedPane && content.kind === "new-thread" && "-m-4 md:-m-5",
       )}
     >
       {isBoundedPane || panel ? (
@@ -1142,8 +1252,8 @@ function NonThreadPaneContent({
                   breadcrumbs={automationBreadcrumbs}
                   usesDesktopChrome={usesDesktopChrome}
                 />
-              ) : panel ? (
-                <PluginPanelHeaderCenter panel={panel} />
+              ) : panelChrome ? (
+                <PluginPanelHeaderCenter chrome={panelChrome} />
               ) : (
                 <p
                   className={cn(
@@ -1154,7 +1264,9 @@ function NonThreadPaneContent({
                       CONTEXT_INACTIVE_TEXT_CLASS,
                   )}
                 >
-                  New thread
+                  {content.kind === "plugin-detail"
+                    ? "Extension"
+                    : "New thread"}
                 </p>
               )}
             </div>
@@ -1173,6 +1285,8 @@ function NonThreadPaneContent({
       >
         {content.kind === "new-thread" ? (
           <RootComposeView />
+        ) : content.kind === "plugin-detail" ? (
+          <PluginDetailPaneView pluginId={content.pluginId} />
         ) : (
           <PluginPanelView
             pluginId={content.pluginId}
@@ -1182,6 +1296,19 @@ function NonThreadPaneContent({
         )}
       </div>
     </div>
+  );
+
+  return content.kind === "plugin-panel" ? (
+    <PluginPagePanelHost
+      flushPageInsets={!isBoundedPane}
+      pluginId={content.pluginId}
+      panelPath={content.panelPath}
+      subPath={content.subPath}
+    >
+      {contentMarkup}
+    </PluginPagePanelHost>
+  ) : (
+    contentMarkup
   );
 }
 

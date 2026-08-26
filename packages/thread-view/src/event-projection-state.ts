@@ -22,9 +22,11 @@ import { createToolActivityState } from "./tool-activity-projection.js";
 import {
   createOperationProjectionState,
   flushPendingFileEditOutput,
+  interruptOpenCompactions,
   type CompactionTurnFinalizationStatus,
   type OperationProjectionState,
 } from "./operation-projection.js";
+import type { EventMeta } from "./event-decode.js";
 import {
   createReasoningProjectionState,
   finalizeOpenReasoningLifecycles,
@@ -69,8 +71,9 @@ interface FinalizeProjectionMessagesArgs {
 }
 
 interface ThreadInterruptedArgs {
-  completedAt: number;
+  meta: EventMeta;
   state: ProjectionState;
+  threadId: string;
 }
 
 export interface ProjectionState
@@ -144,10 +147,15 @@ export function onTurnCompleted(args: CompleteTurnArgs): void {
 }
 
 export function onThreadInterrupted(args: ThreadInterruptedArgs): void {
-  args.state.threadInterruptedAt = args.completedAt;
+  args.state.threadInterruptedAt = args.meta.createdAt;
+  interruptOpenCompactions({
+    state: args.state,
+    meta: args.meta,
+    threadId: args.threadId,
+  });
   for (const turnId of args.state.openTurnIds) {
     args.state.pendingFinalizationByTurnId.set(turnId, {
-      completedAt: args.completedAt,
+      completedAt: args.meta.createdAt,
       status: "interrupted",
     });
   }
@@ -204,9 +212,13 @@ function finalizePendingMessages(args: FinalizeProjectionMessagesArgs): void {
 
   for (const message of args.state.messages) {
     if (message.kind !== "operation") continue;
+    // Pi can start automatic compaction after it has completed the owning
+    // turn. The thread is idle while that background lifecycle is still in
+    // flight, so idle alone is not evidence that the compaction stopped. Keep
+    // it pending until an explicit completion, provider error, or thread
+    // interruption settles it.
     if (
       args.options?.threadStatus === "idle" &&
-      args.state.threadInterruptedAt === null &&
       message.opType === "compaction" &&
       message.scope.kind === "turn" &&
       args.state.closedTurnIds.has(message.scope.turnId)
@@ -265,7 +277,6 @@ function finalizePendingMessageForInterruptedTurn(
       }
       return;
     case "assistant-text":
-    case "debug/raw-event":
     case "delegation":
     case "error":
     case "user":

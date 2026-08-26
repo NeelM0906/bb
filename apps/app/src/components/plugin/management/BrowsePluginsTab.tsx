@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDebounceValue } from "usehooks-ts";
@@ -27,7 +27,6 @@ import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { appToast } from "@/components/ui/app-toast";
 import { TOOLS_PAGE_BAND_CLASSES } from "@/components/tools/tools-navigation";
-import { pluginIconName } from "@/components/plugin/PluginIcon";
 import { BrowseArchetypeCards } from "@/components/plugin/browse-hero/BrowseArchetypeCards";
 import { nextComposerRequestNonce } from "@/components/plugin/browse-hero/browse-hero-archetypes";
 import { BrowseHeroCarousel } from "@/components/plugin/browse-hero/BrowseHeroCarousel";
@@ -41,7 +40,7 @@ import {
 } from "@/hooks/queries/plugin-catalog-queries";
 import { removePlugin } from "@/hooks/queries/plugin-settings-queries";
 import type { AddPluginInitial } from "./AddPluginDialog";
-import { PlaceholderBadge } from "./plugin-ui";
+import { CatalogEntryIcon } from "./plugin-ui";
 
 /**
  * The Browse page: hero → one CTA row (create + install-from-source) → then
@@ -105,10 +104,16 @@ export function BrowsePluginsTab({
   }, [heroRequest]);
   // Empty means unfiltered, matching the Type filters on Installed and Skills.
   const [categories, setCategories] = useState<string[]>([]);
-  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  // Browse is a store, so it opens on popularity: the most installed plugins
+  // are the ones a first visit should see. Alphabetical stays one click away.
+  const [sortMode, setSortMode] = useState<BrowseSortMode>("installs");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [debouncedQuery] = useDebounceValue(query.trim(), 300);
   const searchQuery = usePluginCatalogSearch(debouncedQuery, { enabled: true });
-  const entries = searchQuery.data ?? [];
+  // Browse offers installs, so an entry this BB cannot install is noise here.
+  // The search API still returns incompatible entries with their reasons for
+  // the CLI, where the "requires newer bb" status is the useful signal.
+  const entries = (searchQuery.data ?? []).filter((entry) => entry.compatible);
   const availableCategories: string[] = [];
   for (const entry of entries) {
     if (!availableCategories.includes(entry.category)) {
@@ -124,17 +129,43 @@ export function BrowsePluginsTab({
     id: name,
     label: name,
   }));
-  const visibleEntries = (
+  // Only the curated marketplace publishes counts, so a catalog without a
+  // single count has nothing to order by; offering the mode would sort the
+  // grid by name and look broken.
+  const installsKnown = entries.some((entry) => entry.installs !== null);
+  // Falling back carries the fallback's own default direction: the count sort
+  // opens descending, and inheriting that would show an unexplained Z→A grid.
+  const effectiveSortMode =
+    sortMode === "installs" && !installsKnown ? "alpha" : sortMode;
+  const effectiveSortDirection =
+    effectiveSortMode === sortMode ? sortDirection : "asc";
+  // Picking the mode already showing flips direction, as on the other
+  // collections. A new mode starts at the direction that reads as its default:
+  // A→Z for names, most-installed-first for popularity. The comparison is
+  // against the mode on screen, so the menu's checked row always toggles.
+  const changeSort = (next: string) => {
+    if (next !== "alpha" && next !== "installs") return;
+    if (next === effectiveSortMode) {
+      setSortDirection(effectiveSortDirection === "asc" ? "desc" : "asc");
+      setSortMode(next);
+      return;
+    }
+    setSortMode(next);
+    setSortDirection(next === "installs" ? "desc" : "asc");
+  };
+  const visibleEntries =
     categories.length === 0
       ? entries
-      : entries.filter((entry) => categories.includes(entry.category))
-  )
-    .slice()
-    .sort((left, right) => {
-      const result = left.displayName.localeCompare(right.displayName);
-      if (result !== 0) return sortDirection === "asc" ? result : -result;
-      return left.entryId.localeCompare(right.entryId);
-    });
+      : entries.filter((entry) => categories.includes(entry.category));
+  const groups = groupByPublisher(
+    visibleEntries,
+    effectiveSortMode,
+    effectiveSortDirection,
+  );
+  // A single group needs no heading — with nothing to contrast against, naming
+  // it would add page chrome that tells the user nothing. Bundled plugins and
+  // the curated marketplace are two publishers, so in practice headings show.
+  const showPublisherHeadings = groups.length > 1;
 
   return (
     <ResourceCollectionViewport scrollId="plugins-browse-results">
@@ -211,15 +242,18 @@ export function BrowsePluginsTab({
                       />
                     ) : null}
                     <ResourceSortMenu
-                      value="alpha"
-                      direction={sortDirection}
+                      value={effectiveSortMode}
+                      direction={effectiveSortDirection}
                       compact
-                      options={[{ id: "alpha", label: "Plugin name" }]}
-                      onChange={() =>
-                        setSortDirection((current) =>
-                          current === "asc" ? "desc" : "asc",
-                        )
-                      }
+                      options={[
+                        { id: "alpha", label: "Plugin name" },
+                        {
+                          id: "installs",
+                          label: "Installs",
+                          disabled: !installsKnown,
+                        },
+                      ]}
+                      onChange={changeSort}
                     />
                   </>
                 }
@@ -254,25 +288,39 @@ export function BrowsePluginsTab({
                 />
               ) : (
                 <div className="space-y-3">
-                  {visibleEntries.length === 0 ? (
+                  {groups.length === 0 ? (
                     <ResourceListState
                       state="empty"
                       message="No plugins match these filters."
                     />
                   ) : (
-                    <ResourceBrowseGrid className="grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-2">
-                      {visibleEntries.map((entry) => (
-                        <BrowseCard
-                          key={entry.entryId}
-                          entry={entry}
-                          installedPluginId={
-                            entry.installed ? entry.pluginId : null
-                          }
-                          onInstall={onInstall}
-                          onOpenPlugin={onOpenPlugin}
-                        />
-                      ))}
-                    </ResourceBrowseGrid>
+                    groups.map((group) => (
+                      <section key={group.key} className="space-y-3">
+                        {showPublisherHeadings ? (
+                          <h2 className="flex items-baseline gap-2 text-sm font-medium text-foreground">
+                            {group.label}
+                            {group.thirdParty ? (
+                              <span className="text-2xs font-normal text-subtle-foreground">
+                                third-party marketplace
+                              </span>
+                            ) : null}
+                          </h2>
+                        ) : null}
+                        <ResourceBrowseGrid className="grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-2">
+                          {group.entries.map((entry) => (
+                            <BrowseCard
+                              key={`${entry.marketplace}/${entry.entryId}`}
+                              entry={entry}
+                              installedPluginId={
+                                entry.installed ? entry.pluginId : null
+                              }
+                              onInstall={onInstall}
+                              onOpenPlugin={onOpenPlugin}
+                            />
+                          ))}
+                        </ResourceBrowseGrid>
+                      </section>
+                    ))
                   )}
                 </div>
               )}
@@ -282,6 +330,89 @@ export function BrowsePluginsTab({
       </div>
     </ResourceCollectionViewport>
   );
+}
+
+type BrowseSortMode = "alpha" | "installs";
+
+interface PublisherGroup {
+  key: string;
+  label: string;
+  thirdParty: boolean;
+  entries: PluginCatalogSearchEntry[];
+}
+
+/**
+ * Group the catalog by publisher, as a flat grid within each one. Category
+ * stays a filter, not a layout. Encounter order is the server's order, so
+ * grouping never reshuffles it.
+ *
+ * Publisher, not marketplace: the plugins bundled with the app are listed
+ * under the marketplace bb curates, so grouping by marketplace filed all of
+ * them under that marketplace's name and told the user BB Community wrote
+ * plugins that ship in the build.
+ *
+ * Groups key on `publisherKey`, never on the label. A marketplace names itself,
+ * so grouping on the label let a third-party marketplace merge its entries into
+ * another publisher's group — and inherit that group's heading, including the
+ * absence of the third-party note.
+ */
+function groupByPublisher(
+  entries: readonly PluginCatalogSearchEntry[],
+  sortMode: BrowseSortMode,
+  sortDirection: "asc" | "desc",
+): PublisherGroup[] {
+  const groups: PublisherGroup[] = [];
+  for (const entry of entries) {
+    let group = groups.find((item) => item.key === entry.publisherKey);
+    if (group === undefined) {
+      group = {
+        key: entry.publisherKey,
+        label: entry.publisherLabel,
+        thirdParty: !entry.official,
+        entries: [],
+      };
+      groups.push(group);
+    }
+    group.entries.push(entry);
+  }
+  for (const group of groups) {
+    group.entries.sort((left, right) => {
+      if (sortMode === "installs") {
+        // An entry the sidecar does not name has an unknown count, not zero,
+        // so it sinks to the bottom in both directions rather than claiming
+        // either end of the popularity order.
+        if (left.installs === null || right.installs === null) {
+          if (left.installs !== null) return -1;
+          if (right.installs !== null) return 1;
+        } else if (left.installs !== right.installs) {
+          const result = left.installs - right.installs;
+          return sortDirection === "asc" ? result : -result;
+        }
+      } else {
+        const result = left.displayName.localeCompare(right.displayName);
+        if (result !== 0) return sortDirection === "asc" ? result : -result;
+      }
+      // Names break count ties so equally installed plugins stay in a stable,
+      // readable order instead of the server's arbitrary one.
+      const byName = left.displayName.localeCompare(right.displayName);
+      if (byName !== 0) return byName;
+      return left.entryId.localeCompare(right.entryId);
+    });
+  }
+  return groups;
+}
+
+/**
+ * Store counts are read at a glance, not audited: "1.2k" carries the scale a
+ * card needs, and the exact number stays in the title attribute.
+ */
+const INSTALL_COUNT_FORMATTER = new Intl.NumberFormat(undefined, {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
+export function formatInstallCount(installs: number): string {
+  return `${INSTALL_COUNT_FORMATTER.format(installs)} ${installs === 1 ? "install" : "installs"}`;
 }
 
 function BrowseCard({
@@ -317,28 +448,80 @@ function BrowseCard({
     },
   });
 
-  const leading = (
-    <PlaceholderBadge
-      className="size-6"
-      iconName={pluginIconName(entry.icon)}
-    />
-  );
+  const leading = <CatalogEntryIcon entry={entry} className="size-6" />;
   const description =
     entry.description.length > 0 ? entry.description : undefined;
   const descriptionArea = (
     <span className="block min-h-[2lh]">{description}</span>
   );
+  // Why an entry cannot be installed outranks who wrote it.
   const byline =
     !entry.compatible && entry.incompatibleReason !== null ? (
       <span className="text-warning-text">{entry.incompatibleReason}</span>
+    ) : entry.author !== null ? (
+      <span>By: {entry.author.name}</span>
     ) : undefined;
+  // The publisher label, not the marketplace's raw display name: a third-party
+  // manifest names itself, and the raw name would print a reserved BB label on
+  // the card that the server already refused to grant.
+  // The repository link sits with the publisher label: both say where the
+  // plugin comes from. The card footer ignores pointer events so clicks fall
+  // through to the open button; the link opts back in to take its own click.
+  const repositoryLink =
+    entry.repositoryUrl === null ? null : (
+      <a
+        href={entry.repositoryUrl}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={`Open ${entry.displayName} repository`}
+        className="pointer-events-auto inline-flex items-center gap-0.5 leading-none underline underline-offset-2 hover:text-foreground"
+      >
+        repo
+        {/* Optical nudge: centered against the line box, the glyph sits a
+            pixel above the x-height of the lowercase label beside it. */}
+        <Icon
+          name="ExternalLink"
+          className="size-2.5 shrink-0 translate-y-px"
+          aria-hidden
+        />
+      </a>
+    );
+  // Only the curated marketplace publishes counts, so this is null for every
+  // third-party listing and for any entry its sidecar does not name.
+  const installs =
+    entry.installs === null ? null : (
+      <span
+        title={`${entry.installs.toLocaleString()} ${entry.installs === 1 ? "install" : "installs"}`}
+      >
+        {formatInstallCount(entry.installs)}
+      </span>
+    );
+  const footerParts = [
+    entry.official ? null : entry.publisherLabel,
+    installs,
+    repositoryLink,
+  ].filter((part) => part !== null);
+  const footerMeta =
+    footerParts.length === 0 ? undefined : (
+      <span className="text-2xs text-subtle-foreground">
+        {footerParts.map((part, index) => (
+          // Index keys: the parts are a fixed, ordered set, not a reorderable
+          // list, so position is their identity.
+          <Fragment key={index}>
+            {index > 0 ? " · " : null}
+            {part}
+          </Fragment>
+        ))}
+      </span>
+    );
   const headerAction =
     installedPluginId !== null ? (
       <ResourceInstallControl
         accessibleLabel={`Uninstall ${entry.displayName}`}
+        icon="Check"
         pending={uninstall.isPending}
         presentation="icon"
-        tooltip={`Uninstall ${entry.displayName}`}
+        tooltip={`Installed — uninstall ${entry.displayName}`}
         className="border-transparent bg-transparent text-[color:color-mix(in_oklab,var(--success)_72%,var(--ink))] shadow-none hover:border-transparent hover:bg-transparent hover:text-[color:color-mix(in_oklab,var(--success)_72%,var(--ink))] focus-visible:border-transparent focus-visible:bg-transparent focus-visible:text-[color:color-mix(in_oklab,var(--success)_72%,var(--ink))]"
         onAction={() => setConfirmingUninstall(true)}
       />
@@ -351,8 +534,12 @@ function BrowseCard({
         onAction={() =>
           onInstall({
             entryId: entry.entryId,
+            marketplace: entry.marketplace,
+            publisherLabel: entry.publisherLabel,
             displayName: entry.displayName,
             icon: entry.icon,
+            iconUrl: entry.iconUrl,
+            iconTinted: entry.iconTinted,
             source: entry.source,
           })
         }
@@ -367,6 +554,7 @@ function BrowseCard({
         title={entry.displayName}
         description={descriptionArea}
         byline={byline}
+        footerMeta={footerMeta}
         headerAction={headerAction}
         openLabel={`Open ${entry.displayName} details`}
         onOpen={() => onOpenPlugin(entry.pluginId)}
@@ -379,7 +567,7 @@ function BrowseCard({
       >
         <ConfirmDeleteDialogContent
           title={`Uninstall ${entry.displayName}?`}
-          description="The plugin will be removed from this BB host. Plugin data may be retained for a future reinstall."
+          description="The plugin, its installed files, and its settings, secrets, and schedules are removed from this BB host."
           confirmLabel={uninstall.isPending ? "Uninstalling…" : "Uninstall"}
           pending={uninstall.isPending}
           onConfirm={() => uninstall.mutate()}

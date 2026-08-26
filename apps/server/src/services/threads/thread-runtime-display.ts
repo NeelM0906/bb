@@ -5,7 +5,7 @@ import {
   getUnmanagedWorkspaceMutationWaitState,
   getSessionById,
   listActiveBackgroundTaskCountsByThreadIds,
-  listLatestGoalEventRowsByThreadIds,
+  listLatestThreadStateEventRowsByThreadIds,
   listLatestSessionsForHosts,
   listOpenTurnInputAcceptedRowsByThreadIds,
   listStoredClientTurnRequestRowsByKeys,
@@ -15,9 +15,11 @@ import {
   type ThreadClientTurnRequestKey,
   type ThreadWithPendingInteractionState,
 } from "@bb/db";
+import { LEGACY_CODEX_GOAL_EXTENSION_KIND } from "@bb/domain";
 import type {
   Thread,
   ThreadActivityState,
+  ThreadChangeMetadata,
   ThreadListEntry,
   ThreadRuntimeState,
   ThreadStatus,
@@ -31,8 +33,10 @@ import {
 import type { ThreadResponse } from "@bb/server-contract";
 import { DAEMON_ACTIVE_WORK_DISCONNECT_GRACE_MS } from "../../constants.js";
 import type { NotificationHub } from "../../ws/hub.js";
-import { parseStoredEvent } from "./thread-data.js";
+import { resolveProviderPlanCommand } from "../providers/provider-plan-command.js";
+import type { ProviderRegistryService } from "../providers/provider-registry.js";
 import { canThreadSpawnChild } from "./thread-parent.js";
+import { toThreadEventWithMeta } from "./timeline.js";
 
 type ThreadRuntimeDisplayHub = Pick<
   NotificationHub,
@@ -42,6 +46,16 @@ type ThreadRuntimeDisplayHub = Pick<
 interface ThreadRuntimeDisplayDeps {
   db: DbConnection;
   hub: ThreadRuntimeDisplayHub;
+}
+
+/**
+ * The prompt-banner path additionally needs the registry, because plan-mode
+ * eligibility is the provider's declared plan composer command. Kept separate
+ * so the plain runtime-state callers (plugin DTOs, thread-send) are not forced
+ * to carry a registry they never read.
+ */
+interface ThreadPromptBannerDeps extends ThreadRuntimeDisplayDeps {
+  providerRegistry: ProviderRegistryService;
 }
 
 interface ResolveThreadRuntimeStateArgs {
@@ -78,6 +92,18 @@ interface ToThreadListEntryResponseFromLatestSessionArgs {
   latestSession: HostDaemonSessionRow | null;
   now?: number;
   thread: ThreadWithPendingInteractionState;
+}
+
+interface BuildThreadStatusChangeMetadataByThreadIdArgs {
+  /** The host every listed thread's environment belongs to. */
+  environmentHostId: string;
+  threads: readonly Thread[];
+}
+
+interface ToThreadStatusChangeMetadataArgs {
+  activity: ThreadActivityState;
+  runtime: ThreadRuntimeState;
+  thread: Thread;
 }
 
 interface PromptBannerActivityState extends Pick<
@@ -232,7 +258,91 @@ function resolveThreadEnvironmentHostId(
   return getEnvironment(deps.db, thread.environmentId)?.hostId ?? null;
 }
 
-export function toThreadResponseWithHost(
+/**
+ * Metadata for a `status-changed` notification: the post-transition row
+ * fields plus the runtime and activity the thread's list row would render
+ * with right now, built by the same helpers as the list endpoints. Clients
+ * patch their cached list rows from it instead of refetching every thread
+ * list. Activity rides along because the plan-mode and goal counts are gated
+ * on the status and were previously only synced by that refetch. Producers
+ * without a hub (writes inside a transaction that buffer notifications) send
+ * the bare change kind and clients refetch as before.
+ */
+export function buildThreadStatusChangeMetadata(
+  deps: ThreadPromptBannerDeps,
+  thread: Thread,
+): ThreadChangeMetadata {
+  return toThreadStatusChangeMetadata({
+    activity:
+      buildThreadActivityStateByThreadId(deps, [thread]).get(thread.id) ??
+      EMPTY_THREAD_ACTIVITY,
+    runtime: resolveThreadRuntimeState(deps, {
+      environmentHostId: resolveThreadEnvironmentHostId(deps, thread),
+      status: thread.status,
+    }),
+    thread,
+  });
+}
+
+/**
+ * `buildThreadStatusChangeMetadata` for many threads on one host in a fixed
+ * number of queries: host connectivity and the latest session are resolved
+ * once for the host and the activity helpers run over the whole array, as the
+ * list endpoints do. The host fan-outs (daemon close, disconnect grace, host
+ * removal) run synchronously on the event loop, so they must not pay one
+ * snapshot's worth of queries per thread on a host with hundreds of threads.
+ */
+export function buildThreadStatusChangeMetadataByThreadId(
+  deps: ThreadPromptBannerDeps,
+  args: BuildThreadStatusChangeMetadataByThreadIdArgs,
+): Map<string, ThreadChangeMetadata> {
+  if (args.threads.length === 0) {
+    return new Map();
+  }
+  const activityByThreadId = buildThreadActivityStateByThreadId(
+    deps,
+    args.threads,
+  );
+  const hostConnected = hasOpenDaemonSessionForHost(
+    deps,
+    args.environmentHostId,
+  );
+  const latestSession = hostConnected
+    ? null
+    : getLatestSessionForHost(deps.db, { hostId: args.environmentHostId });
+  return new Map(
+    args.threads.map((thread) => [
+      thread.id,
+      toThreadStatusChangeMetadata({
+        activity: activityByThreadId.get(thread.id) ?? EMPTY_THREAD_ACTIVITY,
+        runtime: resolveThreadRuntimeStateFromLatestSession({
+          environmentHostId: args.environmentHostId,
+          hostConnected,
+          latestSession,
+          status: thread.status,
+        }),
+        thread,
+      }),
+    ]),
+  );
+}
+
+function toThreadStatusChangeMetadata(
+  args: ToThreadStatusChangeMetadataArgs,
+): ThreadChangeMetadata {
+  return {
+    projectId: args.thread.projectId,
+    statusChange: {
+      status: args.thread.status,
+      runtime: args.runtime,
+      activity: args.activity,
+      latestAttentionAt: args.thread.latestAttentionAt,
+      updatedAt: args.thread.updatedAt,
+    },
+  };
+}
+
+function toThreadResponseWithHost(
   deps: ThreadRuntimeDisplayDeps,
   args: ToThreadResponseWithHostArgs,
 ): ThreadWithRuntime {
@@ -286,23 +396,17 @@ export function toThreadResponseFromThread(
   };
 }
 
-function toThreadEventWithMeta(row: StoredEventRow): ThreadEventWithMeta {
-  return {
-    event: parseStoredEvent(row),
-    meta: {
-      id: row.id,
-      seq: row.sequence,
-      createdAt: row.createdAt,
-    },
-  };
-}
-
 function getThreadPromptBannerActivityState(
+  deps: ThreadPromptBannerDeps,
   thread: Thread,
   events: readonly ThreadEventWithMeta[],
 ): PromptBannerActivityState {
   const activePlanTurn = extractThreadTimelineActivePlanTurn({
     events,
+    planCommand: resolveProviderPlanCommand(
+      deps.providerRegistry,
+      thread.providerId,
+    ),
     providerId: thread.providerId,
     threadStatus: thread.status,
   });
@@ -315,23 +419,30 @@ function getThreadPromptBannerActivityState(
   };
 }
 
-function canThreadShowActivePlanMode(thread: Thread): boolean {
+// Pre-filter for the banner query: only threads whose provider declares a
+// plan command can have an active plan turn, so the rest are not event-loaded.
+function canThreadShowActivePlanMode(
+  deps: ThreadPromptBannerDeps,
+  thread: Thread,
+): boolean {
   return (
     thread.status === "active" &&
-    (thread.providerId === "claude-code" || thread.providerId === "codex")
+    resolveProviderPlanCommand(deps.providerRegistry, thread.providerId) !==
+      null
   );
 }
 
 function listPromptBannerActivityCandidateRows(
-  deps: ThreadRuntimeDisplayDeps,
+  deps: ThreadPromptBannerDeps,
   threads: readonly Thread[],
 ): StoredEventRow[] {
-  const latestGoalRows = listLatestGoalEventRowsByThreadIds(deps.db, {
+  const latestGoalRows = listLatestThreadStateEventRowsByThreadIds(deps.db, {
     threadIds: threads.map((thread) => thread.id),
+    kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
   });
   const openAcceptedRows = listOpenTurnInputAcceptedRowsByThreadIds(deps.db, {
     threadIds: threads
-      .filter((thread) => canThreadShowActivePlanMode(thread))
+      .filter((thread) => canThreadShowActivePlanMode(deps, thread))
       .map((thread) => thread.id),
   });
   const openAcceptedEvents = openAcceptedRows.map(toThreadEventWithMeta);
@@ -353,7 +464,7 @@ function listPromptBannerActivityCandidateRows(
 }
 
 function buildThreadPromptBannerActivityByThreadId(
-  deps: ThreadRuntimeDisplayDeps,
+  deps: ThreadPromptBannerDeps,
   threads: readonly Thread[],
 ): Map<string, PromptBannerActivityState> {
   const rows = listPromptBannerActivityCandidateRows(deps, threads);
@@ -371,6 +482,7 @@ function buildThreadPromptBannerActivityByThreadId(
   const result = new Map<string, PromptBannerActivityState>();
   for (const thread of threads) {
     const activity = getThreadPromptBannerActivityState(
+      deps,
       thread,
       eventsByThreadId.get(thread.id) ?? [],
     );
@@ -382,7 +494,7 @@ function buildThreadPromptBannerActivityByThreadId(
 }
 
 export function getThreadPromptBannerActivity(
-  deps: ThreadRuntimeDisplayDeps,
+  deps: ThreadPromptBannerDeps,
   thread: Thread,
 ): PromptBannerActivityState {
   return (
@@ -396,17 +508,58 @@ export function getThreadPromptBannerActivity(
   );
 }
 
-export function toThreadListEntryResponses(
-  deps: ThreadRuntimeDisplayDeps,
-  args: ToThreadListEntryResponsesArgs,
-): ThreadListEntry[] {
+/**
+ * The list-row activity for each thread: background task counts from the
+ * task rows plus the plan-mode and goal counts the prompt banner derives from
+ * the event log. Threads with no activity at all are absent.
+ */
+function buildThreadActivityStateByThreadId(
+  deps: ThreadPromptBannerDeps,
+  threads: readonly Thread[],
+): Map<string, ThreadActivityState> {
   const backgroundTaskActivityByThreadId = new Map(
     listActiveBackgroundTaskCountsByThreadIds(deps.db, {
-      threadIds: args.threads.map((thread) => thread.id),
+      threadIds: threads.map((thread) => thread.id),
     }).map((activity) => [activity.threadId, activity]),
   );
   const promptBannerActivityByThreadId =
-    buildThreadPromptBannerActivityByThreadId(deps, args.threads);
+    buildThreadPromptBannerActivityByThreadId(deps, threads);
+  const result = new Map<string, ThreadActivityState>();
+  for (const thread of threads) {
+    const backgroundActivity = backgroundTaskActivityByThreadId.get(thread.id);
+    const promptBannerActivity = promptBannerActivityByThreadId.get(thread.id);
+    if (!backgroundActivity && !promptBannerActivity) {
+      continue;
+    }
+    result.set(thread.id, {
+      activeBackgroundAgentCount:
+        backgroundActivity?.activeBackgroundAgentCount ??
+        EMPTY_THREAD_ACTIVITY.activeBackgroundAgentCount,
+      activeBackgroundCommandCount:
+        backgroundActivity?.activeBackgroundCommandCount ??
+        EMPTY_THREAD_ACTIVITY.activeBackgroundCommandCount,
+      activeGoalCount:
+        promptBannerActivity?.activeGoalCount ??
+        EMPTY_THREAD_ACTIVITY.activeGoalCount,
+      activePlanModeCount:
+        promptBannerActivity?.activePlanModeCount ??
+        EMPTY_THREAD_ACTIVITY.activePlanModeCount,
+      activeWorkflowCount:
+        backgroundActivity?.activeWorkflowCount ??
+        EMPTY_THREAD_ACTIVITY.activeWorkflowCount,
+    });
+  }
+  return result;
+}
+
+export function toThreadListEntryResponses(
+  deps: ThreadPromptBannerDeps,
+  args: ToThreadListEntryResponsesArgs,
+): ThreadListEntry[] {
+  const activityByThreadId = buildThreadActivityStateByThreadId(
+    deps,
+    args.threads,
+  );
   const activeHostIds = [
     ...new Set(
       args.threads.flatMap((thread) =>
@@ -428,26 +581,8 @@ export function toThreadListEntryResponses(
   );
 
   return args.threads.map((thread) => {
-    const backgroundActivity = backgroundTaskActivityByThreadId.get(thread.id);
-    const promptBannerActivity = promptBannerActivityByThreadId.get(thread.id);
     return toThreadListEntryResponseFromLatestSession({
-      activity: {
-        activeBackgroundAgentCount:
-          backgroundActivity?.activeBackgroundAgentCount ??
-          EMPTY_THREAD_ACTIVITY.activeBackgroundAgentCount,
-        activeBackgroundCommandCount:
-          backgroundActivity?.activeBackgroundCommandCount ??
-          EMPTY_THREAD_ACTIVITY.activeBackgroundCommandCount,
-        activeGoalCount:
-          promptBannerActivity?.activeGoalCount ??
-          EMPTY_THREAD_ACTIVITY.activeGoalCount,
-        activePlanModeCount:
-          promptBannerActivity?.activePlanModeCount ??
-          EMPTY_THREAD_ACTIVITY.activePlanModeCount,
-        activeWorkflowCount:
-          backgroundActivity?.activeWorkflowCount ??
-          EMPTY_THREAD_ACTIVITY.activeWorkflowCount,
-      },
+      activity: activityByThreadId.get(thread.id) ?? EMPTY_THREAD_ACTIVITY,
       hostConnected:
         thread.environmentHostId !== null &&
         connectedActiveHostIds.has(thread.environmentHostId),

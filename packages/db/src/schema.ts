@@ -1,4 +1,5 @@
 import {
+  blob,
   check,
   index,
   integer,
@@ -155,6 +156,25 @@ export const systemExperiments = sqliteTable("system_experiments", {
   updatedAt: integer("updated_at").notNull(),
 });
 
+// App-wide preferences: one row per `AppSettings` key, values as JSON text.
+// Key/value so a new preference costs a `@bb/domain` entry and nothing else —
+// no column, no migration, no snapshot churn. `appSettingsSchema` validates
+// each value on read, per key, so one bad row cannot reset the rest.
+// Settings → Keyboard overrides ride along under the `keybindingOverrides`
+// key; they are app settings with their own domain schema.
+export const appSettingsValues = sqliteTable("app_settings_values", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+// Superseded by `app_settings_values`, which holds every live preference.
+// Retained, unread and never written, for exactly one reason: an install
+// upgrading from before the Keep Awake plugin still needs
+// `seedKeepAwakePluginConfiguration` to drain `caffeinate`. Drop the whole
+// table with that seed step. It is not a downgrade path: 0102 copies these
+// columns once and nothing refreshes them, so an older build reads settings
+// frozen at upgrade time and any change it makes is lost on the next upgrade.
 export const appSettings = sqliteTable("app_settings", {
   id: text("id").primaryKey(),
   caffeinate: integer("caffeinate", { mode: "boolean" })
@@ -215,6 +235,8 @@ export const installedPlugins = sqliteTable("plugins", {
     .notNull()
     .default("direct"),
   catalogEntryId: text("catalog_entry_id"),
+  /** Marketplace that listed the entry; non-null exactly for catalog rows. */
+  catalogMarketplaceName: text("catalog_marketplace_name"),
   sourceKind: text("source_kind", {
     enum: ["path", "builtin", "npm", "git"],
   })
@@ -230,10 +252,18 @@ export const installedPlugins = sqliteTable("plugins", {
   }),
   sourceGitUrl: text("source_git_url"),
   sourceGitSubdirectory: text("source_git_subdirectory"),
+  // A git source names either one ref or a semver range over release tags.
+  // The ref pair is null for a range install and the range trio is null for a
+  // ref install; exactly one pair is set.
   sourceGitRequestedRef: text("source_git_requested_ref"),
   sourceGitRefKind: text("source_git_ref_kind", {
     enum: ["branch", "tag", "commit"],
   }),
+  sourceGitRange: text("source_git_range"),
+  /** "" means repository-wide `vX.Y.Z` tags; a prefix versions one plugin. */
+  sourceGitTagPrefix: text("source_git_tag_prefix"),
+  /** Tag the range resolved to; `git_resolved_commit` is what it pointed at. */
+  sourceGitResolvedTag: text("source_git_resolved_tag"),
   npmResolvedVersion: text("npm_resolved_version"),
   npmIntegrity: text("npm_integrity"),
   gitResolvedCommit: text("git_resolved_commit"),
@@ -273,6 +303,13 @@ export const pluginArtifacts = sqliteTable(
     sourceKind: text("source_kind", { enum: ["npm", "git"] }).notNull(),
     npmResolvedVersion: text("npm_resolved_version"),
     gitResolvedCommit: text("git_resolved_commit"),
+    /**
+     * Directory of the shared checkout that holds this git artifact. A
+     * multi-plugin repository keeps one checkout per commit, so `path` can be
+     * a nested plugin root below this value. Path parsing cannot recover it:
+     * a nested directory can carry the same name as the commit.
+     */
+    gitCheckoutRoot: text("git_checkout_root"),
     path: text("path").notNull(),
     integrity: text("integrity"),
     contentHash: text("content_hash"),
@@ -284,6 +321,64 @@ export const pluginArtifacts = sqliteTable(
     validatedAt: integer("validated_at"),
   },
   (table) => [index("plugin_artifacts_plugin_idx").on(table.pluginId)],
+);
+
+// Last-known-good marketplace catalogs, one row per marketplace name
+// ("bb-community" is reserved). The row holds the validated manifest document
+// plus the conditional-request validators the refresh loop replays. A failed
+// refresh updates only the attempt/error columns, so the stored manifest keeps
+// serving the store offline.
+export const pluginMarketplaces = sqliteTable("plugin_marketplaces", {
+  name: text("name").primaryKey(),
+  /** How bb reads the manifest: over HTTPS, from a git checkout, or from a directory. */
+  sourceKind: text("source_kind", { enum: ["https", "git", "path"] })
+    .notNull()
+    .default("https"),
+  /**
+   * Where the stored document came from: the manifest URL for an "https"
+   * marketplace, the clone URL for a "git" one, the absolute directory for a
+   * "path" one. An https marketplace resolves relative icon URLs against it.
+   */
+  manifestUrl: text("manifest_url").notNull(),
+  /** Requested git ref of a "git" marketplace; null for every other kind. */
+  sourceGitRef: text("source_git_ref"),
+  /** Commit the last successful "git" refresh read the manifest from. */
+  sourceGitCommit: text("source_git_commit"),
+  manifestJson: text("manifest_json").notNull(),
+  /**
+   * Last-known-good install-count sidecar (`stats.json`) of the curated
+   * marketplace, verbatim; null when it was never fetched or never parsed.
+   * It refreshes on its own cadence: the counts move while the manifest sits
+   * unchanged behind a 304, so it cannot live inside `manifest_json`.
+   */
+  statsJson: text("stats_json"),
+  etag: text("etag"),
+  lastModified: text("last_modified"),
+  lastSuccessfulRefreshAt: integer("last_successful_refresh_at"),
+  lastAttemptedRefreshAt: integer("last_attempted_refresh_at"),
+  lastError: text("last_error"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+// Marketplace entry icons the server fetched and validated during a refresh.
+// The app renders these bytes from BB's own origin, so it never requests a
+// third-party URL.
+export const pluginMarketplaceIcons = sqliteTable(
+  "plugin_marketplace_icons",
+  {
+    marketplaceName: text("marketplace_name").notNull(),
+    entryId: text("entry_id").notNull(),
+    /** Absolute URL the bytes came from; a changed URL forces a refetch. */
+    sourceUrl: text("source_url").notNull(),
+    contentType: text("content_type").notNull(),
+    etag: text("etag"),
+    /** Content hash; the asset route uses it as the cache-busting token. */
+    contentHash: text("content_hash").notNull(),
+    bytes: blob("bytes", { mode: "buffer" }).notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.marketplaceName, table.entryId] })],
 );
 
 export const pluginStateSnapshots = sqliteTable(
@@ -669,6 +764,7 @@ export const events = sqliteTable(
     type: text("type").$type<ThreadEventType>().notNull(),
     itemId: text("item_id"),
     itemKind: text("item_kind").$type<ThreadEventItemType>(),
+    parentToolCallId: text("parent_tool_call_id"),
     data: text("data").notNull().default("{}"),
     createdAt: integer("created_at").notNull(),
   },
@@ -677,6 +773,29 @@ export const events = sqliteTable(
       table.threadId,
       table.sequence,
     ),
+    // Timeline in-turn pagination checks whether a delegated child above a
+    // candidate cut belongs to a delegating item below it, and parent
+    // closure fetches the parent's own rows. A delegating item is a tool
+    // call or a grammar v3 `delegation` item; keep that probe on their small
+    // subset rather than walking the thread/sequence index and fetching
+    // scattered event payload rows.
+    index("events_delegating_item_lookup_idx")
+      // `item_kind` trails so the parent probe's EXISTS stays a covering
+      // lookup: the kind predicate is answered from the index entry.
+      .on(table.threadId, table.itemId, table.sequence, table.itemKind)
+      .where(sql`${table.itemKind} IN ('toolCall', 'delegation')`),
+    // The latest timeline page restores the plan head state (the todo banner)
+    // from the newest planSteps snapshot, keyed by kind — never by a tool
+    // name. Persisted codex plan notifications convert to the same item at
+    // read time, so their type sits beside it.
+    index("events_plan_steps_thread_sequence_idx")
+      .on(table.threadId, table.sequence)
+      .where(
+        sql`(${table.itemKind} = 'planSteps' AND ${table.type} = 'item/completed') OR ${table.type} = 'turn/plan/updated'`,
+      ),
+    index("events_parent_tool_call_thread_parent_sequence_idx")
+      .on(table.threadId, table.parentToolCallId, table.sequence)
+      .where(sql`${table.parentToolCallId} IS NOT NULL`),
     index("events_thread_type_item_kind_sequence_idx").on(
       table.threadId,
       table.type,
@@ -700,18 +819,25 @@ export const events = sqliteTable(
       table.itemId,
       table.sequence,
     ),
+    index("events_item_lifecycle_thread_item_sequence_idx")
+      .on(table.threadId, table.itemId, table.sequence)
+      .where(
+        sql`${table.type} IN ('item/started', 'item/completed', 'item/backgroundTask/completed')`,
+      ),
     index("events_environment_idx").on(table.environmentId),
     index("events_completed_item_truncation_idx")
       .on(table.itemKind, table.createdAt, table.id)
       .where(sql`${table.type} = 'item/completed'`),
-    // Latest-goal lookup (listLatestGoalEventRowsByThreadIds) runs over every
-    // listed thread on each sidebar bootstrap. Goal events are rare, so this
-    // partial index stays tiny; the query must spell the same type list as
-    // literals for SQLite to accept the partial index.
-    index("events_goal_thread_sequence_idx")
+    // Latest-thread-state lookup (listLatestThreadStateEventRowsByThreadIds)
+    // runs over every listed thread on each sidebar bootstrap: the newest
+    // plugin thread-state snapshot of one kind (codex goals today), plus the
+    // legacy goal rows that kind converts from at read time. Those rows are
+    // rare, so this partial index stays tiny; the query must spell the same
+    // type list as literals for SQLite to accept the partial index.
+    index("events_thread_state_thread_sequence_idx")
       .on(table.threadId, table.sequence)
       .where(
-        sql`${table.type} IN ('thread/goal/updated', 'thread/goal/cleared')`,
+        sql`${table.type} IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated')`,
       ),
     check(
       "events_scope_shape_check",
@@ -778,6 +904,32 @@ export const promptHistoryEntries = sqliteTable(
       table.scope,
       table.createdAt,
       table.requestSequence,
+      table.id,
+    ),
+  ],
+);
+
+// Messages addressed to a thread while it awaited user interaction (an
+// AskUserQuestion, a command approval, a plugin input request). A blocked thread
+// cannot take a prompt, and refusing the message dropped it with no trace on the
+// recipient side (#1650). The row holds the message until the thread's pending
+// interactions settle, then the server delivers it in the mode the sender asked
+// for. `payload` is the JSON-encoded deferred message, discriminated by `kind`.
+export const deferredThreadMessages = sqliteTable(
+  "deferred_thread_messages",
+  {
+    id: text("id").primaryKey(),
+    threadId: text("thread_id")
+      .notNull()
+      .references(() => threads.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    payload: text("payload").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("deferred_thread_messages_thread_created_idx").on(
+      table.threadId,
+      table.createdAt,
       table.id,
     ),
   ],

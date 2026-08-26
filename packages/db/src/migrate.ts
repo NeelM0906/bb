@@ -1368,6 +1368,32 @@ function restoreStagedConnectMachineIdColumn(db: DbConnection): void {
   );
 }
 
+function seedKeepAwakePluginConfiguration(db: DbConnection): void {
+  if (
+    !tableExists(db, "app_settings") ||
+    !columnExists(db, "app_settings", "caffeinate") ||
+    !tableExists(db, "plugin_kv")
+  ) {
+    return;
+  }
+  // Idempotently preserve the retired core preference in the plugin's one
+  // configuration record. Once plugin-owned state exists, never overwrite it.
+  db.$client.exec(`
+    INSERT INTO plugin_kv (plugin_id, key, value, updated_at)
+    SELECT
+      'keep-awake',
+      'configuration',
+      CASE caffeinate
+        WHEN 1 THEN '{"enabled":true,"selection":{"mode":"all"}}'
+        ELSE '{"enabled":false,"selection":{"mode":"all"}}'
+      END,
+      updated_at
+    FROM app_settings
+    WHERE id = 'current'
+    ON CONFLICT (plugin_id, key) DO NOTHING
+  `);
+}
+
 function repairBranchLocalThreadSearchMigrations(db: DbConnection): void {
   if (!tableExists(db, "__drizzle_migrations")) {
     return;
@@ -1578,6 +1604,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
     }
     applyReorderedCleanupMigrations(db, migrationsFolder);
     applyQueuedMessageGroupingSchema(db);
+    seedKeepAwakePluginConfiguration(db);
     replayMissingCanonicalTailAfterLatestAppliedCanonicalMigration(
       db,
       migrationsFolder,

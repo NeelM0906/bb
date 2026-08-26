@@ -1,9 +1,11 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
+  mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  rmSync,
   statSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import {
@@ -17,24 +19,23 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { resolvePortFromEnv } from "@bb/config/runtime";
 import {
-  createHostEnrollKeyRequestBody,
-  isMainModule,
-  parseLauncherArgs,
-  resolveBbAppRuntimeContext,
-  resolveBbAppRuntimeState,
-  resolveDataDir,
-  resolvePort,
-  resolveBbAppStartContext,
-  resolveBbAppCommand,
-  runBbApp,
-} from "../src/index.js";
-import {
+  assertBbAppArtifacts,
   completeFullStackSupervision,
   createDaemonEnv,
+  createHostEnrollKeyRequestBody,
+  createServerEnv,
   createHostDaemonJoinEnv,
+  parseLauncherArgs,
   readBbAppPackageVersion,
+  resolveBbAppRuntimeState,
+  resolveDataDir,
+  resolveBbAppStartContext,
+  resolveBbAppCommand,
   resolveServerListenerUrl,
+  resolveWorktreeRuntimePolicy,
+  runBbApp,
   runBundledCliCommand,
   superviseFullStackProcesses,
   terminateManagedFullStackProcesses,
@@ -42,8 +43,8 @@ import {
   waitForHostDaemonStatus,
   waitForProcessExit,
 } from "../src/launcher.js";
-import type { BbAppStartContext } from "../src/index.js";
 import type {
+  BbAppStartContext,
   DelayMillisecondsArgs,
   DelayMillisecondsFn,
   FullStackSupervisionResult,
@@ -184,6 +185,7 @@ const packageMetadataSchema = z.object({
   engines: z.object({
     node: z.string(),
   }),
+  files: z.array(z.string()),
   os: z.array(z.string()),
 });
 
@@ -665,11 +667,11 @@ describe("bb-app launcher", () => {
     expect(resolveDataDir({ env, homeDir: "/home/tester" })).toBe(
       "/home/tester/custom-bb",
     );
-    expect(resolvePort({ defaultPort: 1, env, name: "BB_SERVER_PORT" })).toBe(
-      48886,
-    );
     expect(
-      resolvePort({ defaultPort: 1, env, name: "BB_HOST_DAEMON_PORT" }),
+      resolvePortFromEnv({ defaultPort: 1, env, name: "BB_SERVER_PORT" }),
+    ).toBe(48886);
+    expect(
+      resolvePortFromEnv({ defaultPort: 1, env, name: "BB_HOST_DAEMON_PORT" }),
     ).toBe(48887);
   });
 
@@ -932,13 +934,16 @@ describe("bb-app launcher", () => {
       "utf8",
     );
 
-    const context = await resolveBbAppRuntimeContext({
-      entrypointUrl: pathToFileURL("/repo/packages/bb-app/dist/bb-app.js").href,
-      env: { BB_DATA_DIR: dataDir },
-      homeDir: "/home/tester",
-      options: { help: false },
-      serverUrlMode: "managed",
-    });
+    const context = (
+      await resolveBbAppRuntimeState({
+        entrypointUrl: pathToFileURL("/repo/packages/bb-app/dist/bb-app.js")
+          .href,
+        env: { BB_DATA_DIR: dataDir },
+        homeDir: "/home/tester",
+        options: { help: false },
+        serverUrlMode: "managed",
+      })
+    ).context;
 
     expect(context.serverUrl).toBe("https://bb.example.test");
   });
@@ -974,13 +979,16 @@ describe("bb-app launcher", () => {
       "utf8",
     );
 
-    const context = await resolveBbAppRuntimeContext({
-      entrypointUrl: pathToFileURL("/repo/packages/bb-app/dist/bb-app.js").href,
-      env: { BB_DATA_DIR: dataDir },
-      homeDir: "/home/tester",
-      options: { help: false },
-      serverUrlMode: "local",
-    });
+    const context = (
+      await resolveBbAppRuntimeState({
+        entrypointUrl: pathToFileURL("/repo/packages/bb-app/dist/bb-app.js")
+          .href,
+        env: { BB_DATA_DIR: dataDir },
+        homeDir: "/home/tester",
+        options: { help: false },
+        serverUrlMode: "local",
+      })
+    ).context;
 
     expect(context.serverUrl).toBe("http://127.0.0.1:38886");
   });
@@ -1020,6 +1028,64 @@ describe("bb-app launcher", () => {
     expect(runtime.env.OPENAI_API_KEY).toBe("stored-openai-key");
     expect(runtime.serverEnv.BB_LOG_LEVEL).toBe("debug");
     expect(runtime.serverEnv.OPENAI_API_KEY).toBe("stored-openai-key");
+  });
+
+  it("applies the worktree policy after conflicting saved environment values", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "bb-app-worktree-policy-"));
+    const storedDataDir = join(dataDir, "stored-data");
+    writeFileSync(
+      join(dataDir, "env.json"),
+      JSON.stringify({
+        env: {
+          BB_DATA_DIR: storedDataDir,
+          BB_DEV_APP_PORT: "4173",
+          BB_HOST_DAEMON_PORT: "48887",
+          BB_INHERITED_SKILLS_ROOTS: "/stored/skills",
+          BB_SERVER_BIND_HOST: "0.0.0.0",
+          BB_SERVER_PORT: "48886",
+          BB_TELEMETRY: "true",
+          OPENAI_API_KEY: "stored-openai-key",
+        },
+      }),
+      "utf8",
+    );
+    const worktreeEnv: NodeJS.ProcessEnv = {
+      BB_DATA_DIR: dataDir,
+      BB_HOST_DAEMON_PORT: "47887",
+      BB_INHERITED_SKILLS_ROOTS: "/worktree/skills",
+      BB_SERVER_PORT: "47886",
+    };
+
+    const runtime = await resolveBbAppRuntimeState({
+      entrypointUrl: pathToFileURL("/repo/packages/bb-app/dist/bb-app.js").href,
+      env: worktreeEnv,
+      homeDir: "/home/tester",
+      options: { help: false },
+      serverUrlMode: "local",
+      worktreePolicy: resolveWorktreeRuntimePolicy({
+        env: worktreeEnv,
+        homeDir: "/home/tester",
+      }),
+    });
+
+    expect(runtime.context).toMatchObject({
+      daemonPort: 47887,
+      dataDir,
+      serverPort: 47886,
+      serverUrl: "http://127.0.0.1:47886",
+    });
+    for (const env of [runtime.env, runtime.serverEnv]) {
+      expect(env).toMatchObject({
+        BB_DATA_DIR: dataDir,
+        BB_HOST_DAEMON_PORT: "47887",
+        BB_INHERITED_SKILLS_ROOTS: "/worktree/skills",
+        BB_SERVER_BIND_HOST: "127.0.0.1",
+        BB_SERVER_PORT: "47886",
+        BB_TELEMETRY: "false",
+        OPENAI_API_KEY: "stored-openai-key",
+      });
+      expect(env.BB_DEV_APP_PORT).toBeUndefined();
+    }
   });
 
   it("uses launcher flags over managed config and ambient server URL", async () => {
@@ -1140,6 +1206,55 @@ describe("bb-app launcher", () => {
         },
       });
       expect(statSync(join(dataDir, "client.json")).mode & 0o777).toBe(0o600);
+
+      await runBbApp([
+        "--data-dir",
+        dataDir,
+        "client",
+        "ssh-target",
+        "set",
+        server.url,
+        "buildbox",
+        "--host-id",
+        "host_2",
+      ]);
+      expect(
+        server.requests().filter((request) => request.includes("/hosts")),
+      ).toHaveLength(1);
+      expect(
+        JSON.parse(readFileSync(join(dataDir, "client.json"), "utf8")),
+      ).toMatchObject({
+        servers: {
+          [server.url]: {
+            hosts: {
+              host_1: { sshAuthority: "mbp-intel" },
+              host_2: { sshAuthority: "buildbox" },
+            },
+          },
+        },
+      });
+
+      await runBbApp([
+        "--data-dir",
+        dataDir,
+        "client",
+        "ssh-target",
+        "remove",
+        server.url,
+        "--host-id",
+        "host_2",
+      ]);
+      expect(
+        JSON.parse(readFileSync(join(dataDir, "client.json"), "utf8")),
+      ).toEqual({
+        servers: {
+          [server.url]: {
+            hosts: {
+              host_1: { sshAuthority: "mbp-intel" },
+            },
+          },
+        },
+      });
 
       await runBbApp([
         "--data-dir",
@@ -1861,21 +1976,6 @@ describe("bb-app launcher", () => {
     }
   });
 
-  it("detects npm bin symlinks as the main module", () => {
-    const testDir = mkdtempSync(join(tmpdir(), "bb-bb-app-main-"));
-    const realEntryPath = join(testDir, "dist-index.js");
-    const symlinkPath = join(testDir, "bb");
-    writeFileSync(realEntryPath, "", "utf8");
-    symlinkSync(realEntryPath, symlinkPath);
-
-    expect(
-      isMainModule({
-        entrypointPath: symlinkPath,
-        moduleUrl: pathToFileURL(realEntryPath).href,
-      }),
-    ).toBe(true);
-  });
-
   it("observes child processes that exited before wait registration", async () => {
     const childProcess = spawn(process.execPath, ["-e", "process.exit(7)"], {
       stdio: "ignore",
@@ -2073,6 +2173,107 @@ describe("bb-app launcher", () => {
     const metadata = readPackageMetadata();
 
     expect(metadata.engines.node).toBe("^22.19.0 || ^24.0.0 || ^26.0.0");
+    expect(metadata.files).toContain(
+      "host-daemon/dist/bb-plugin-host-worker.mjs",
+    );
+    // The CLI entry imports its command groups from this chunk directory.
+    expect(metadata.files).toContain("host-daemon/dist/bb");
+    expect(metadata.files).toContain("host-daemon/dist/bb-chunks");
     expect(metadata.os).toEqual(["darwin", "linux"]);
+  });
+
+  it("requires the bundled CLI's chunk directory next to host-daemon/dist/bb", () => {
+    // A packaged layout (entrypoint under <packageRoot>/dist) with every
+    // artifact the launcher checked before the CLI was code-split. Without
+    // bb-chunks the artifact check used to pass and `bb --version` then died
+    // in Node's ESM loader with a raw ERR_MODULE_NOT_FOUND stack.
+    const packageRoot = mkdtempSync(join(tmpdir(), "bb-app-artifacts-"));
+    try {
+      const context = resolveBbAppStartContext({
+        entrypointUrl: pathToFileURL(join(packageRoot, "dist", "bb.js")).href,
+        env: {},
+        homeDir: join(packageRoot, "home"),
+      });
+      for (const artifact of [
+        context.serverEntry,
+        context.daemonEntry,
+        join(context.daemonBundleDir, "bb"),
+        join(context.daemonBundleDir, "bb-provider-bridge-worker.mjs"),
+        join(context.daemonBundleDir, "bb-parcel-watcher-child.mjs"),
+        join(context.daemonBundleDir, "bb-plugin-host-worker.mjs"),
+        join(context.appDistDir, "index.html"),
+      ]) {
+        mkdirSync(dirname(artifact), { recursive: true });
+        writeFileSync(artifact, "");
+      }
+
+      const missingChunks =
+        /^Missing bundled bb CLI chunks at .*\/host-daemon\/dist\/bb-chunks\. Rebuild bb-app/;
+      expect(() => assertBbAppArtifacts(context)).toThrow(missingChunks);
+
+      // An empty directory (a copy interrupted after mkdir, say) fails the
+      // entry's static chunk import exactly like a missing one.
+      const chunkDir = join(context.daemonBundleDir, "bb-chunks");
+      mkdirSync(chunkDir);
+      expect(() => assertBbAppArtifacts(context)).toThrow(missingChunks);
+
+      writeFileSync(join(chunkDir, "chunk-AAAAAAAA.js"), "");
+      expect(() => assertBbAppArtifacts(context)).not.toThrow();
+    } finally {
+      rmSync(packageRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("prunes stale bb CLI chunks from package build output", () => {
+    // `bb-app#build` runs this cleanup after copying the host-daemon output.
+    // Keep the graph tiny here so the expected publication inventory is clear.
+    const pruneScript = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "scripts",
+      "prune-bb-chunks.mjs",
+    );
+    const packageRoot = mkdtempSync(join(tmpdir(), "bb-app-prune-"));
+    try {
+      const chunkDir = join(packageRoot, "host-daemon", "dist", "bb-chunks");
+      mkdirSync(chunkDir, { recursive: true });
+      writeFileSync(
+        join(packageRoot, "host-daemon", "dist", "bb"),
+        'import"./bb-chunks/chunk-LIVE.js";\n',
+      );
+      writeFileSync(join(chunkDir, "chunk-LIVE.js"), "export var a=1;\n");
+      writeFileSync(join(chunkDir, "chunk-STALE.js"), "export var s=1;\n");
+      writeFileSync(
+        join(packageRoot, "package.json"),
+        JSON.stringify({
+          name: "bb-app-prune-fixture",
+          version: "0.0.1",
+          files: ["host-daemon/dist/bb", "host-daemon/dist/bb-chunks"],
+        }),
+      );
+
+      execFileSync("node", [pruneScript], { cwd: packageRoot });
+      expect(readdirSync(chunkDir)).toEqual(["chunk-LIVE.js"]);
+    } finally {
+      rmSync(packageRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the desktop app surface the desktop shell passes to the server", () => {
+    const context = createTestStartContext();
+
+    const desktopServerEnv = createServerEnv({
+      context,
+      env: { BB_APP_SURFACE: "desktop" },
+    });
+    const webServerEnv = createServerEnv({ context, env: {} });
+    const invalidSurfaceServerEnv = createServerEnv({
+      context,
+      env: { BB_APP_SURFACE: "bogus" },
+    });
+
+    expect(desktopServerEnv.BB_APP_SURFACE).toBe("desktop");
+    expect(webServerEnv.BB_APP_SURFACE).toBe("web");
+    expect(invalidSurfaceServerEnv.BB_APP_SURFACE).toBe("web");
   });
 });

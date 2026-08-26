@@ -6,6 +6,7 @@ import type {
   ExistingThreadExecutionInputSources,
   ThreadTimelineResponse,
 } from "@bb/server-contract";
+import { createDeferredPromise } from "@bb/test-helpers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BbHttpError, sdk } from "@/lib/sdk";
 import { wsManager } from "@/lib/ws";
@@ -100,14 +101,6 @@ function makeBannerTimeline(): ThreadTimelineResponse {
   };
 }
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
 const executionInputSources = {
   model: "explicit",
   serviceTier: "client-preference",
@@ -124,7 +117,10 @@ beforeEach(() => {
     operationId: "edit-op-1",
     requestSequence: 42,
   });
-  vi.mocked(sdk.threads.send).mockResolvedValue({ ok: true });
+  vi.mocked(sdk.threads.send).mockResolvedValue({
+    ok: true,
+    delivery: "sent",
+  });
   vi.mocked(sdk.threads.queuedMessages.create).mockResolvedValue(
     makeQueuedMessage(),
   );
@@ -141,7 +137,7 @@ describe("thread runtime mutations", () => {
   it("keeps the existing timeline while an edit is pending and lets connected realtime own success", async () => {
     const { queryClient, wrapper } = createQueryClientTestHarness();
     const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
-    const edit = deferred<{
+    const edit = createDeferredPromise<{
       ok: true;
       operationId: string;
       requestSequence: number;
@@ -207,7 +203,7 @@ describe("thread runtime mutations", () => {
     async (_label, useMutationHook, getSdkMethod) => {
       const { queryClient, wrapper } = createQueryClientTestHarness();
       const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
-      const cancellation = deferred<{ ok: true }>();
+      const cancellation = createDeferredPromise<{ ok: true }>();
       vi.mocked(getSdkMethod()).mockReturnValueOnce(cancellation.promise);
       queryClient.setQueryData(
         threadTimelineQueryKey("thread-1"),
@@ -293,6 +289,29 @@ describe("thread runtime mutations", () => {
         threadId: "thread-1",
       }),
     );
+  });
+
+  it("returns the server's delivery so a held message is not treated as a started turn", async () => {
+    vi.mocked(sdk.threads.send).mockResolvedValue({
+      ok: true,
+      delivery: "deferred",
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const { result } = renderHook(() => useSendThreadMessage(), { wrapper });
+
+    let sendResult: Awaited<ReturnType<typeof result.current.mutateAsync>> = {
+      ok: true,
+      delivery: "sent",
+    };
+    await act(async () => {
+      sendResult = await result.current.mutateAsync({
+        id: "thread-1",
+        mode: "steer-if-active",
+        input: [{ type: "text", text: "worker report", mentions: [] }],
+      });
+    });
+
+    expect(sendResult).toEqual({ ok: true, delivery: "deferred" });
   });
 
   it("forwards execution input sources and sender thread when queueing a message", async () => {

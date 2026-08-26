@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadPluginApp, renderSlot } from "@bb/plugin-sdk/testing/app";
+import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { COMPACT_VIEWPORT_QUERY } from "@bb/shared-ui/hooks/use-compact-viewport";
 import type { Task } from "../../shared/contract.js";
 import { LIST_PREFERENCE_STORAGE_KEY } from "./list-preference.js";
@@ -490,8 +490,10 @@ describe("list filter/sort preference persistence", () => {
       ).toBe(true);
     });
     // Empty labelIds filter yields no rows (not the full unfiltered list).
-    expect(slot.queryByText("ALP-1")).toBeNull();
-    expect(slot.queryByText("ALP-2")).toBeNull();
+    await waitFor(() => {
+      expect(slot.queryByText("ALP-1")).toBeNull();
+      expect(slot.queryByText("ALP-2")).toBeNull();
+    });
   });
 });
 

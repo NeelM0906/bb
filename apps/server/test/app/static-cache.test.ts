@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { brotliCompressSync, gzipSync } from "node:zlib";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,7 +8,7 @@ import { createApp } from "../../src/server.js";
 import { createTestAppHarness } from "../helpers/test-app.js";
 
 describe("production static cache headers", () => {
-  it("keeps index.html fresh while allowing immutable hashed assets", async () => {
+  it("revalidates index.html on every navigation while allowing immutable hashed assets", async () => {
     const staticDir = await mkdtemp(join(tmpdir(), "bb-server-static-"));
     await mkdir(join(staticDir, "assets"), { recursive: true });
     await writeFile(
@@ -29,15 +30,29 @@ describe("production static cache headers", () => {
       join(staticDir, "manifest.webmanifest"),
       JSON.stringify({ name: "bb", icons: [] }),
     );
+    await writeFile(
+      join(staticDir, "favicon-32x32.png"),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    );
 
     const harness = await createTestAppHarness();
     const serverApp = createApp(harness.deps, { staticDir });
     try {
+      // The shell is `no-cache` plus a build-id ETag: browsers, the desktop
+      // window and the connect edge revalidate with If-None-Match on every
+      // navigation (a cheap 304), so a new build is never masked by a fresh
+      // private copy whose hashed assets are gone, and unlike `no-store` it
+      // stays eligible for the WebKit back/forward cache.
       const rootResponse = await serverApp.app.request("/");
-      expect(rootResponse.headers.get("cache-control")).toBe("no-store");
+      expect(rootResponse.headers.get("cache-control")).toBe("no-cache");
+      expect(rootResponse.headers.get("etag")).toMatch(/^W\/"[0-9a-f]{32}"$/u);
 
       const fallbackResponse = await serverApp.app.request("/threads/thr_123");
-      expect(fallbackResponse.headers.get("cache-control")).toBe("no-store");
+      expect(fallbackResponse.headers.get("cache-control")).toBe("no-cache");
+      // Same document, same validator: the fallback IS the shell.
+      expect(fallbackResponse.headers.get("etag")).toBe(
+        rootResponse.headers.get("etag"),
+      );
 
       const assetResponse = await serverApp.app.request(
         "/assets/index-test.js",
@@ -98,7 +113,16 @@ describe("production static cache headers", () => {
       expect(manifestResponse.headers.get("content-type")).toBe(
         "application/manifest+json",
       );
-      expect(manifestResponse.headers.get("cache-control")).toBe("no-store");
+      expect(manifestResponse.headers.get("cache-control")).toBe(
+        "public, max-age=86400",
+      );
+
+      const iconResponse = await serverApp.app.request("/favicon-32x32.png");
+      expect(iconResponse.status).toBe(200);
+      expect(iconResponse.headers.get("content-type")).toBe("image/png");
+      expect(iconResponse.headers.get("cache-control")).toBe(
+        "public, max-age=86400",
+      );
 
       const apiMissResponse = await serverApp.app.request(
         "/api/v1/does-not-exist.js",

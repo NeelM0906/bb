@@ -1,19 +1,41 @@
 import { z } from "zod";
+import {
+  AUTOMATION_IDEMPOTENCY_KEY_MAX_LENGTH,
+  AUTOMATION_NAME_MAX_LENGTH,
+  AUTOMATION_RUNS_LIMIT_DEFAULT,
+  AUTOMATION_RUNS_LIMIT_MAX,
+  AUTOMATION_SCRIPT_FILE_MAX_LENGTH,
+  AUTOMATION_SCRIPT_MAX_LENGTH,
+  AUTOMATION_SCRIPT_TIMEOUT_DEFAULT_MS,
+  AUTOMATION_SCRIPT_TIMEOUT_MAX_MS,
+  SCHEDULE_CRON_MAX_LENGTH,
+  SCHEDULE_TIMEZONE_MAX_LENGTH,
+} from "./limits.js";
 
-export const AUTOMATION_NAME_MAX_LENGTH = 200;
-export const AUTOMATION_PROMPT_MAX_LENGTH = 8_000;
-export const AUTOMATION_SCRIPT_MAX_LENGTH = 262_144;
-export const AUTOMATION_SCRIPT_FILE_MAX_LENGTH = 200;
-export const SCHEDULE_CRON_MAX_LENGTH = 100;
-export const SCHEDULE_TIMEZONE_MAX_LENGTH = 100;
-export const AUTOMATION_IDEMPOTENCY_KEY_MAX_LENGTH = 200;
-export const AUTOMATION_SCRIPT_TIMEOUT_DEFAULT_MS = 120_000;
-export const AUTOMATION_SCRIPT_TIMEOUT_MAX_MS = 900_000;
-export const AUTOMATION_RUNS_LIMIT_DEFAULT = 50;
-export const AUTOMATION_RUNS_LIMIT_MAX = 200;
+// The limits live in the import-free ./limits.js so the frontend can read a
+// number without bundling zod; these re-exports keep the backend's existing
+// imports and the package's `./rpc-types` export map entry unchanged.
+export {
+  AUTOMATION_RUNS_LIMIT_MAX,
+  AUTOMATION_SCRIPT_TIMEOUT_DEFAULT_MS,
+  AUTOMATION_SCRIPT_TIMEOUT_MAX_MS,
+} from "./limits.js";
 
 export const permissionModeSchema = z.enum(["accept-edits", "auto", "full"]);
 export type PermissionMode = z.infer<typeof permissionModeSchema>;
+export const reasoningLevelSchema = z.enum([
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "ultracode",
+  "max",
+  "ultra",
+]);
+export type ReasoningLevel = z.infer<typeof reasoningLevelSchema>;
+export const serviceTierSchema = z.enum(["default", "fast"]);
+export type ServiceTier = z.infer<typeof serviceTierSchema>;
 
 export const unmanagedBranchSpecSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("existing"), name: z.string().min(1) }).strict(),
@@ -100,14 +122,14 @@ export type AutomationScriptInterpreter = z.infer<
   typeof automationScriptInterpreterSchema
 >;
 
-export const automationScheduleTriggerSchema = z
+const automationScheduleTriggerSchema = z
   .object({
     triggerType: z.literal("schedule"),
     cron: z.string().min(1).max(SCHEDULE_CRON_MAX_LENGTH),
     timezone: z.string().min(1).max(SCHEDULE_TIMEZONE_MAX_LENGTH),
   })
   .strict();
-export const automationOnceTriggerSchema = z
+const automationOnceTriggerSchema = z
   .object({
     triggerType: z.literal("once"),
     runAt: z.number().int().positive(),
@@ -119,19 +141,21 @@ export const automationTriggerSchema = z.discriminatedUnion("triggerType", [
 ]);
 export type AutomationTrigger = z.infer<typeof automationTriggerSchema>;
 
-export const automationAgentExecutionSchema = z
+const automationAgentExecutionSchema = z
   .object({
     mode: z.literal("agent"),
-    prompt: z.string().min(1).max(AUTOMATION_PROMPT_MAX_LENGTH),
+    prompt: z.string().min(1),
     providerId: z.string().min(1),
     model: z.string().min(1),
+    reasoningLevel: reasoningLevelSchema.default("medium"),
+    serviceTier: serviceTierSchema.optional(),
     permissionMode: permissionModeSchema,
     environment: agentEnvironmentSchema,
     targetThreadId: z.string().min(1).optional(),
   })
   .strict();
 
-export const automationScriptExecutionSchema = z
+const automationScriptExecutionSchema = z
   .object({
     mode: z.literal("script"),
     script: z.string().min(1).max(AUTOMATION_SCRIPT_MAX_LENGTH).optional(),
@@ -173,10 +197,24 @@ function requireExactlyOneScriptSource(
   }
 }
 
-export const automationExecutionRequestSchema =
-  automationExecutionSchema.superRefine(requireExactlyOneScriptSource);
+const automationExecutionRequestSchema = automationExecutionSchema.superRefine(
+  requireExactlyOneScriptSource,
+);
 
-export const agentExecutionTargetSchema = z.discriminatedUnion("type", [
+/**
+ * Execution as returned to clients. Script automations add `storedScriptPath`:
+ * the absolute path of the plugin's private copy that runs execute. The copy is
+ * a snapshot taken at create/update time; edits to the original `--script-file`
+ * source do not reach it.
+ */
+const automationResponseExecutionSchema = z.discriminatedUnion("mode", [
+  automationAgentExecutionSchema,
+  automationScriptExecutionSchema
+    .extend({ storedScriptPath: z.string().min(1).optional() })
+    .strict(),
+]);
+
+const agentExecutionTargetSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("target-thread"),
@@ -190,12 +228,15 @@ export const agentExecutionTargetSchema = z.discriminatedUnion("type", [
     })
     .strict(),
 ]);
-export type AgentExecutionTarget = z.infer<typeof agentExecutionTargetSchema>;
 
-export const agentExecutionUpdateSchema = z
+const agentExecutionUpdateSchema = z
   .object({
-    prompt: z.string().min(1).max(AUTOMATION_PROMPT_MAX_LENGTH).optional(),
+    prompt: z.string().min(1).optional(),
+    providerId: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
+    reasoningLevel: reasoningLevelSchema.optional(),
+    /** Null explicitly clears a tier that the previous provider supported. */
+    serviceTier: serviceTierSchema.nullable().optional(),
     permissionMode: permissionModeSchema.optional(),
     target: agentExecutionTargetSchema.optional(),
   })
@@ -203,39 +244,15 @@ export const agentExecutionUpdateSchema = z
   .refine(
     (value) =>
       value.prompt !== undefined ||
+      value.providerId !== undefined ||
       value.model !== undefined ||
+      value.reasoningLevel !== undefined ||
+      value.serviceTier !== undefined ||
       value.permissionMode !== undefined ||
       value.target !== undefined,
     { message: "at least one agent execution field is required" },
   );
 export type AgentExecutionUpdate = z.infer<typeof agentExecutionUpdateSchema>;
-
-export const automationExecutionOptionsResponseSchema = z
-  .object({
-    models: z.array(
-      z
-        .object({
-          id: z.string().min(1),
-          model: z.string().min(1),
-          displayName: z.string().min(1),
-        })
-        .strict(),
-    ),
-    permissionModes: z.array(permissionModeSchema),
-  })
-  .strict();
-export type AutomationExecutionOptionsResponse = z.infer<
-  typeof automationExecutionOptionsResponseSchema
->;
-
-export const automationPermissionOptionsResponseSchema = z
-  .object({
-    permissionModes: z.array(permissionModeSchema),
-  })
-  .strict();
-export type AutomationPermissionOptionsResponse = z.infer<
-  typeof automationPermissionOptionsResponseSchema
->;
 
 export const automationResponseSchema = z
   .object({
@@ -244,7 +261,7 @@ export const automationResponseSchema = z
     name: z.string(),
     enabled: z.boolean(),
     trigger: automationTriggerSchema,
-    execution: automationExecutionSchema,
+    execution: automationResponseExecutionSchema,
     origin: automationOriginSchema,
     createdByThreadId: z.string().min(1).nullable(),
     nextRunAt: z.number().nullable(),
@@ -284,14 +301,10 @@ export const projectAutomationInputSchema = z
     automationId: z.string().min(1),
   })
   .strict();
-export type ProjectAutomationInput = z.infer<
-  typeof projectAutomationInputSchema
->;
 
 export const listAutomationsInputSchema = z
   .object({ projectId: z.string().min(1) })
   .strict();
-export type ListAutomationsInput = z.infer<typeof listAutomationsInputSchema>;
 
 export const createAutomationInputSchema = z
   .object({
@@ -357,15 +370,11 @@ export const automationRunsInputSchema = projectAutomationInputSchema
     cursor: z.string().min(1).optional(),
   })
   .strict();
-export type AutomationRunsInput = z.input<typeof automationRunsInputSchema>;
 export type ResolvedAutomationRunsInput = z.output<
   typeof automationRunsInputSchema
 >;
 
 export const automationListResponseSchema = z.array(automationResponseSchema);
-export type AutomationListResponse = z.infer<
-  typeof automationListResponseSchema
->;
 
 export const automationRunListResponseSchema = z
   .object({
@@ -384,7 +393,7 @@ export type AutomationRunRpcResponse = z.infer<
   typeof automationRunRpcResponseSchema
 >;
 
-export const automationsOverviewEntrySchema = z
+const automationsOverviewEntrySchema = z
   .object({
     automation: automationResponseSchema,
     project: z.object({ id: z.string(), name: z.string() }).strict(),
