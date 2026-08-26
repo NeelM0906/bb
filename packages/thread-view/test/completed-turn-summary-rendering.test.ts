@@ -189,7 +189,7 @@ describe("completed turn summary rendering", () => {
     expect(turnRows(timeline.rows)).toHaveLength(0);
   });
 
-  it("folds narration before work but keeps the answer that precedes a hook reply", () => {
+  it("keeps narration before work visible along with the answer that precedes a hook reply", () => {
     const event = createTimelineEventFactory({ threadId: "thread-1" });
     const request = event.clientTurnRequested({
       target: { kind: "new-turn" },
@@ -220,7 +220,8 @@ describe("completed turn summary rendering", () => {
 
     expect(rowSignatures(timeline.rows)).toEqual([
       "conversation:user",
-      "turn:4-5",
+      "conversation:assistant",
+      "turn:5-5",
       "conversation:assistant",
       "conversation:assistant",
     ]);
@@ -228,12 +229,9 @@ describe("completed turn summary rendering", () => {
     expect(turnRow).toMatchObject({
       startedAt: 2,
       completedAt: 8,
-      summaryCount: 2,
+      summaryCount: 1,
     });
-    expect(rowSignatures(turnRow.children ?? [])).toEqual([
-      "conversation:assistant",
-      "work:command",
-    ]);
+    expect(rowSignatures(turnRow.children ?? [])).toEqual(["work:command"]);
   });
 
   it("keeps turn-scoped environment directory update operations inside the completed turn summary", () => {

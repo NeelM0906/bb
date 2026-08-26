@@ -314,9 +314,13 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
       error: "install sentinel",
     });
     expect(install).toHaveBeenCalledOnce();
-    expect(install).toHaveBeenCalledWith("npm:attacker-plugin@1.0.0", {
-      allowManagedWorkspaceSource: false,
-    });
+    expect(install).toHaveBeenCalledWith(
+      "npm:attacker-plugin@1.0.0",
+      { kind: "root" },
+      {
+        allowManagedWorkspaceSource: false,
+      },
+    );
   });
 
   it("token auth: 401 without the token, works with header or query, rotate invalidates", async () => {

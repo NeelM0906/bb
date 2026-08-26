@@ -6,7 +6,6 @@ import {
 import {
   resolveEnvironmentMergeBaseBranch,
   type Environment,
-  type Thread,
   type ThreadEventRow,
   type ThreadGitDiffResponse,
   type ThreadPullRequest,

@@ -10,7 +10,10 @@ describe("plugin catalog contracts", () => {
   it("keeps the managed-workspace override absent for older strict servers", () => {
     expect(
       pluginInstallSourceRequestSchema.parse({ source: "npm:@bb/notes@^1" }),
-    ).toEqual({ source: "npm:@bb/notes@^1" });
+    ).toEqual({
+      source: "npm:@bb/notes@^1",
+      selection: { kind: "root" },
+    });
     expect(
       pluginInstallSourceRequestSchema.parse({
         source: "path:/tmp/plugin",
@@ -18,6 +21,7 @@ describe("plugin catalog contracts", () => {
       }),
     ).toEqual({
       source: "path:/tmp/plugin",
+      selection: { kind: "root" },
       allowManagedWorkspaceSource: true,
     });
   });

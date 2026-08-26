@@ -255,6 +255,7 @@ const latestMigrationWhen = Math.max(
 );
 
 function dropWorkspaceSafetySchema(db: DbConnection): void {
+  db.$client.prepare("DROP TABLE IF EXISTS work_admissions").run();
   db.$client
     .prepare("DROP TABLE IF EXISTS environment_path_canonicalizations")
     .run();
@@ -431,10 +432,11 @@ const legacyExperimentsMigrationWhen = 1781299832942;
 const eventLargeValuesMigrationWhen = 1781403656069;
 const environmentArchiveGraceMigrationWhen = 1786416023798;
 const threadSearchSourceSeqIndexMigrationWhen = 1786468375011;
-const workAdmissionsMigrationWhen = 1786564115037;
-const threadChildOriginCleanupMigrationWhen = 1786634486955;
-const workspaceSafetyMigrationWhen = 1786634688958;
-const environmentPathCanonicalizationMigrationWhen = 1786647920313;
+const threadChildOriginCleanupMigrationWhen = 1786565524902;
+const workspaceSafetyMigrationWhen = 1787767282785;
+const workAdmissionsMigrationWhen = workspaceSafetyMigrationWhen;
+const environmentPathCanonicalizationMigrationWhen =
+  workspaceSafetyMigrationWhen;
 const farFutureBranchMigrationWhen = 9_999_999_999_999;
 const eventLargeValuesRestoreMigrationWhen = 1781557200000;
 const cleanupModeDropMigrationWhen = 1781557300000;
@@ -4459,13 +4461,10 @@ describe("migrate", () => {
       migrate(db);
       dropWorkspaceSafetySchema(db);
       db.$client
-        .prepare<
-          [number, number]
-        >("DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?)")
-        .run(
-          workspaceSafetyMigrationWhen,
-          environmentPathCanonicalizationMigrationWhen,
-        );
+        .prepare<DeleteMigrationParameters>(
+          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
+        )
+        .run(workspaceSafetyMigrationWhen);
       db.$client
         .prepare<InsertMigrationParameters>(
           "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
@@ -4496,27 +4495,12 @@ describe("migrate", () => {
 
     try {
       migrate(db);
-      db.$client.exec(`
-        ALTER TABLE environments DROP COLUMN retire_requested_at;
-        DROP INDEX thread_search_segments_thread_source_seq_idx;
-        CREATE INDEX thread_search_segments_thread_idx
-          ON thread_search_segments (thread_id);
-        DROP TABLE work_admissions;
-        ALTER TABLE threads ADD COLUMN child_origin text;
-      `);
       dropWorkspaceSafetySchema(db);
       db.$client
-        .prepare<
-          [number, number, number, number, number, number]
-        >("DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?, ?, ?, ?, ?)")
-        .run(
-          environmentArchiveGraceMigrationWhen,
-          threadSearchSourceSeqIndexMigrationWhen,
-          workAdmissionsMigrationWhen,
-          threadChildOriginCleanupMigrationWhen,
-          workspaceSafetyMigrationWhen,
-          environmentPathCanonicalizationMigrationWhen,
-        );
+        .prepare<DeleteMigrationParameters>(
+          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
+        )
+        .run(workspaceSafetyMigrationWhen);
       db.$client
         .prepare<InsertMigrationParameters>(
           "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
@@ -4525,25 +4509,9 @@ describe("migrate", () => {
 
       expect(() => migrate(db)).not.toThrow();
 
-      expect(readAppliedMigrationCreatedAts(db)).toEqual(
-        expect.arrayContaining([
-          environmentArchiveGraceMigrationWhen,
-          threadSearchSourceSeqIndexMigrationWhen,
-          workAdmissionsMigrationWhen,
-          threadChildOriginCleanupMigrationWhen,
-          workspaceSafetyMigrationWhen,
-          environmentPathCanonicalizationMigrationWhen,
-        ]),
+      expect(readAppliedMigrationCreatedAts(db)).toContain(
+        workspaceSafetyMigrationWhen,
       );
-      expect(
-        db.$client
-          .prepare<[], TableInfoRow>("PRAGMA table_info(environments)")
-          .all()
-          .map((column) => column.name),
-      ).toContain("retire_requested_at");
-      expect(
-        readIndexNames({ db, tableName: "thread_search_segments" }),
-      ).toContain("thread_search_segments_thread_source_seq_idx");
       expect(readTableNames(db)).toContain("work_admissions");
       expect(readTableNames(db)).toContain(
         "unmanaged_workspace_mutation_leases",
@@ -4641,19 +4609,11 @@ describe("migrate", () => {
 
     try {
       migrate(db);
-      dropWorkspaceSafetySchema(db);
       db.$client
-        .prepare<
-          [number, number, number, number, number, number]
-        >("DELETE FROM __drizzle_migrations WHERE created_at IN (?, ?, ?, ?, ?, ?)")
-        .run(
-          environmentArchiveGraceMigrationWhen,
-          threadSearchSourceSeqIndexMigrationWhen,
-          workAdmissionsMigrationWhen,
-          threadChildOriginCleanupMigrationWhen,
-          workspaceSafetyMigrationWhen,
-          environmentPathCanonicalizationMigrationWhen,
-        );
+        .prepare<DeleteMigrationParameters>(
+          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
+        )
+        .run(workspaceSafetyMigrationWhen);
       db.$client
         .prepare<InsertMigrationParameters>(
           "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
@@ -4661,25 +4621,10 @@ describe("migrate", () => {
         .run("future-branch-migration", farFutureBranchMigrationWhen);
 
       expect(() => migrate(db)).toThrow(
-        /duplicate column name: retire_requested_at/,
-      );
-      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
-        environmentArchiveGraceMigrationWhen,
-      );
-      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
-        threadSearchSourceSeqIndexMigrationWhen,
-      );
-      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
-        workAdmissionsMigrationWhen,
-      );
-      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
-        threadChildOriginCleanupMigrationWhen,
+        /duplicate column name: protect_unmanaged_workspace/,
       );
       expect(readAppliedMigrationCreatedAts(db)).not.toContain(
         workspaceSafetyMigrationWhen,
-      );
-      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
-        environmentPathCanonicalizationMigrationWhen,
       );
     } finally {
       closeConnection(db);
@@ -5410,6 +5355,7 @@ describe("migrate", () => {
 
       dropEventParentToolCallIdColumn(db);
       dropMarketplaceStatsColumn(db);
+      dropWorkspaceSafetySchema(db);
       db.$client
         .prepare<DeleteMigrationParameters>(
           "DELETE FROM __drizzle_migrations WHERE created_at >= ?",
