@@ -448,19 +448,10 @@ describe("dispatchOnlineRpcCommand", () => {
       reapIdleProviderSessions: vi.fn(async () => ({ reapedSessions: [] })),
       randomUUID: () => "token-1",
     });
-    const options = {
-      dataDir: "/tmp/bb-data",
-      eventSink: {
-        emit: vi.fn(),
-        flush: vi.fn(async () => undefined),
-      },
-      fetchProjectAttachment: async () => {
-        throw new Error("Unexpected project attachment fetch");
-      },
+    const options = makeDispatchOptions({
       hostAdmissionController,
       runtimeManager: manager,
-      threadStorageRootPath: "/tmp/bb-thread-storage",
-    };
+    });
 
     const reserved = await dispatchOnlineRpcCommand(
       {
@@ -495,6 +486,15 @@ describe("dispatchOnlineRpcCommand", () => {
         },
       ],
     });
+    await expect(
+      dispatchOnlineRpcCommand(
+        {
+          type: "host.admission.release",
+          reservation: reserved.reservation,
+        },
+        options,
+      ),
+    ).resolves.toEqual({ released: true });
     await expect(
       dispatchOnlineRpcCommand(
         {

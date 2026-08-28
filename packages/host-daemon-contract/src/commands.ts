@@ -671,7 +671,7 @@ const pluginHostDisposeCommandSchema = z
   })
   .strict();
 
-// host.admission.* RPCs are fork-only vs upstream 170. Protocol is 171.
+// host.admission.* RPCs are fork-only vs upstream 170. Protocol is 172.
 export const hostAdmissionReasonSchema = z.enum([
   "interactive",
   "child",
@@ -1907,7 +1907,6 @@ export const hostDaemonCommandRegistry = {
     flushEventsBeforeResult: false,
     envLane: null,
   }),
-  // TODO(protocol): fork host-admission commands vs upstream 170.
   "host.admission.reserve": defineHostDaemonCommandDescriptor({
     type: "host.admission.reserve",
     schema: hostAdmissionReserveCommandSchema,

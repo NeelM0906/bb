@@ -1039,8 +1039,8 @@ describe("host-daemon command schemas", () => {
   // interpret those fields, so enrolled machines must update before serving
   // workspace status and diff requests.
   // Fork host.admission.* RPCs and fail-closed reservation checks on
-  // thread.start / turn.submit are additional wire commands vs upstream 170;
-  // see TODO(protocol) in commands.ts.
+  // thread.start / turn.submit are additional wire commands vs upstream 170.
+  // Version 172 makes host.admission.release acknowledge an exact retry.
   // Version 118 rejects successful provider update results when the daemon
   // cannot verify a version change. Older daemons can report a no-op Claude
   // update as successful, so enrolled machines must update for honest results.
@@ -1075,7 +1075,7 @@ describe("host-daemon command schemas", () => {
   // mixed version. Version 113 carried the Devin Desktop open target rename
   // and remains part of the protocol lineage.
   it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(171);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(172);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 

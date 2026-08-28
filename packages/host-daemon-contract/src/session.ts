@@ -429,7 +429,6 @@ const hostDaemonOnlineRpcResponseSuccessSchema = z.discriminatedUnion(
     onlineRpcResponseSuccessSchemaFor("plugin.host.call"),
     onlineRpcResponseSuccessSchemaFor("plugin.host.cancel"),
     onlineRpcResponseSuccessSchemaFor("plugin.host.dispose"),
-    // TODO(protocol): fork host-admission responses vs upstream 170.
     onlineRpcResponseSuccessSchemaFor("host.admission.reserve"),
     onlineRpcResponseSuccessSchemaFor("host.admission.release"),
     onlineRpcResponseSuccessSchemaFor("host.admission.reconcile"),

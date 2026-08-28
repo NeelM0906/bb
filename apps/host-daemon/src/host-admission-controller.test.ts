@@ -172,7 +172,7 @@ describe("HostAdmissionController", () => {
     });
   });
 
-  it("rejects stale releases without freeing a successor generation", async () => {
+  it("acknowledges an already-released identity without freeing a successor generation", async () => {
     const controller = new HostAdmissionController({
       hostId: "host-1",
       limit: 1,
@@ -204,10 +204,39 @@ describe("HostAdmissionController", () => {
       throw new Error("expected successor reservation");
     }
     expect(successor.reservation.generation).toBe(2);
-    expect(controller.release(first.reservation)).toEqual({ released: false });
+    expect(controller.release(first.reservation)).toEqual({ released: true });
     expect(
       controller.validate({ requestId: "req-2", threadId: "thread-2" }),
     ).toBe(true);
+    expect(controller.listReservations()).toEqual([
+      {
+        requestIds: ["req-2"],
+        reservation: successor.reservation,
+        threadId: "thread-2",
+      },
+    ]);
+  });
+
+  it("acknowledges an exact repeated release after the token is gone", async () => {
+    const controller = new HostAdmissionController({
+      hostId: "host-1",
+      limit: 1,
+      listProviderProcessDiagnostics: () => [],
+      reapIdleProviderSessions: vi
+        .fn()
+        .mockResolvedValue({ reapedSessions: [] }),
+      randomUUID: () => "token-1",
+    });
+    const first = await controller.reserve({
+      hostId: "host-1",
+      requestId: "req-1",
+      threadId: "thread-1",
+      reason: "interactive",
+    });
+    if (first.outcome !== "reserved") throw new Error("expected reservation");
+    expect(controller.release(first.reservation)).toEqual({ released: true });
+    expect(controller.release(first.reservation)).toEqual({ released: true });
+    expect(controller.listReservations()).toEqual([]);
   });
 
   it("reuses a thread reservation for steering without consuming another slot", async () => {

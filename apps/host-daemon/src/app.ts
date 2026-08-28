@@ -699,11 +699,12 @@ export async function createHostDaemonApp(
       throw error;
     }
   };
+  const resolveProviderSessionReapingEnabled = async () =>
+    (await serverClient.getRuntimePolicy()).providerSessionReaping;
   const idleProviderSessionReaper = startIdleProviderSessionReaper({
     logger: options.logger,
     nowMs: Date.now,
-    resolveProviderSessionReapingEnabled: async () =>
-      (await serverClient.getRuntimePolicy()).providerSessionReaping,
+    resolveProviderSessionReapingEnabled,
     runtimeManager,
     setIntervalFn: (callback, intervalMs) => {
       const timer = setInterval(callback, intervalMs);
@@ -722,8 +723,20 @@ export async function createHostDaemonApp(
     limit: options.hostAdmissionLimit ?? DEFAULT_HOST_ADMISSION_LIMIT,
     listProviderProcessDiagnostics: () =>
       runtimeManager.listProviderProcessDiagnostics(),
-    reapIdleProviderSessions: (args) =>
-      runtimeManager.reapIdleProviderSessions(args),
+    reapIdleProviderSessions: async (args) => {
+      const providerSessionReapingEnabled =
+        await resolveProviderSessionReapingEnabled().catch((error) => {
+          options.logger.warn(
+            { ...runtimeErrorLogFields(error) },
+            "Failed to read idle provider session experiment policy",
+          );
+          return false;
+        });
+      return runtimeManager.reapIdleProviderSessions({
+        ...args,
+        providerSessionReapingEnabled,
+      });
+    },
     nowMs,
   });
   let sendTerminalMessage: TerminalManagerOptions["sendMessage"] = (message) =>

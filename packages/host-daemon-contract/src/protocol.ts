@@ -331,9 +331,18 @@
 // replaces the owning turn retains it. The wire shape is unchanged, but the
 // server-to-daemon payload semantics differ.
 //
+// Version 171 adds fork host.admission.{reserve,release,reconcile} RPCs and
+// fail-closed reservation checks on thread.start / turn.submit.
+//
+// Version 172 makes host.admission.release idempotent for an exact repeated
+// reservation identity. Version 167 retries can resend a release whose first
+// response was lost; an old daemon returns released:false after deleting the
+// token, so the server skips marking the admission terminal and releasing its
+// workspace lease. Mixed-version compatibility was not deliberately preserved.
+//
 // The version mismatch is what triggers the enrolled daemon's automatic update
 // instead of an `invalid-message` reconnect loop.
-export const HOST_DAEMON_PROTOCOL_VERSION = 171 as const;
+export const HOST_DAEMON_PROTOCOL_VERSION = 172 as const;
 
 /**
  * Absolute ceiling for any executable artifact delivered to a host daemon —

@@ -31,10 +31,15 @@ export interface HostAdmissionControllerOptions {
   randomUUID?: () => string;
 }
 
+function releasedReservationKey(reservation: HostAdmissionReservation): string {
+  return `${reservation.hostId}\0${reservation.token}\0${reservation.generation}`;
+}
+
 export class HostAdmissionController {
   private admissionQueue: Promise<void> = Promise.resolve();
   private generation = 0;
   private readonly releasedRequestIds = new Set<string>();
+  private readonly releasedReservations = new Set<string>();
   private readonly reservationsByToken = new Map<string, ReservationRecord>();
   private readonly tokenByRequestId = new Map<string, string>();
   private readonly tokenByThreadId = new Map<string, string>();
@@ -122,13 +127,14 @@ export class HostAdmissionController {
     reservation: HostAdmissionReservation,
     args: { retryableRequestId?: string } = {},
   ): { released: boolean } {
+    const key = releasedReservationKey(reservation);
     const record = this.reservationsByToken.get(reservation.token);
     if (
       !record ||
       record.reservation.generation !== reservation.generation ||
       record.reservation.hostId !== reservation.hostId
     ) {
-      return { released: false };
+      return { released: this.releasedReservations.has(key) };
     }
     this.reservationsByToken.delete(reservation.token);
     this.tokenByThreadId.delete(record.threadId);
@@ -138,6 +144,7 @@ export class HostAdmissionController {
         this.releasedRequestIds.add(requestId);
       }
     }
+    this.releasedReservations.add(key);
     return { released: true };
   }
 
