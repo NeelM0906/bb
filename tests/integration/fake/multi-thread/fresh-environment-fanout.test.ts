@@ -21,8 +21,9 @@ const FANOUT_PROVIDERS: ReadonlyArray<string> = [
   "fake-beta",
 ];
 const THREADS_PER_PROVIDER = 5;
-// Same-source managed worktrees serialize through the git worktree metadata lock.
-const FRESH_FANOUT_TIMEOUT_MS = scaleTimeoutMs(45_000);
+// Same-source managed worktrees serialize through the git worktree metadata
+// lock, and host admission (default 4) further waves the 15-thread fanout.
+const FRESH_FANOUT_TIMEOUT_MS = scaleTimeoutMs(120_000);
 
 describe.sequential(
   "fake provider fresh-environment fanout integration",

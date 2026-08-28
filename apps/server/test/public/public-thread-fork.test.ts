@@ -86,30 +86,6 @@ function seedForkSource(
     threadId: sourceThread.id,
     turnId: "turn-fork-source",
   });
-  seedEvent(harness.deps, {
-    environmentId: environment.id,
-    providerThreadId: "provider-fork-source",
-    sequence: 4,
-    threadId: sourceThread.id,
-    type: "item/completed",
-    scope: turnScope("turn-fork-source"),
-    data: {
-      item: {
-        type: "agentMessage",
-        id: "fork-source-answer",
-        text: "Inherited fork history",
-      },
-    },
-  });
-  seedEvent(harness.deps, {
-    environmentId: environment.id,
-    providerThreadId: "provider-fork-source",
-    sequence: 5,
-    threadId: sourceThread.id,
-    type: "turn/completed",
-    scope: turnScope("turn-fork-source"),
-    data: { status: "completed" },
-  });
   return { environment, host, project, sourceThread };
 }
 
@@ -275,7 +251,31 @@ describe("public thread fork route", () => {
 
   it("creates an idle fork at the source tip with no first run", async () => {
     await withTestHarness(async (harness) => {
-      const { sourceThread } = seedForkSource(harness);
+      const { environment, sourceThread } = seedForkSource(harness);
+      seedEvent(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-fork-source",
+        sequence: 4,
+        threadId: sourceThread.id,
+        type: "item/completed",
+        scope: turnScope("turn-fork-source"),
+        data: {
+          item: {
+            type: "agentMessage",
+            id: "fork-source-answer",
+            text: "Inherited fork history",
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-fork-source",
+        sequence: 5,
+        threadId: sourceThread.id,
+        type: "turn/completed",
+        scope: turnScope("turn-fork-source"),
+        data: { status: "completed" },
+      });
 
       const response = await postFork(harness, {
         sourceThreadId: sourceThread.id,

@@ -291,6 +291,43 @@ function selectInheritedForkEventRows(
 }
 
 /**
+ * The fork must not resume the source session, so the copied column is
+ * always null. Timeline schemas still require `providerThreadId` on many
+ * event types, and live rows often keep that id only on the column. Stamp
+ * it into the payload before clearing the column so inherited history
+ * remains a valid timeline.
+ */
+function stampInheritedProviderThreadIdIntoPayload(
+  row: StoredEventRow,
+): StoredEventRow {
+  const providerThreadId = row.providerThreadId;
+  if (providerThreadId === null) {
+    return row;
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(row.data);
+  } catch {
+    return { ...row, providerThreadId: null };
+  }
+  if (!isJsonRecord(payload)) {
+    return { ...row, providerThreadId: null };
+  }
+  if (payload.providerThreadId === providerThreadId) {
+    return { ...row, providerThreadId: null };
+  }
+  return {
+    ...row,
+    providerThreadId: null,
+    data: JSON.stringify({ ...payload, providerThreadId }),
+  };
+}
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
  * Copy the source conversation through `historyEndSequence` into a fork
  * before the fork's own thread-start rows are appended, so inherited history
  * occupies the lowest sequences and renders first. Copied rows carry no
@@ -311,7 +348,7 @@ export function copyForkSourceHistory(
   const rows = selectInheritedForkEventRows(deps, {
     historyEndSequence: args.historyEndSequence,
     sourceThreadId: args.sourceThreadId,
-  }).map((row) => ({ ...row, providerThreadId: null }));
+  }).map(stampInheritedProviderThreadIdIntoPayload);
   if (rows.length === 0) {
     return;
   }

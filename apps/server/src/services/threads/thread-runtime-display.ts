@@ -56,11 +56,17 @@ interface ThreadRuntimeDisplayDeps {
  */
 interface ThreadPromptBannerDeps extends ThreadRuntimeDisplayDeps {
   /**
-   * Optional because the database read worker has no process-local registry.
-   * Without it, plan-mode banner counts stay zero; goal counts still come
-   * from the event log.
+   * Live registry on the main thread. The database read worker has no
+   * process-local registry and sends {@link resolvePlanCommand} instead.
    */
   providerRegistry?: ProviderRegistryService;
+  /**
+   * Worker-side lookup built from a snapshot of plan composer commands.
+   * Ignored when {@link providerRegistry} is present.
+   */
+  resolvePlanCommand?: (
+    providerId: string,
+  ) => ReturnType<typeof resolveProviderPlanCommand>;
 }
 
 interface ResolveThreadRuntimeStateArgs {
@@ -405,10 +411,10 @@ function resolveThreadPlanCommand(
   deps: ThreadPromptBannerDeps,
   providerId: string,
 ): ReturnType<typeof resolveProviderPlanCommand> {
-  if (deps.providerRegistry === undefined) {
-    return null;
+  if (deps.providerRegistry !== undefined) {
+    return resolveProviderPlanCommand(deps.providerRegistry, providerId);
   }
-  return resolveProviderPlanCommand(deps.providerRegistry, providerId);
+  return deps.resolvePlanCommand?.(providerId) ?? null;
 }
 
 function getThreadPromptBannerActivityState(

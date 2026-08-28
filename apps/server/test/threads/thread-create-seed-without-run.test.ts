@@ -275,17 +275,22 @@ describe("thread creation with startedOnBehalfOf (seed-without-run)", () => {
         })),
       ).toEqual([
         {
-          sequence: 5,
+          sequence: 1,
           type: "turn/started",
-          providerThreadId: "provider-earlier-source",
+          providerThreadId: null,
         },
         {
-          sequence: 6,
+          sequence: 2,
+          type: "turn/completed",
+          providerThreadId: null,
+        },
+        {
+          sequence: 3,
           type: "client/turn/requested",
           providerThreadId: null,
         },
         {
-          sequence: 7,
+          sequence: 4,
           type: "client/thread/start",
           providerThreadId: null,
         },

@@ -109,7 +109,12 @@ export function threadResponse(
     environmentWorkspaceDisplayKind: _environmentWorkspaceDisplayKind,
     ...thread
   } = threadListEntry(view, now);
-  return { ...thread, activeBackgroundAgentCount: 0, canSpawnChild: true };
+  return {
+    ...thread,
+    activeBackgroundAgentCount: 0,
+    admission: null,
+    canSpawnChild: true,
+  };
 }
 
 const PROJECT_DEFAULT_EXECUTION_OPTIONS = {
@@ -139,6 +144,7 @@ export function sidebarBootstrap(
     kind: "standard",
     name: "demo-app",
     gitRemoteUrl: null,
+    protectUnmanagedWorkspace: false,
     createdAt,
     updatedAt: Math.max(...views.map((view) => view.updatedAt)),
     sources: [],
@@ -150,6 +156,7 @@ export function sidebarBootstrap(
     kind: "standard",
     name: "Personal",
     gitRemoteUrl: null,
+    protectUnmanagedWorkspace: false,
     createdAt,
     updatedAt: createdAt,
     sources: [],

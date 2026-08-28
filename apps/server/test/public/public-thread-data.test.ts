@@ -745,14 +745,17 @@ describe("public thread data routes", () => {
         scope: threadScope(),
         data: { text: "Visible response" },
       });
-      const prepareSpy = vi.spyOn(harness.db.$client, "prepare");
+      const outlineSnapshot = vi.spyOn(
+        harness.deps.dbReadWorker,
+        "timelineSnapshot",
+      );
       const countFullOutlineQueries = () =>
-        prepareSpy.mock.calls.filter(([source]) => {
+        outlineSnapshot.mock.calls.filter(([input]) => {
           return (
-            typeof source === "string" &&
-            source.includes('"created_at"') &&
-            source.includes('"data"') &&
-            source.includes("union all")
+            input !== undefined &&
+            typeof input === "object" &&
+            "kind" in input &&
+            input.kind === "conversationOutline"
           );
         }).length;
 

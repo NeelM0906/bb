@@ -48,6 +48,7 @@ import {
 } from "../services/lib/entity-lookup.js";
 import { PROMPT_HISTORY_ENTRY_LIMIT, type ThreadListEntry } from "@bb/domain";
 import { resolveCreateThreadExecutionDefaults } from "../services/threads/thread-default-policy.js";
+import { snapshotProviderPlanCommands } from "../services/providers/provider-plan-command.js";
 import { overlayThreadListEntryLiveRuntime } from "../services/threads/thread-runtime-display.js";
 import { callHostRetryableOnlineRpc } from "../services/hosts/online-rpc.js";
 import { runLiveHostCommand } from "../services/hosts/live-command.js";
@@ -268,6 +269,7 @@ async function readProjectThreadListSnapshot(
       archived: false,
       kind: "projects",
       now: Date.now(),
+      planCommands: snapshotProviderPlanCommands(deps.providerRegistry),
       projectIds,
     },
     { signal },
