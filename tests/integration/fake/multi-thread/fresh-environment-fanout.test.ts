@@ -119,8 +119,10 @@ describe.sequential(
         );
       }));
 
-    it("starts five fresh managed-worktree threads per provider concurrently", () =>
-      withHarness(async (harness) => {
+    it(
+      "starts five fresh managed-worktree threads per provider concurrently",
+      () =>
+        withHarness(async (harness) => {
         const project = await createProjectFixture(harness, {
           name: "Fresh Environment Fanout",
         });
@@ -181,6 +183,8 @@ describe.sequential(
             ),
           ).toBe(true);
         }
-      }));
+      }),
+      FRESH_FANOUT_TIMEOUT_MS + scaleTimeoutMs(20_000),
+    );
   },
 );

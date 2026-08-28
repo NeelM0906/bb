@@ -45,6 +45,7 @@ function liftThreadListPlaceholder(
   return {
     ...entry,
     activeBackgroundAgentCount: entry.activity.activeBackgroundAgentCount,
+    admission: null,
     canSpawnChild: false,
   };
 }

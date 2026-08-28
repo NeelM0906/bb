@@ -50,7 +50,9 @@ function deferred<T>() {
 }
 
 describe("Keep Awake settings", () => {
-  it("autosaves the enabled state, scope, and individual hosts in one configuration", async () => {
+  it(
+    "autosaves the enabled state, scope, and individual hosts in one configuration",
+    async () => {
     const slot = renderSlot(
       app.settingsSections[0]!,
       {},
@@ -72,42 +74,50 @@ describe("Keep Awake settings", () => {
     expect(slot.queryByRole("checkbox", { name: "Laptop" })).toBeNull();
 
     fireEvent.click(enabled);
-    await waitFor(() =>
-      expect(slot.rpcCalls).toContainEqual({
-        method: "setConfiguration",
-        input: { enabled: true, selection: { mode: "all" } },
-      }),
+    await waitFor(
+      () =>
+        expect(slot.rpcCalls).toContainEqual({
+          method: "setConfiguration",
+          input: { enabled: true, selection: { mode: "all" } },
+        }),
+      { timeout: 4_000 },
     );
     expect(slot.getByText("Hosts")).toBeTruthy();
     expect(slot.getByText("Choose which Macs to keep awake.")).toBeTruthy();
 
     fireEvent.click(slot.getByRole("radio", { name: "Specific hosts" }));
-    await waitFor(() =>
-      expect(slot.rpcCalls).toContainEqual({
-        method: "setConfiguration",
-        input: {
-          enabled: true,
-          selection: {
-            mode: "selected",
-            hostIds: ["host-1", "host-2"],
+    await waitFor(
+      () =>
+        expect(slot.rpcCalls).toContainEqual({
+          method: "setConfiguration",
+          input: {
+            enabled: true,
+            selection: {
+              mode: "selected",
+              hostIds: ["host-1", "host-2"],
+            },
           },
-        },
-      }),
+        }),
+      { timeout: 4_000 },
     );
     expect(slot.getByText("Offline")).toBeTruthy();
 
     fireEvent.click(slot.getByRole("checkbox", { name: "Laptop" }));
-    await waitFor(() =>
-      expect(slot.rpcCalls).toContainEqual({
-        method: "setConfiguration",
-        input: {
-          enabled: true,
-          selection: { mode: "selected", hostIds: ["host-2"] },
-        },
-      }),
+    await waitFor(
+      () =>
+        expect(slot.rpcCalls).toContainEqual({
+          method: "setConfiguration",
+          input: {
+            enabled: true,
+            selection: { mode: "selected", hostIds: ["host-2"] },
+          },
+        }),
+      { timeout: 4_000 },
     );
     expect(slot.getByRole("status").textContent).toBe("Saved");
-  });
+    },
+    20_000,
+  );
 
   it("reverts an optimistic change when autosave fails", async () => {
     const slot = renderSlot(

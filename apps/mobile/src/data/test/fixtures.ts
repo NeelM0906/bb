@@ -78,6 +78,7 @@ export function threadResponse(
   return {
     ...base,
     activeBackgroundAgentCount: 0,
+    admission: null,
     canSpawnChild: true,
     ...overrides,
   };
@@ -90,6 +91,7 @@ export function project(
     kind: "standard",
     name: `Project ${overrides.id}`,
     gitRemoteUrl: null,
+    protectUnmanagedWorkspace: false,
     createdAt: 1,
     updatedAt: 1,
     sources: [],
