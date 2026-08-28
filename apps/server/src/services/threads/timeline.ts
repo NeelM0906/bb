@@ -179,7 +179,8 @@ type ThreadTimelineBuildProfileStage =
   | "context-window-query"
   | "context-window-json-decode"
   | "thread-view-projection"
-  | "pagination-segmentation";
+  | "pagination-segmentation"
+  | "response-serialization";
 
 type ThreadTimelineEventSelectionStrategy = "full" | "standard-window";
 
@@ -197,6 +198,7 @@ export interface ThreadTimelineBuildProfile {
   eventRowCount: number;
   pageKind: ThreadTimelinePageKind;
   projectedRowCount: number;
+  responseJsonBytes: number | null;
   responseRowCount: number;
   returnedSegmentCount: number;
   segmentLimit: number;
@@ -1621,6 +1623,7 @@ function completeThreadTimelineBuildProfile(
     eventRowCount: accumulator.eventRowCount,
     pageKind: options.page.kind,
     projectedRowCount: accumulator.projectedRowCount,
+    responseJsonBytes: null,
     responseRowCount: accumulator.responseRowCount,
     returnedSegmentCount: accumulator.returnedSegmentCount,
     segmentLimit: options.page.segmentLimit,

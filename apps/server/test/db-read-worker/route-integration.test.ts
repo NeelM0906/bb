@@ -76,6 +76,7 @@ describe("database read worker production routes", () => {
           }),
           itemId: null,
           itemKind: null,
+          parentToolCallId: null,
           scope: threadScope(),
           sequence: index + 1,
           threadId: thread.id,

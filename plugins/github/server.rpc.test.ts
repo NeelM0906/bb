@@ -278,14 +278,14 @@ describe("github plugin RPC behavior", () => {
     if (issueProvider === undefined) {
       throw new Error("GitHub issue mention provider was not registered");
     }
-    expect(
+    await expect(
       issueProvider.search({
         query: "cache",
         trigger: "@",
         projectId: "project-1",
         threadId: "thread-1",
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         id: "acme/widgets#7",
         title: "#7 Cache mutations",

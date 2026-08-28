@@ -205,6 +205,28 @@ describe("events", () => {
     expect(all).toHaveLength(2);
   });
 
+  it("binds a null parent tool call when the field is omitted", () => {
+    const { db, thread } = setup();
+
+    const result = insertEvents(db, noopNotifier, [
+      {
+        threadId: thread.id,
+        sequence: 1,
+        type: "system/error",
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: undefined as unknown as null,
+        scope: threadScope(),
+        data: JSON.stringify({ message: "omitted parent" }),
+      },
+    ]);
+
+    expect(result.insertedCount).toBe(1);
+    expect(listEvents(db, { threadId: thread.id })[0]?.parentToolCallId).toBe(
+      null,
+    );
+  });
+
   it("stores derived item columns when provided", () => {
     const { db, thread } = setup();
 

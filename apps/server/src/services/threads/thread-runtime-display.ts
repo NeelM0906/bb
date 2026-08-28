@@ -55,7 +55,12 @@ interface ThreadRuntimeDisplayDeps {
  * to carry a registry they never read.
  */
 interface ThreadPromptBannerDeps extends ThreadRuntimeDisplayDeps {
-  providerRegistry: ProviderRegistryService;
+  /**
+   * Optional because the database read worker has no process-local registry.
+   * Without it, plan-mode banner counts stay zero; goal counts still come
+   * from the event log.
+   */
+  providerRegistry?: ProviderRegistryService;
 }
 
 interface ResolveThreadRuntimeStateArgs {
@@ -396,6 +401,16 @@ export function toThreadResponseFromThread(
   };
 }
 
+function resolveThreadPlanCommand(
+  deps: ThreadPromptBannerDeps,
+  providerId: string,
+): ReturnType<typeof resolveProviderPlanCommand> {
+  if (deps.providerRegistry === undefined) {
+    return null;
+  }
+  return resolveProviderPlanCommand(deps.providerRegistry, providerId);
+}
+
 function getThreadPromptBannerActivityState(
   deps: ThreadPromptBannerDeps,
   thread: Thread,
@@ -403,10 +418,7 @@ function getThreadPromptBannerActivityState(
 ): PromptBannerActivityState {
   const activePlanTurn = extractThreadTimelineActivePlanTurn({
     events,
-    planCommand: resolveProviderPlanCommand(
-      deps.providerRegistry,
-      thread.providerId,
-    ),
+    planCommand: resolveThreadPlanCommand(deps, thread.providerId),
     providerId: thread.providerId,
     threadStatus: thread.status,
   });
@@ -427,8 +439,7 @@ function canThreadShowActivePlanMode(
 ): boolean {
   return (
     thread.status === "active" &&
-    resolveProviderPlanCommand(deps.providerRegistry, thread.providerId) !==
-      null
+    resolveThreadPlanCommand(deps, thread.providerId) !== null
   );
 }
 

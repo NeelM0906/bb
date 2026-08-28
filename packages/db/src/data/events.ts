@@ -420,7 +420,7 @@ export function insertEvents(
     const turnId = getThreadEventScopeTurnId(input.scope) ?? null;
     const result = db.run(
       sql`INSERT OR IGNORE INTO events (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, parent_tool_call_id, data, created_at)
-          VALUES (${id}, ${input.threadId}, ${input.environmentId ?? null}, ${input.scope.kind}, ${turnId}, ${input.providerThreadId ?? null}, ${input.sequence}, ${input.type}, ${input.itemId}, ${input.itemKind}, ${input.parentToolCallId}, ${input.data}, ${createdAt})`,
+          VALUES (${id}, ${input.threadId}, ${input.environmentId ?? null}, ${input.scope.kind}, ${turnId}, ${input.providerThreadId ?? null}, ${input.sequence}, ${input.type}, ${input.itemId}, ${input.itemKind}, ${input.parentToolCallId ?? null}, ${input.data}, ${createdAt})`,
     );
     if (result.changes > 0) {
       insertedCount++;
@@ -760,15 +760,15 @@ export function appendDaemonEventsInTransaction(
         VALUES (
           ${createEventId()},
           ${input.threadId},
-          ${input.environmentId},
+          ${input.environmentId ?? null},
           ${input.scope.kind},
           ${turnId},
-          ${input.providerThreadId},
+          ${input.providerThreadId ?? null},
           ${sequence},
           ${input.type},
           ${input.itemId},
           ${input.itemKind},
-          ${input.parentToolCallId},
+          ${input.parentToolCallId ?? null},
           ${input.data},
           ${now}
         )`,

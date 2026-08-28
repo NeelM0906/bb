@@ -9,7 +9,7 @@ interface ApiErrorBody {
   retryable?: boolean;
 }
 
-interface ApiErrorOptions {
+export interface ApiErrorOptions {
   details?: unknown;
   retryable?: boolean;
 }
