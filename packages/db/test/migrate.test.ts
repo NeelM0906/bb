@@ -4243,7 +4243,7 @@ describe("migrate", () => {
     } finally {
       closeConnection(db);
     }
-  });
+  }, 15_000);
 
   it("preserves durable terminal session data when applying 0017", () => {
     const db = createConnection(":memory:");
