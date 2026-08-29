@@ -1,4 +1,7 @@
-import { threadOriginKindSchema } from "@bb/domain";
+import {
+  promptMentionCommandTriggerSchema,
+  threadOriginKindSchema,
+} from "@bb/domain";
 import {
   threadConversationOutlineResponseSchema,
   threadListResponseSchema,
@@ -70,6 +73,22 @@ export const timelineSnapshotInputSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
+const planCommandsSnapshotSchema = z
+  .record(
+    z.string().min(1),
+    z
+      .object({
+        trigger: promptMentionCommandTriggerSchema,
+        name: z
+          .string()
+          .min(1)
+          .regex(/^[^\s/$]+$/u),
+        trailingText: z.string().regex(/^\s*$/u),
+      })
+      .strict(),
+  )
+  .default({});
+
 const threadListOptionsSchema = z
   .object({
     archived: z.boolean().optional(),
@@ -93,6 +112,7 @@ export const threadListSnapshotInputSchema = z.discriminatedUnion("kind", [
       kind: z.literal("list"),
       now: z.number().finite(),
       options: threadListOptionsSchema,
+      planCommands: planCommandsSnapshotSchema,
     })
     .strict(),
   z
@@ -100,6 +120,7 @@ export const threadListSnapshotInputSchema = z.discriminatedUnion("kind", [
       archived: z.boolean().optional(),
       kind: z.literal("projects"),
       now: z.number().finite(),
+      planCommands: planCommandsSnapshotSchema,
       projectIds: z.array(z.string().min(1)),
     })
     .strict(),
@@ -241,7 +262,7 @@ export const dbReadWorkerResponseSchema = z.union([
 
 export type DbReadWorkerRequest = z.infer<typeof dbReadWorkerRequestSchema>;
 export type DbReadWorkerResponse = z.infer<typeof dbReadWorkerResponseSchema>;
-export type ThreadListSnapshotInput = z.infer<
+export type ThreadListSnapshotInput = z.input<
   typeof threadListSnapshotInputSchema
 >;
 export type ThreadListSnapshotResult = z.infer<

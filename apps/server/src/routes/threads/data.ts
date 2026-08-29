@@ -1,16 +1,16 @@
 import path from "node:path";
 import {
-  getBuiltInAgentProviderInfo,
-  isAgentProviderId,
-} from "@bb/agent-providers";
-import { formatCustomAcpAgentProviderId } from "@bb/config/bb-app-managed-config";
-import {
   getAppSettings,
   getLatestThreadSequence,
+  getLatestStoredConversationOutlineSequence,
   listQueuedThreadMessages,
 } from "@bb/db";
 import type { Hono } from "hono";
-import { PROMPT_HISTORY_ENTRY_LIMIT, threadEventTypeSchema } from "@bb/domain";
+import {
+  PROMPT_HISTORY_ENTRY_LIMIT,
+  threadEventTypeSchema,
+  type ThreadEventType,
+} from "@bb/domain";
 import {
   publicApiRoutes,
   typedRoutes,
@@ -45,9 +45,11 @@ import { toThreadQueuedMessage } from "../../services/threads/thread-queued-mess
 import {
   THREAD_TIMELINE_DEFAULT_SEGMENT_LIMIT,
   THREAD_TIMELINE_SEGMENT_LIMIT_MAX,
-  type ThreadTimelinePageKind,
-  type ThreadTimelinePageRequest,
 } from "../../services/threads/timeline.js";
+import type {
+  ThreadTimelinePageKind,
+  ThreadTimelinePageRequest,
+} from "../../services/threads/timeline-pagination.js";
 import { createSlowThreadTimelineBuildLogger } from "../../services/threads/timeline-build-log.js";
 import {
   buildThreadTimelineCacheKey,
@@ -56,13 +58,13 @@ import {
 } from "../../services/threads/timeline-cache.js";
 import { createTimelineLatestRowsCache } from "../../services/threads/timeline-latest-rows-cache.js";
 import { DEFAULT_MAX_INLINE_OUTPUT_CHARS } from "../../services/threads/timeline-output-truncation.js";
+import { previewTimelineResponseOutputs } from "../../services/threads/timeline-output-preview.js";
 import { computeTimelineRowDelta } from "@bb/server-contract";
 import {
   findThreadEvent,
   getLastThreadOutput,
   listThreadEventRows,
 } from "../../services/threads/thread-data.js";
-import { findKnownAcpAgentForProviderId } from "../../services/system/known-acp-agents.js";
 import { listThreadPromptHistory } from "../../services/prompt-history.js";
 import { tryResolveExistingThreadExecutionPlan } from "../../services/threads/thread-execution-plan.js";
 import {
@@ -75,22 +77,10 @@ import { parseFileListLimit } from "../file-list-query.js";
 import { parseSafeRelativeRoutePath } from "../relative-route-path.js";
 
 function resolveThreadProviderDisplayName(
-  deps: Pick<AppDeps, "config">,
+  deps: Pick<AppDeps, "providerRegistry">,
   providerId: string,
 ): string | undefined {
-  const customAcpAgent = deps.config.customAcpAgents.find(
-    (agent) => formatCustomAcpAgentProviderId(agent.id) === providerId,
-  );
-  if (customAcpAgent) {
-    return customAcpAgent.displayName;
-  }
-  const knownAcpAgent = findKnownAcpAgentForProviderId(providerId);
-  if (knownAcpAgent) {
-    return knownAcpAgent.displayName;
-  }
-  return isAgentProviderId(providerId)
-    ? getBuiltInAgentProviderInfo(providerId).displayName
-    : undefined;
+  return deps.providerRegistry.get(providerId)?.info.displayName;
 }
 
 function validateFilePath(filePath: string): void {
@@ -103,7 +93,7 @@ function validateFilePath(filePath: string): void {
   }
 }
 
-export interface ThreadStorageTarget {
+interface ThreadStorageTarget {
   hostId: string;
   storagePath: string;
 }
@@ -117,6 +107,19 @@ const RAW_FILE_HTML_CONTENT_TYPE = "text/html; charset=utf-8";
 const RAW_FILE_CONTENT_TYPE_OPTIONS = "nosniff";
 const HTML_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
 const GENERIC_HTML_PREVIEW_CSP = "sandbox allow-scripts";
+
+function parseThreadEventTypes(
+  value: string | undefined,
+): ThreadEventType[] | undefined {
+  if (value === undefined) return undefined;
+  return value.split(",").map((type) => {
+    const parsed = threadEventTypeSchema.safeParse(type);
+    if (!parsed.success) {
+      throw new ApiError(400, "invalid_request", "Invalid event type");
+    }
+    return parsed.data;
+  });
+}
 
 function parseThreadTimelineSegmentLimit(
   defaultLimit: number,
@@ -178,7 +181,7 @@ function parseThreadTimelinePage(
   };
 }
 
-export async function requireThreadStorageTarget(
+async function requireThreadStorageTarget(
   deps: WorkSessionDeps,
   args: RequireThreadStorageTargetArgs,
 ): Promise<ThreadStorageTarget> {
@@ -296,19 +299,17 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
   const slowTimelineBuildLogger = createSlowThreadTimelineBuildLogger({
     logger: deps.logger,
   });
-  // The conversation outline reprojects the entire thread, so memoize it per
-  // (thread, maxSeq): repeated polls at a stable revision are served from
-  // cache. Any appended event bumps maxSeq and forces a rebuild, so a thread
-  // streaming many deltas rebuilds per batch — acceptable because the client
-  // only fetches the outline when the minimap is mounted and refetches are
-  // driven by the (debounced) realtime invalidation, not per token. The key
-  // omits the provider/env inputs the timeline cache tracks because the outline
-  // emits only event-derived fields (id/role/preview/attachment counts); add
-  // them here if the outline ever surfaces a provider- or workspace-derived
-  // value. A small LRU bounds memory across many viewed threads.
+  // The conversation outline reprojects the entire thread, so memoize it by
+  // the newest event that can affect the outline. Command output, reasoning,
+  // and usage events still advance maxSeq in the response but do not invalidate
+  // the expensive projection. The client also refreshes this full projection
+  // at turn boundaries and overlays the live timeline window while a turn
+  // streams. The key includes thread metadata that can affect grouping; add
+  // provider/env inputs if the outline ever surfaces them. A small LRU bounds
+  // memory across many viewed threads.
   const conversationOutlineCache = new Map<
     string,
-    ThreadConversationOutlineResponse
+    ThreadConversationOutlineResponse["items"]
   >();
   const CONVERSATION_OUTLINE_CACHE_MAX_ENTRIES = 128;
 
@@ -368,16 +369,23 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
         profile: snapshot.profile,
         threadId: thread.id,
       });
-      full = snapshot.response;
-      maxSeq = snapshot.response.maxSeq;
+      // Worker already truncates inline outputs; the default window still
+      // ships a preview so expand can load the rest. Nested-row consumers
+      // asked for the full truncated projection.
+      full = includeNestedRows
+        ? snapshot.response
+        : previewTimelineResponseOutputs(snapshot.response);
+      maxSeq = full.maxSeq;
       timelineCache.set(
         buildThreadTimelineCacheKey({ ...keyArgs, maxSeq }),
         full,
       );
     }
 
-    // Delta: when the client tells us the revision it currently holds and our
-    // last-sent snapshot still matches it exactly, return only the changed rows.
+
+    // Delta: when the client tells us the revision it currently holds and we
+    // still hold the snapshot we sent at exactly that revision, return only the
+    // changed rows.
     // Reprojecting the full window first keeps every collapse/eviction/finalize
     // case correct by construction; the diff is the cheap part.
     const afterSequence = parseOptionalInteger(
@@ -385,13 +393,14 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
       "afterSequence",
     );
     const paramsKey = buildThreadTimelineParamsKey(keyArgs);
-    const previous = timelineLatestRowsCache.get(paramsKey);
+    const previous =
+      afterSequence === undefined
+        ? undefined
+        : timelineLatestRowsCache.get(paramsKey, afterSequence);
     const delta =
-      afterSequence !== undefined &&
-      previous !== undefined &&
-      previous.maxSeq === afterSequence
-        ? computeTimelineRowDelta(previous.rows, full.rows)
-        : undefined;
+      previous === undefined
+        ? undefined
+        : computeTimelineRowDelta(previous.rows, full.rows);
     timelineLatestRowsCache.set(paramsKey, { maxSeq, rows: full.rows });
 
     return context.json(
@@ -402,13 +411,23 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
   get(routes.conversationOutline, async (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     const maxSeq = getLatestThreadSequence(deps.db, { threadId: thread.id });
-    const cacheKey = `${thread.id}:${maxSeq}`;
+    const outlineSequence = getLatestStoredConversationOutlineSequence(
+      deps.db,
+      { threadId: thread.id },
+    );
+    const cacheKey = JSON.stringify([
+      thread.id,
+      outlineSequence,
+      thread.status,
+      thread.title,
+      thread.titleFallback,
+    ]);
     const cached = conversationOutlineCache.get(cacheKey);
     if (cached !== undefined) {
       // Re-insert to mark most-recently-used.
       conversationOutlineCache.delete(cacheKey);
       conversationOutlineCache.set(cacheKey, cached);
-      return context.json(cached);
+      return context.json({ items: cached, maxSeq });
     }
     const snapshot = await deps.dbReadWorker.timelineSnapshot(
       {
@@ -427,7 +446,8 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
       );
     }
     const response = snapshot.response;
-    conversationOutlineCache.set(`${thread.id}:${response.maxSeq}`, response);
+    conversationOutlineCache.set(cacheKey, response.items);
+
     while (
       conversationOutlineCache.size > CONVERSATION_OUTLINE_CACHE_MAX_ENTRIES
     ) {
@@ -507,7 +527,10 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
       listThreadEventRows(deps.db, {
         threadId: context.req.param("id"),
         afterSeq: parseOptionalInteger(query.afterSeq, "afterSeq"),
+        beforeSeq: parseOptionalInteger(query.beforeSeq, "beforeSeq"),
         limit: parseOptionalInteger(query.limit, "limit") ?? 100,
+        order: query.order,
+        types: parseThreadEventTypes(query.types),
       }),
     );
   });
@@ -562,7 +585,7 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
           input: {},
           threadId,
         })
-      )?.defaultView ?? null,
+      )?.resolvedExecution ?? null,
     );
   });
 
@@ -609,6 +632,16 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
       }
       throw error;
     }
+  });
+
+  get(routes.storageLocation, async (context) => {
+    const target = await requireThreadStorageTarget(deps, {
+      threadId: context.req.param("id"),
+    });
+    return context.json({
+      hostId: target.hostId,
+      storageRootPath: target.storagePath,
+    });
   });
 
   get(routes.storageFile, async (context) =>
@@ -675,7 +708,9 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
           rootPath: target.storagePath,
         },
       });
-      return createDaemonFileContentResponse(result);
+      return createDaemonFileContentResponse(result, {
+        ifNoneMatch: context.req.header("if-none-match"),
+      });
     } catch (error) {
       return remapDaemonFileRouteError(error);
     }
@@ -699,7 +734,9 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
           path: query.path,
         },
       });
-      return createDaemonFileContentResponse(result);
+      return createDaemonFileContentResponse(result, {
+        ifNoneMatch: context.req.header("if-none-match"),
+      });
     } catch (error) {
       return remapDaemonFileRouteError(error);
     }

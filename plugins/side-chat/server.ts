@@ -7,7 +7,7 @@
 // Server-owned policy lives here: the reply-anchor seed rule and the
 // empty-fork cleanup sweep. The archive cascade is BB's own: a hidden fork
 // retires with its source thread whether or not this plugin is enabled.
-import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
+import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
 export const REPLY_SEED_PREFIX =
@@ -24,12 +24,12 @@ export const EMPTY_FORK_SWEEP_PAGE_SIZE = 100;
  * disappear, so that verdict is permanent — without it every hour re-reads the
  * full timeline of every side chat anyone has actually used.
  */
-export const KEPT_FORK_KEY_PREFIX = "kept-fork:";
+const KEPT_FORK_KEY_PREFIX = "kept-fork:";
 
 /**
- * Structural view of the timeline rows the seed policy and sweep walk —
- * conversation rows carry `text`/`role`, turn rows nest `children`. The SDK's
- * `TimelineRow` union satisfies this shape.
+ * Structural view of the timeline rows the cleanup sweep walks. Conversation
+ * rows carry `text`/`role`, turn rows nest `children`. The SDK's `TimelineRow`
+ * union satisfies this shape.
  */
 export interface SideChatTimelineRowLike {
   kind: string;
@@ -38,56 +38,10 @@ export interface SideChatTimelineRowLike {
   children?: readonly SideChatTimelineRowLike[] | null;
 }
 
-/**
- * Last conversation message's trimmed text in the timeline, or null when
- * there is none. Recurses into the turn tree because conversation rows hang
- * off turn rows; work and system rows are ignored.
- */
-export function lastConversationMessageText(
-  rows: readonly SideChatTimelineRowLike[],
-): string | null {
-  let last: string | null = null;
-  const visit = (row: SideChatTimelineRowLike): void => {
-    if (row.kind === "conversation") {
-      const text = row.text?.trim() ?? "";
-      if (text.length > 0) {
-        last = text;
-      }
-      return;
-    }
-    if (row.kind === "turn" && row.children != null) {
-      for (const child of row.children) {
-        visit(child);
-      }
-    }
-  };
-  for (const row of rows) {
-    visit(row);
-  }
-  return last;
-}
-
-/**
- * The reply-anchor seed policy:
- * null when the anchor is empty or IS the source's last conversation message
- * (the most recent exchange is the obvious referent — the fork already
- * carries full history); the trimmed anchor otherwise, where an explicit
- * pointer matters. Selection-invoked replies pass the selection as the
- * anchor, so the selected text rides the same rule.
- */
-export function resolveReplySeedText(args: {
-  anchorText: string;
-  sourceTimelineRows: readonly SideChatTimelineRowLike[];
-}): string | null {
-  const anchor = args.anchorText.trim();
-  if (anchor.length === 0) {
-    return null;
-  }
-  const last = lastConversationMessageText(args.sourceTimelineRows);
-  if (last !== null && last === anchor) {
-    return null;
-  }
-  return anchor;
+/** Every explicit non-empty reply anchor becomes agent-only fork context. */
+export function resolveReplySeedText(anchorText: string): string | null {
+  const anchor = anchorText.trim();
+  return anchor.length > 0 ? anchor : null;
 }
 
 /** Whether the fork's timeline contains a real user message. */
@@ -106,7 +60,7 @@ export function timelineRowsContainUserMessage(
 }
 
 /** The thread fields the cascade / sweep predicates read. */
-export interface SideChatForkCandidate {
+interface SideChatForkCandidate {
   originKind: string | null;
   originPluginId: string | null;
   visibility: string;
@@ -121,7 +75,7 @@ export interface SideChatForkCandidate {
  * may swallow. Narrows on the structured `code` the SDK's HTTP error
  * carries, never on message text.
  */
-export function isSessionUnavailableError(error: unknown): boolean {
+function isSessionUnavailableError(error: unknown): boolean {
   return (
     typeof error === "object" &&
     error !== null &&
@@ -131,7 +85,7 @@ export function isSessionUnavailableError(error: unknown): boolean {
 }
 
 /** Whether a thread is one of this plugin's live hidden side-chat forks. */
-export function isOwnLiveHiddenFork(
+function isOwnLiveHiddenFork(
   thread: SideChatForkCandidate,
   pluginId: string,
 ): boolean {
@@ -147,8 +101,8 @@ export const sideChatRpcContract = defineRpcContract({
   /**
    * Create the idle hidden fork a side-chat panel renders. `anchorText` is
    * the message (or selection) the side chat replies to — empty for tip
-   * forks started from the panel launcher. The reply-anchor seed is decided
-   * server-side against the source thread's current timeline.
+   * forks started from the panel launcher. Every non-empty anchor becomes
+   * agent-only context on the fork.
    */
   createSideChat: {
     input: z
@@ -176,14 +130,7 @@ export const sideChatRpcContract = defineRpcContract({
 export default async function plugin(bb: BbPluginApi) {
   bb.rpc.register(sideChatRpcContract, {
     async createSideChat({ sourceThreadId, sourceSeqEnd, anchorText }) {
-      const timeline = await bb.sdk.threads.timeline({
-        threadId: sourceThreadId,
-        includeNestedRows: "true",
-      });
-      const seedText = resolveReplySeedText({
-        anchorText,
-        sourceTimelineRows: timeline.rows,
-      });
+      const seedText = resolveReplySeedText(anchorText);
       const forkArgs = {
         sourceThreadId,
         visibility: "hidden" as const,

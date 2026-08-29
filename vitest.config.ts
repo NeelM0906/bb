@@ -1,12 +1,13 @@
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { defineConfig } from "vitest/config";
+import { SharedWorkerSequencer } from "./vitest.shared.js";
 
 const workspaceRoots = [
   "apps",
   "packages",
   "tests",
-  // Example plugins carry harness-based tests (@bb/plugin-sdk/testing).
+  // Example plugins carry harness-based tests (@get-bb/plugin-sdk/testing).
   "examples/plugins",
 ] as const;
 
@@ -26,6 +27,7 @@ function discoverVitestProjects(): string[] {
 export default defineConfig({
   test: {
     silent: "passed-only",
+    sequence: { sequencer: SharedWorkerSequencer },
     // Keep the default workspace test entrypoint aligned with every package/app
     // that defines its own Vitest config so new suites are not silently skipped.
     projects: discoverVitestProjects(),

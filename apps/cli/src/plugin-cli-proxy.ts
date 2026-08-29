@@ -2,6 +2,7 @@ import {
   resolveContextProjectId,
   resolveContextThreadId,
 } from "./context-env.js";
+import { Agent, type Dispatcher } from "undici";
 import { cliFetch } from "./client.js";
 
 /**
@@ -55,7 +56,7 @@ const RETRYABLE_CODES = new Set([
  * something very different from ECONNREFUSED (nothing listening). `attempts`
  * records how many probes were spent so the message can say so.
  */
-export type PluginCliContributionsResult =
+type PluginCliContributionsResult =
   | { outcome: "ok"; contributions: PluginCliContributionEntry[] }
   | {
       outcome: "unreachable";
@@ -66,7 +67,7 @@ export type PluginCliContributionsResult =
   | { outcome: "invalid" };
 
 /** What a failed probe tells us about the server, independent of wording. */
-export interface UnreachableDiagnosis {
+interface UnreachableDiagnosis {
   blockedCode: "EPERM" | "EACCES" | undefined;
   timedOut: boolean;
   refused: boolean;
@@ -80,9 +81,7 @@ export interface UnreachableDiagnosis {
  * AggregateError — and report every signal it carries. Kept separate from the
  * wording so the retry decision and the message cannot drift apart.
  */
-export function diagnoseUnreachableServer(
-  cause: unknown,
-): UnreachableDiagnosis {
+function diagnoseUnreachableServer(cause: unknown): UnreachableDiagnosis {
   let blockedCode: "EPERM" | "EACCES" | undefined;
   let timedOut = false;
   let retryableCode = false;
@@ -200,7 +199,7 @@ export function describeUnreachableServer(
   }`;
 }
 
-export interface FetchPluginCliContributionsOptions {
+interface FetchPluginCliContributionsOptions {
   /** Injected so tests exercise the retry schedule without real delays. */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -340,21 +339,6 @@ export function findPluginCliCommand(
   return contributions.find((entry) => entry.name === name);
 }
 
-/**
- * The first CLI token is a plugin-proxy candidate only when it looks like a
- * command (not a flag) and no core command claims it. Core commands always
- * win: commander resolved them before this path runs.
- */
-export function pluginProxyCandidate(
-  firstArg: string | undefined,
-  knownCommandNames: ReadonlySet<string>,
-): string | null {
-  if (firstArg === undefined || firstArg.length === 0) return null;
-  if (firstArg.startsWith("-")) return null;
-  if (knownCommandNames.has(firstArg)) return null;
-  return firstArg;
-}
-
 interface PluginCliOutputStream {
   write(chunk: string, callback: (error?: Error | null) => void): boolean;
 }
@@ -376,6 +360,29 @@ async function writePluginCliOutput(
       else resolvePromise();
     });
   });
+}
+
+/**
+ * Plugin commands run to completion inside one POST and the server sends
+ * nothing — not even response headers — until the command returns. A command
+ * that waits on a human (`bb secret request` holds the request open until the
+ * form is submitted, up to the 10-minute interaction timeout) can therefore
+ * outlive Node's default undici `headersTimeout` of 300 s, which rejects the
+ * fetch with a bare "fetch failed" and aborts the interaction server-side.
+ * Dispatch these calls with a headers timeout above the server's longest
+ * interaction (`ui.requestInput` allows at most 60 minutes), so the server's
+ * own deadline decides first, but keep it finite: the server has no general
+ * plugin-command deadline, and a plugin that never resolves must not hold the
+ * CLI process and its socket forever. This module is imported lazily so
+ * built-in `bb` commands do not pay undici's startup cost.
+ */
+export const PLUGIN_CLI_HEADERS_TIMEOUT_MS = 65 * 60 * 1000;
+let pluginCliDispatcher: Dispatcher | undefined;
+function getPluginCliDispatcher(): Dispatcher {
+  pluginCliDispatcher ??= new Agent({
+    headersTimeout: PLUGIN_CLI_HEADERS_TIMEOUT_MS,
+  });
+  return pluginCliDispatcher;
 }
 
 /**
@@ -407,6 +414,7 @@ export async function runPluginCliCommand(
         ...(threadId ? { threadId } : {}),
         ...(projectId ? { projectId } : {}),
       }),
+      dispatcher: getPluginCliDispatcher(),
     },
   );
   const result = (await response.json().catch(() => null)) as {

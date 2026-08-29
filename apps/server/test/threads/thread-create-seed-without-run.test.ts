@@ -7,6 +7,7 @@ import {
 import {
   PERSONAL_PROJECT_ID,
   turnRequestEventDataSchema,
+  turnScope,
   type PermissionMode,
 } from "@bb/domain";
 import { describe, expect, it, vi } from "vitest";
@@ -23,6 +24,7 @@ import {
 import { textInput } from "../helpers/prompt-input.js";
 import {
   seedEnvironment,
+  seedEvent,
   seedHostSession,
   seedPrimaryHost,
   seedProjectWithSource,
@@ -203,6 +205,21 @@ describe("thread creation with startedOnBehalfOf (seed-without-run)", () => {
         providerThreadId: "provider-earlier-source",
         sequence: 5,
       });
+      // The earlier turn's completion names the session that recorded the
+      // checkpoint; the later turn runs in a replacement session.
+      seedEvent(harness.deps, {
+        threadId: sourceThread.id,
+        environmentId: environment.id,
+        providerThreadId: "provider-earlier-source",
+        sequence: 6,
+        type: "turn/completed",
+        scope: turnScope("turn-earlier-source"),
+        data: {
+          providerThreadId: "provider-earlier-source",
+          status: "completed",
+          providerCheckpointId: "checkpoint-earlier-source",
+        },
+      });
       seedTurnStarted(harness.deps, {
         threadId: sourceThread.id,
         turnId: "turn-later-source",
@@ -244,6 +261,7 @@ describe("thread creation with startedOnBehalfOf (seed-without-run)", () => {
       expect(queuedStart.command.input).toEqual(forkInput);
       expect(queuedStart.command.fork).toEqual({
         sourceProviderThreadId: "provider-earlier-source",
+        sourceProviderCheckpointId: "checkpoint-earlier-source",
       });
       const sourceEvents = listEvents(harness.db, {
         threadId: sourceThread.id,
@@ -257,17 +275,22 @@ describe("thread creation with startedOnBehalfOf (seed-without-run)", () => {
         })),
       ).toEqual([
         {
-          sequence: 5,
+          sequence: 1,
           type: "turn/started",
-          providerThreadId: "provider-earlier-source",
+          providerThreadId: null,
         },
         {
-          sequence: 6,
+          sequence: 2,
+          type: "turn/completed",
+          providerThreadId: null,
+        },
+        {
+          sequence: 3,
           type: "client/turn/requested",
           providerThreadId: null,
         },
         {
-          sequence: 7,
+          sequence: 4,
           type: "client/thread/start",
           providerThreadId: null,
         },
@@ -1047,6 +1070,56 @@ describe("thread creation child-thread boundary validation", () => {
         expect(turnSubmitText).toContain("Queued first side-chat question");
       },
     );
+  });
+
+  it("rejects a fork whose target provider differs from the source provider", async () => {
+    await withTestHarness(async (harness) => {
+      const path = "/tmp/fork-cross-provider-project";
+      const { host } = seedHostSession(harness.deps, {
+        id: "host-fork-cross-provider",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path,
+      });
+      const sourceThread = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        providerId: "acp-amp",
+      });
+      // The source has a live provider session, so only the provider mismatch
+      // can block the fork. A provider session ID means nothing to another
+      // provider, so BB must not hand it to a codex agent.
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "acp-amp-session",
+        threadId: sourceThread.id,
+      });
+
+      const error = await captureCreateError(() =>
+        createThreadFromRequest(harness.deps, {
+          environment: {
+            type: "host",
+            hostId: host.id,
+            workspace: { type: "unmanaged", path },
+          },
+          input: textInput("Fork into another provider"),
+          origin: "app",
+          originKind: "fork",
+          projectId: project.id,
+          providerId: "codex",
+          sourceThreadId: sourceThread.id,
+          startedOnBehalfOf: null,
+        }),
+      );
+      expect(error.status).toBe(400);
+      expect(error.body.code).toBe("fork_source_session_unavailable");
+    });
   });
 
   it("rejects a fork when the source has no active provider session", async () => {

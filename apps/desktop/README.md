@@ -73,9 +73,8 @@ pnpm exec turbo run desktop:build --filter=@bb/desktop
 pnpm exec turbo run smoke:packaged --filter=@bb/desktop
 ```
 
-Artifacts are written under `apps/desktop/release/`. The desktop build is
-macOS-only and produces separate Apple Silicon arm64 and Intel x64 artifacts.
-Without signing secrets, local builds
+Artifacts are written under `apps/desktop/release/`. The macOS build is Apple
+Silicon arm64-only; Intel Macs are not a target. Without signing secrets, local builds
 sign with a code-signing identity auto-discovered from the keychain and skip
 notarization. A valid signature matters even for local builds: macOS
 provenance-tracks unsigned apps, forcing syspolicyd to evaluate every exec in
@@ -112,7 +111,7 @@ Linux gets both update paths, but they are not equivalent:
   install and reports that a newer release exists.
 - Self-installing auto-update runs only inside an AppImage whose directory the
   app can write to. electron-updater detects the AppImage through the `APPIMAGE`
-  environment variable, and its install step unlinks the running file *before*
+  environment variable, and its install step unlinks the running file _before_
   moving the replacement in — so a read-only directory would delete the app and
   leave nothing behind. Both the startup check and the install handler verify
   write and search access on the parent directory first.
@@ -156,10 +155,10 @@ so a single publisher is what keeps one platform from deleting the other's
 binaries. Each platform has its own update feed file inside the same release
 tag:
 
-| Platform | Artifacts               | electron-updater metadata | Version feed                 |
-| -------- | ----------------------- | ------------------------- | ---------------------------- |
-| macOS    | `.dmg`, `.zip` (2 arch) | `latest-mac.yml`          | `desktop-version.json`       |
-| Linux    | `.AppImage` (x64)       | `latest-linux.yml`        | `desktop-version-linux.json` |
+| Platform | Artifacts              | electron-updater metadata | Version feed                 |
+| -------- | ---------------------- | ------------------------- | ---------------------------- |
+| macOS    | `.dmg`, `.zip` (arm64) | `latest-mac.yml`          | `desktop-version.json`       |
+| Linux    | `.AppImage` (x64)      | `latest-linux.yml`        | `desktop-version-linux.json` |
 
 macOS keeps the unsuffixed feed name because released macOS builds already
 request it. Linux artifacts are unsigned; only the macOS binaries wait on the
@@ -176,6 +175,11 @@ and builds the desktop app from that same lockstep version.
 To publish or dry-run the channel manually from `main`, dispatch the same
 workflow with `npm_tag=nightly`. A non-dry run publishes both npm and desktop;
 a dry run validates only the npm package path.
+
+A stable release also refreshes the channel. A non-dry `npm_tag=latest` run
+publishes the release, then derives the next nightly version from the release
+commit and publishes npm and desktop nightly again. Without this step the
+nightly channel stays below `latest` until the next scheduled run.
 
 The nightly desktop is a separate installation:
 
@@ -206,6 +210,27 @@ Nightly builds set `BB_DESKTOP_RELEASE_CHANNEL=nightly` at build time. The value
 is baked into the Electron main/preload bundles and selects the nightly product
 identity, yellow icon, and update URLs. Omit the variable (or set it to
 `latest`) for stable and local builds.
+
+## About panel
+
+The app menu's About item opens a message box listing the facts a bug report
+needs: version, build type, commit, build date and how old that build is
+("3 days old"), plugin SDK version, Electron version, and OS. Its **Copy**
+button puts that whole block on the clipboard. The age is computed when the
+dialog opens, so a long-running session still reports it correctly.
+
+The native About panel is populated too, minus the age, since Electron takes
+those options once at startup. `scripts/build.mjs` bakes the build-time half of
+the facts into the bundles:
+
+| Variable                | Default when unset                                    |
+| ----------------------- | ----------------------------------------------------- |
+| `BB_DESKTOP_COMMIT`     | `GITHUB_SHA`, else `git rev-parse HEAD`, else unknown |
+| `BB_DESKTOP_BUILD_DATE` | The build's own timestamp, ISO 8601                   |
+
+The plugin SDK version is read from `packages/plugin-sdk/package.json` at build
+time. A checkout with no git metadata reports `Commit: unknown` rather than
+failing the build.
 
 ## macOS signing + notarization
 

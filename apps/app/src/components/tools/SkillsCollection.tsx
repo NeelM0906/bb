@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { SkillProvider, SkillSummary } from "@bb/server-contract";
-import bbLogoUrl from "../../../../../assets/bb-logo.svg";
 import {
   ResourceInfiniteScrollSentinel,
   useResourceInfiniteItems,
@@ -19,7 +18,7 @@ import {
   ResourceSortMenu,
   ResourceToolbar,
 } from "@bb/shared-ui/resource-list";
-import { cn } from "@bb/shared-ui/lib/utils";
+import { BbLogo } from "@/components/ui/bb-logo";
 import {
   ConfirmDeleteDialog,
   ConfirmDeleteDialogContent,
@@ -28,37 +27,20 @@ import { CreateWithTemplatesButton } from "@/components/create-via-prompt-exampl
 import { ProvenancePill } from "@/components/tools/ProvenancePill";
 import { SkillDetailView } from "@/components/tools/SkillDetailView";
 import { TOOLS_PAGE_BAND_CLASSES } from "@/components/tools/tools-navigation";
-import { SKILL_SCOPE_LABELS } from "@/components/tools/skill-taxonomy";
-import {
-  getProviderIconColorClass,
-  getProviderIconInfo,
-} from "@/lib/provider-icon";
+import { skillScopeLabel } from "@/components/tools/skill-taxonomy";
+import type { ProviderInfo } from "@bb/domain";
+import { ProviderIconMark } from "@/components/settings/ProviderIconMark";
+import { getProviderIconInfo } from "@/lib/provider-icon";
 
 type ResourceProviderFilter = "bb" | SkillProvider;
+/**
+ * Provider id → the server's `ProviderInfo`, for every listed provider: the
+ * display name and the declared mark (core vendors neither).
+ */
+export type ProviderRoster = ReadonlyMap<string, ProviderInfo>;
 type ResourceSkillSourceFilter = "included" | "bb-official" | "user";
 type ResourceSortMode = "provider" | "alpha";
 type ResourceSortDirection = "asc" | "desc";
-
-// Keyed by the filter union rather than listed as an array, so adding a member
-// to `SkillProvider` is a typecheck error here instead of a silent gap. A plain
-// `readonly ResourceProviderFilter[]` permits a subset, which would leave the
-// new provider's skills unreachable under any non-empty Provider selection
-// while still compiling. The Type side gets the same guarantee from
-// `skillSourceFilterLabel`'s exhaustive switch.
-const RESOURCE_PROVIDER_FILTER_ORDER: Record<ResourceProviderFilter, number> = {
-  bb: 0,
-  "claude-code": 1,
-  codex: 2,
-  "acp-cursor": 3,
-};
-
-const RESOURCE_PROVIDER_FILTERS: readonly ResourceProviderFilter[] = (
-  Object.keys(RESOURCE_PROVIDER_FILTER_ORDER) as ResourceProviderFilter[]
-).sort(
-  (left, right) =>
-    RESOURCE_PROVIDER_FILTER_ORDER[left] -
-    RESOURCE_PROVIDER_FILTER_ORDER[right],
-);
 
 const RESOURCE_SKILL_SOURCE_FILTERS: readonly ResourceSkillSourceFilter[] = [
   "included",
@@ -66,18 +48,37 @@ const RESOURCE_SKILL_SOURCE_FILTERS: readonly ResourceSkillSourceFilter[] = [
   "user",
 ];
 
-function providerLabel(provider: SkillProvider | null): string {
-  return provider === null
-    ? "bb"
-    : (getProviderIconInfo(provider)?.ariaLabel ?? provider);
+const SOURCE_FILTER_OPTIONS = RESOURCE_SKILL_SOURCE_FILTERS.map((source) => ({
+  id: source,
+  label: skillSourceFilterLabel(source),
+}));
+
+/**
+ * Names a provider the way the rest of the app does: the server's display name
+ * first. Without the roster the fallback is the icon's aria label, and a
+ * caller holding only an id cannot reach one for an unregistered agent, so
+ * the label degrades to the raw provider id in the filter menu, the scope
+ * label, and search.
+ */
+function providerLabel(
+  provider: SkillProvider | null,
+  providerRoster: ProviderRoster,
+): string {
+  if (provider === null) return "bb";
+  return providerRoster.get(provider)?.displayName ?? provider;
 }
 
 function skillProviderFilterId(skill: SkillSummary): ResourceProviderFilter {
   return skill.provider ?? "bb";
 }
 
-function providerFilterLabel(provider: ResourceProviderFilter): string {
-  return provider === "bb" ? "bb" : providerLabel(provider);
+function providerFilterLabel(
+  provider: ResourceProviderFilter,
+  providerRoster: ProviderRoster,
+): string {
+  return provider === "bb"
+    ? "bb"
+    : providerLabel(provider, providerRoster);
 }
 
 function skillSourceFilterId(skill: SkillSummary): ResourceSkillSourceFilter {
@@ -105,54 +106,48 @@ function isResourceSkillSourceFilter(
   return value === "included" || value === "bb-official" || value === "user";
 }
 
-// The filter menu hands back plain strings, so both selections are narrowed on
-// the way in rather than cast: this rejects any value that is not a rendered
-// provider option, where a cast would wave it through into state. What keeps
-// the option list itself complete is `RESOURCE_PROVIDER_FILTER_ORDER` being
-// keyed by the union, not this guard.
+// The filter menu hands back plain strings. Provider ids are an open
+// vocabulary now, so completeness of the option list comes from deriving it
+// from the listed skills rather than from a closed table; this only rejects
+// the empty string, which is not a provider id.
 function isResourceProviderFilter(
   value: string,
 ): value is ResourceProviderFilter {
-  return RESOURCE_PROVIDER_FILTERS.some((provider) => provider === value);
+  return value !== "";
 }
 
 export function ProviderLogo({
   providerId,
+  provider,
   className,
 }: {
   providerId: SkillProvider;
+  /** The roster entry; without it only a plugin-registered icon can draw. */
+  provider?: ProviderInfo | undefined;
   className?: string;
 }) {
-  const info = getProviderIconInfo(providerId);
+  const info = getProviderIconInfo(providerId, provider ?? null);
   if (!info) {
     return null;
   }
-  const LogoIcon = info.icon;
+  if (provider === undefined) {
+    const LogoIcon = info.icon;
+    return <LogoIcon className={className} />;
+  }
   return (
-    <LogoIcon
-      className={cn(getProviderIconColorClass(providerId), className)}
-    />
-  );
-}
-
-export function BbLogo({ className = "size-4" }: { className?: string }) {
-  return (
-    <img
-      src={bbLogoUrl}
-      alt=""
-      aria-hidden="true"
-      className={cn(className, "object-contain dark:invert")}
-    />
+    <ProviderIconMark provider={provider} icon={info.icon} className={className} />
   );
 }
 
 export function SkillProvenanceTooltip({
   prefix,
   providerId,
+  provider,
   name,
 }: {
   prefix: string;
   providerId: SkillProvider | null;
+  provider?: ProviderInfo | undefined;
   name: string;
 }) {
   return (
@@ -164,7 +159,8 @@ export function SkillProvenanceTooltip({
         ) : (
           <ProviderLogo
             providerId={providerId}
-            className={cn("size-3.5", providerId === "codex" && "text-white")}
+            provider={provider}
+            className="size-3.5"
           />
         )}
       </span>
@@ -173,15 +169,42 @@ export function SkillProvenanceTooltip({
   );
 }
 
-function SkillLeading({ skill }: { skill: SkillSummary }) {
+function SkillLeading({
+  skill,
+  providerRoster,
+}: {
+  skill: SkillSummary;
+  providerRoster: ProviderRoster;
+}) {
   if (skill.provider !== null) {
-    return <ProviderLogo providerId={skill.provider} className="size-6" />;
+    return (
+      <ProviderLogo
+        providerId={skill.provider}
+        provider={providerRoster.get(skill.provider)}
+        className="size-6"
+      />
+    );
   }
   return <BbLogo className="size-6" />;
 }
 
-function skillDescription(skill: SkillSummary): string {
-  return skill.description ?? SKILL_SCOPE_LABELS[skill.scope];
+function skillDescription(
+  skill: SkillSummary,
+  providerRoster: ProviderRoster,
+): string {
+  return (
+    skill.description ??
+    skillScopeLabel(skill, providerLabelForScope(skill, providerRoster))
+  );
+}
+
+function providerLabelForScope(
+  skill: SkillSummary,
+  providerRoster: ProviderRoster,
+): string | undefined {
+  return skill.provider === null
+    ? undefined
+    : providerRoster.get(skill.provider)?.displayName;
 }
 
 function providerPluginNameForSkill(skill: SkillSummary): string {
@@ -195,14 +218,20 @@ function providerPluginDisplayName(skill: SkillSummary): string {
   return name.length === 0 ? name : name[0].toUpperCase() + name.slice(1);
 }
 
-function includedPluginDescription(skill: SkillSummary): string {
-  return `${providerPluginDisplayName(skill)} (${providerLabel(skill.provider)} plugin)`;
+function includedPluginDescription(
+  skill: SkillSummary,
+  providerRoster: ProviderRoster,
+): string {
+  return `${providerPluginDisplayName(skill)} (${providerLabel(skill.provider, providerRoster)} plugin)`;
 }
 
-function skillMutationDisabledReason(skill: SkillSummary): string {
+function skillMutationDisabledReason(
+  skill: SkillSummary,
+  providerRoster: ProviderRoster,
+): string {
   if (skill.scope === "bb-builtin") return "Built-in skill";
   if (skill.scope === "plugin") return "Bundled with plugin";
-  return `Bundled with ${skill.provider === "claude-code" ? "Claude Code" : "Codex"}`;
+  return `Bundled with ${providerLabel(skill.provider, providerRoster)}`;
 }
 
 /**
@@ -236,15 +265,17 @@ const PREFETCH_HOVER_INTENT_MS = 150;
 
 function SkillRow({
   skill,
+  providerRoster,
   onSelect,
   onPrefetch,
 }: {
   skill: SkillSummary;
+  providerRoster: ProviderRoster;
   onSelect: () => void;
   /** Warms the detail queries on intent; the connected layer supplies it. */
   onPrefetch?: (skill: SkillSummary) => void;
 }) {
-  const description = skillDescription(skill);
+  const description = skillDescription(skill, providerRoster);
   const prefetchTimer = useRef<number | null>(null);
   const cancelScheduledPrefetch = () => {
     if (prefetchTimer.current === null) return;
@@ -269,7 +300,7 @@ function SkillRow({
       onBlur={cancelScheduledPrefetch}
     >
       <ResourceRow
-        leading={<SkillLeading skill={skill} />}
+        leading={<SkillLeading skill={skill} providerRoster={providerRoster} />}
         title={skill.name}
         titleMeta={
           skill.scope === "bb-builtin" ? (
@@ -281,10 +312,15 @@ function SkillRow({
                 <SkillProvenanceTooltip
                   prefix="Included with"
                   providerId={skill.provider}
+                  provider={
+                    skill.provider === null
+                      ? undefined
+                      : providerRoster.get(skill.provider)
+                  }
                   name={`${providerPluginDisplayName(skill)} plugin.`}
                 />
               }
-              accessibleLabel={`${skill.name} is included with ${includedPluginDescription(skill)}`}
+              accessibleLabel={`${skill.name} is included with ${includedPluginDescription(skill, providerRoster)}`}
             />
           ) : undefined
         }
@@ -296,15 +332,19 @@ function SkillRow({
   );
 }
 
-export interface SkillsOverviewProps {
+interface SkillsOverviewProps {
   skills: readonly SkillSummary[];
+  /**
+   * Provider display names from the server roster. Provider ids are
+   * open-ended (every custom ACP agent is one), so without the roster an
+   * agent labels itself with its raw provider id.
+   */
+  providerRoster: ProviderRoster;
   isLoading: boolean;
   hasError: boolean;
   query?: string;
   activeMode?: SkillsCollectionMode;
   browseContent?: ReactNode;
-  /** Unused since the mode tabs moved to the Extensions top nav. */
-  onModeChange?: (mode: SkillsCollectionMode) => void;
   /** Opens the composer to create a skill, optionally seeded with a full prompt. */
   onCreateSkill: (prompt?: string) => void;
   onSelectSkill: (skill: SkillSummary) => void;
@@ -323,6 +363,7 @@ type SkillsCollectionMode = "library" | "browse";
  */
 export function SkillsOverview({
   skills,
+  providerRoster,
   isLoading,
   hasError,
   query = "",
@@ -369,28 +410,40 @@ export function SkillsOverview({
     return counts;
   }, [skills]);
   const providerBucketCount = providerCounts.size;
+  // Derived from the listed skills (plus any still-selected filter) so a
+  // provider bb has never heard of still gets a filter row. "bb" leads;
+  // the rest sort by display label, which reproduces the order the old
+  // hardcoded table hardcoded.
   const providerOptions = useMemo(() => {
-    return RESOURCE_PROVIDER_FILTERS.map((provider) => ({
+    const present = new Set<ResourceProviderFilter>([
+      "bb",
+      ...providerCounts.keys(),
+      ...providerFilters,
+    ]);
+    const ordered = [...present].sort((left, right) =>
+      left === "bb" || right === "bb"
+        ? Number(left !== "bb") - Number(right !== "bb")
+        : providerFilterLabel(left, providerRoster).localeCompare(
+            providerFilterLabel(right, providerRoster),
+          ),
+    );
+    return ordered.map((provider) => ({
       id: provider,
-      label: providerFilterLabel(provider),
+      label: providerFilterLabel(provider, providerRoster),
       leading:
         provider === "bb" ? (
           <BbLogo className="size-4" />
         ) : (
-          <ProviderLogo providerId={provider} className="size-4" />
+          <ProviderLogo
+            providerId={provider}
+            provider={providerRoster.get(provider)}
+            className="size-4"
+          />
         ),
       disabled:
         !providerCounts.has(provider) && !providerFilters.includes(provider),
     }));
-  }, [providerCounts, providerFilters]);
-  const sourceOptions = useMemo(
-    () =>
-      RESOURCE_SKILL_SOURCE_FILTERS.map((source) => ({
-        id: source,
-        label: skillSourceFilterLabel(source),
-      })),
-    [],
-  );
+  }, [providerCounts, providerRoster, providerFilters]);
   useEffect(() => {
     if (sortMode === "provider" && providerBucketCount <= 1) {
       setSortMode("alpha");
@@ -414,8 +467,11 @@ export function SkillsOverview({
         [
           skill.name,
           skill.description ?? "",
-          providerLabel(skill.provider),
-          SKILL_SCOPE_LABELS[skill.scope],
+          providerLabel(skill.provider, providerRoster),
+          skillScopeLabel(
+            skill,
+            providerLabelForScope(skill, providerRoster),
+          ),
         ]
           .join(" ")
           .toLowerCase()
@@ -431,8 +487,8 @@ export function SkillsOverview({
       }
       const base =
         sortMode === "provider"
-          ? providerLabel(left.provider).localeCompare(
-              providerLabel(right.provider),
+          ? providerLabel(left.provider, providerRoster).localeCompare(
+              providerLabel(right.provider, providerRoster),
             ) || left.name.localeCompare(right.name)
           : left.name.localeCompare(right.name);
       if (base !== 0) return sortDirection === "asc" ? base : -base;
@@ -440,6 +496,7 @@ export function SkillsOverview({
     });
   }, [
     normalizedQuery,
+    providerRoster,
     providerFilters,
     skills,
     sortDirection,
@@ -496,6 +553,7 @@ export function SkillsOverview({
           <SkillRow
             key={`${skill.scope}-${skill.provider ?? "bb"}-${skill.name}-${skill.filePath}`}
             skill={skill}
+            providerRoster={providerRoster}
             onSelect={() => onSelectSkill(skill)}
             onPrefetch={onPrefetchSkill}
           />
@@ -548,7 +606,7 @@ export function SkillsOverview({
                       {
                         id: "type",
                         label: "Type",
-                        options: sourceOptions,
+                        options: SOURCE_FILTER_OPTIONS,
                         selectedValues: sourceFilters,
                         onChange: (values) =>
                           setSourceFilters(
@@ -593,8 +651,10 @@ export function SkillsOverview({
   );
 }
 
-export interface SkillDetailDialogViewProps {
+interface SkillDetailDialogViewProps {
   skill: SkillSummary | null;
+  /** See {@link SkillsOverviewProps.providerRoster}. */
+  providerRoster: ProviderRoster;
   files: readonly string[];
   selectedPath: string;
   onSelectPath: (path: string) => void;
@@ -619,6 +679,7 @@ export interface SkillDetailDialogViewProps {
  */
 export function SkillDetailDialogView({
   skill,
+  providerRoster,
   files,
   selectedPath,
   onSelectPath,
@@ -643,7 +704,7 @@ export function SkillDetailDialogView({
   if (skill === null) return null;
   const bundledPluginName =
     skill.scope === "plugin" ? providerPluginNameForSkill(skill) : null;
-  const disabledReason = skillMutationDisabledReason(skill);
+  const disabledReason = skillMutationDisabledReason(skill, providerRoster);
   const canEditSelectedPath = canEdit && selectedPath === "SKILL.md";
   const headerActions =
     skill.scope !== "plugin" &&
@@ -686,7 +747,7 @@ export function SkillDetailDialogView({
     ) : null;
   return (
     <SkillDetailView
-      leading={<SkillLeading skill={skill} />}
+      leading={<SkillLeading skill={skill} providerRoster={providerRoster} />}
       title={skill.name}
       path={skill.filePath}
       titleBadge={
@@ -703,10 +764,15 @@ export function SkillDetailDialogView({
                   <SkillProvenanceTooltip
                     prefix="Included with"
                     providerId={skill.provider}
+                    provider={
+                      skill.provider === null
+                        ? undefined
+                        : providerRoster.get(skill.provider)
+                    }
                     name={`${providerPluginDisplayName(skill)} plugin.`}
                   />
                 ),
-                accessibleLabel: `${skill.name} is included with ${includedPluginDescription(skill)}`,
+                accessibleLabel: `${skill.name} is included with ${includedPluginDescription(skill, providerRoster)}`,
               }
             : skill.provider !== null
               ? {
@@ -715,10 +781,11 @@ export function SkillDetailDialogView({
                     <SkillProvenanceTooltip
                       prefix="Discovered from"
                       providerId={skill.provider}
-                      name={providerLabel(skill.provider)}
+                      provider={providerRoster.get(skill.provider)}
+                      name={providerLabel(skill.provider, providerRoster)}
                     />
                   ),
-                  accessibleLabel: `${skill.name} is imported from ${skill.provider === "claude-code" ? "Claude Code" : "Codex"}`,
+                  accessibleLabel: `${skill.name} is imported from ${providerLabel(skill.provider, providerRoster)}`,
                 }
               : undefined
       }

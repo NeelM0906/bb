@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, lt, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, sql } from "drizzle-orm";
 import {
   deleteThreadEventSuffixInTransaction,
   events,
@@ -12,7 +12,12 @@ import {
   listActiveBackgroundTaskCountsByThreadIds,
   type DbQueryConnection,
 } from "@bb/db";
-import { threadScope, type Thread, type ThreadEvent } from "@bb/domain";
+import {
+  threadScope,
+  type PromptInput,
+  type Thread,
+  type ThreadEvent,
+} from "@bb/domain";
 import type {
   EditMessageRequest,
   EditMessageResponse,
@@ -45,6 +50,7 @@ import {
   sendThreadMessage,
 } from "./thread-send.js";
 import { requestThreadStopForCurrentState } from "./thread-lifecycle.js";
+import { getLeadingAgentOnlyInput } from "./deferred-first-turn-context.js";
 
 type ThreadRewindPrepareCommand = Extract<
   HostDaemonCommand,
@@ -52,6 +58,7 @@ type ThreadRewindPrepareCommand = Extract<
 >;
 
 interface EditableTurn {
+  leadingAgentOnlyInput: PromptInput[];
   currentTurnId: string;
   oldMaxSequence: number;
   precedingProviderCheckpoint: string | null;
@@ -107,7 +114,6 @@ function findCommittedOperation(
     : null;
 }
 
-const EDIT_MESSAGE_PROVIDER_IDS = new Set(["claude-code", "codex", "pi"]);
 const EDIT_MESSAGE_STOP_TIMEOUT_MS = 60_000;
 
 function isMessageEditThreadQuiescent(thread: Pick<Thread, "status">): boolean {
@@ -173,6 +179,31 @@ function getTurnCompletion(
   if (!row) return null;
   const event = parseStoredEvent(row);
   return event.type === "turn/completed" ? event : null;
+}
+
+const CODEX_NATIVE_TURN_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The provider checkpoint a completed root turn can be re-created through:
+ * what `turn/completed` recorded, which rewinds and point-in-time forks hand
+ * back to the bridge. Runtime-assembled Codex timelines have bb-minted turn
+ * ids and persist the native Codex turn id as the checkpoint. Older Codex
+ * timelines used the native UUID directly and have no checkpoint, so retain
+ * that compatibility fallback without ever forwarding a bb-minted id to Codex.
+ */
+export function resolveTurnProviderCheckpointId(args: {
+  providerCheckpointId: string | null | undefined;
+  providerId: string;
+  turnId: string;
+}): string | null {
+  if (args.providerCheckpointId) {
+    return args.providerCheckpointId;
+  }
+  return args.providerId === "codex" &&
+    CODEX_NATIVE_TURN_ID_PATTERN.test(args.turnId)
+    ? args.turnId
+    : null;
 }
 
 function resolveEditableTurnCandidate(
@@ -243,7 +274,7 @@ function resolveEditableTurnCandidate(
         eq(events.threadId, thread.id),
         eq(events.type, "turn/started"),
         lt(events.sequence, requestRow.sequence),
-        sql`COALESCE(json_extract(${events.data}, '$.parentToolCallId'), '') = ''`,
+        isNull(events.parentToolCallId),
       ),
     )
     .orderBy(desc(events.sequence))
@@ -264,13 +295,16 @@ function resolveEditableTurnCandidate(
   const precedingProviderCheckpoint =
     precedingTurnId === null
       ? null
-      : thread.providerId === "codex"
-        ? precedingTurnId
-        : (precedingCompletion?.providerCheckpointId ?? null);
+      : resolveTurnProviderCheckpointId({
+          providerCheckpointId: precedingCompletion?.providerCheckpointId,
+          providerId: thread.providerId,
+          turnId: precedingTurnId,
+        });
   if (precedingTurnId !== null && precedingProviderCheckpoint === null) {
     conflict("This earlier provider turn has no editable history checkpoint");
   }
   return {
+    leadingAgentOnlyInput: getLeadingAgentOnlyInput(request.input),
     currentTurnId: accepted.turnId,
     oldMaxSequence: getHighWaterMarks(db, [thread.id])[thread.id] ?? 0,
     precedingProviderCheckpoint,
@@ -287,9 +321,6 @@ function resolveEditableTurn(
   thread: Thread,
   requestSequence?: number,
 ): EditableTurn {
-  if (!EDIT_MESSAGE_PROVIDER_IDS.has(thread.providerId)) {
-    conflict(`Editing messages is not supported for ${thread.providerId}`);
-  }
   if (thread.archivedAt !== null || thread.deletedAt !== null) {
     conflict("The thread is not writable");
   }
@@ -397,6 +428,12 @@ export async function editThreadMessage(
   if (!getExperiments(deps.db).editMessages) {
     conflict("Enable the Edit messages experiment before editing a message");
   }
+  // Rewinding to an earlier point in the provider session is what an edit
+  // is, so the provider's declared rewind support gates it. Fork alone is
+  // not enough — ACP clones whole sessions tip-only.
+  if (!deps.providerRegistry.supportsSessionRewind(args.thread.providerId)) {
+    conflict(`Editing messages is not supported for ${args.thread.providerId}`);
+  }
   const fingerprint = requestFingerprint(args.payload);
   const committed = findCommittedOperation(deps.db, {
     operationId: args.payload.operationId,
@@ -444,12 +481,9 @@ export async function editThreadMessage(
   await ensureHostSessionReadyForWork(deps, {
     hostId: readyEnvironment.hostId,
   });
-  const execution = await buildExecutionOptions(
-    deps,
-    args.payload,
-    { threadId: editableThread.id },
-    "client/turn/requested",
-  );
+  const execution = await buildExecutionOptions(deps, args.payload, {
+    threadId: editableThread.id,
+  });
 
   let stagedProviderThreadId: string | null = null;
   let rewindLeaseId: string | null = null;
@@ -465,7 +499,6 @@ export async function editThreadMessage(
       requestId: createClientTurnRequestId(),
       execution,
       permissionEscalation: resolvePermissionEscalation({
-        thread: editableThread,
         initiator,
       }),
       environment: readyEnvironment,
@@ -574,7 +607,11 @@ export async function editThreadMessage(
           ? { onCommandSettled: discardStagedRewind }
           : {}),
       },
-      payload: { ...sendPayload, mode: "start" },
+      payload: {
+        ...sendPayload,
+        input: [...target.leadingAgentOnlyInput, ...sendPayload.input],
+        mode: "start",
+      },
       thread: editableThread,
       trigger: "user",
     });

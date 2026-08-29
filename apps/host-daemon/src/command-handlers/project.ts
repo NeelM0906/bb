@@ -4,6 +4,7 @@ import {
   canonicalizeUnmanagedWorkspacePath,
   runGit,
   WorkspaceError,
+  type GitProcessOptions,
 } from "@bb/host-workspace";
 import { ExpectedCommandDispatchError } from "../command-dispatch-support.js";
 
@@ -47,13 +48,17 @@ async function requireEmptyOrMissingTarget(targetPath: string): Promise<void> {
   }
 }
 
-export async function inspectProjectPath(projectPath: string): Promise<{
+export async function inspectProjectPath(
+  projectPath: string,
+  options: GitProcessOptions = {},
+): Promise<{
   path: string;
   gitRemoteUrl: string | null;
 }> {
   const resolvedPath = await canonicalizeUnmanagedWorkspacePath(projectPath);
   const result = await runGit(["remote", "get-url", "origin"], {
     cwd: resolvedPath,
+    ...options,
     allowFailure: true,
   });
   const gitRemoteUrl = result.exitCode === 0 ? result.stdout.trim() : "";
@@ -68,6 +73,7 @@ export async function cloneProject(args: {
   projectSlug: string;
   remoteUrl: string;
   targetPath?: string;
+  shellPath?: string;
 }): Promise<{ path: string; gitRemoteUrl: string | null }> {
   const targetPath = path.resolve(
     args.targetPath ??
@@ -78,6 +84,7 @@ export async function cloneProject(args: {
   try {
     await runGit(["clone", args.remoteUrl, targetPath], {
       cwd: path.dirname(targetPath),
+      ...(args.shellPath !== undefined ? { shellPath: args.shellPath } : {}),
       timeoutMs: PROJECT_CLONE_TIMEOUT_MS,
     });
   } catch (error) {
@@ -86,5 +93,8 @@ export async function cloneProject(args: {
     }
     throw error;
   }
-  return inspectProjectPath(targetPath);
+  return inspectProjectPath(
+    targetPath,
+    args.shellPath === undefined ? {} : { shellPath: args.shellPath },
+  );
 }

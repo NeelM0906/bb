@@ -171,6 +171,8 @@ export function runDbReadWorker(): void {
         {
           db,
           hub: { getDaemonSessionIdForHost: () => null },
+          resolvePlanCommand: (providerId) =>
+            input.planCommands?.[providerId] ?? null,
         },
         { now: input.now, threads },
       );

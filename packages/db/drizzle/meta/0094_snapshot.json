@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "2705139f-802a-4621-81e6-881b98d71f78",
-  "prevId": "6fac6653-dbd6-4f26-ab36-b33d0ef8bb1f",
+  "id": "6e59c435-2f76-4e3e-84ae-82c2a0832cdc",
+  "prevId": "5f50d425-a9c4-4b80-830b-029598ab3347",
   "tables": {
     "app_settings": {
       "name": "app_settings",
@@ -1628,6 +1628,13 @@
         },
         "git_resolved_commit": {
           "name": "git_resolved_commit",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "git_checkout_root": {
+          "name": "git_checkout_root",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
@@ -3418,152 +3425,6 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
-    },
-    "work_admissions": {
-      "name": "work_admissions",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "thread_id": {
-          "name": "thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "host_id": {
-          "name": "host_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "command_json": {
-          "name": "command_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "waiting_reason": {
-          "name": "waiting_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "reservation_token": {
-          "name": "reservation_token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "reservation_generation": {
-          "name": "reservation_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "terminal_reason": {
-          "name": "terminal_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "work_admissions_host_status_fifo_idx": {
-          "name": "work_admissions_host_status_fifo_idx",
-          "columns": [
-            "host_id",
-            "status",
-            "created_at",
-            "id"
-          ],
-          "isUnique": false
-        },
-        "work_admissions_thread_status_idx": {
-          "name": "work_admissions_thread_status_idx",
-          "columns": [
-            "thread_id",
-            "status",
-            "created_at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "work_admissions_thread_id_threads_id_fk": {
-          "name": "work_admissions_thread_id_threads_id_fk",
-          "tableFrom": "work_admissions",
-          "tableTo": "threads",
-          "columnsFrom": [
-            "thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "work_admissions_host_id_hosts_id_fk": {
-          "name": "work_admissions_host_id_hosts_id_fk",
-          "tableFrom": "work_admissions",
-          "tableTo": "hosts",
-          "columnsFrom": [
-            "host_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "work_admissions_reservation_shape_check": {
-          "name": "work_admissions_reservation_shape_check",
-          "value": "(\n        (\"work_admissions\".\"status\" = 'running' AND \"work_admissions\".\"reservation_token\" IS NOT NULL AND \"work_admissions\".\"reservation_generation\" IS NOT NULL)\n        OR (\"work_admissions\".\"status\" != 'running')\n      )"
-        }
-      }
     }
   },
   "views": {},

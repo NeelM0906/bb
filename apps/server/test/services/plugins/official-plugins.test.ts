@@ -11,6 +11,7 @@ import {
 } from "@bb/db";
 import type { Logger } from "@bb/logger";
 import { derivePluginId } from "@bb/domain";
+import { createAiServiceRegistry } from "../../../src/services/ai/ai-service-registry.js";
 import {
   createPluginService,
   type PluginService,
@@ -23,6 +24,7 @@ import {
 } from "../../../src/services/plugins/builtin-registry.js";
 import { readPluginManifest } from "../../../src/services/plugins/manifest.js";
 import { testLogger } from "../../helpers/test-app.js";
+import { createNoopTelemetryService } from "../../../src/services/system/telemetry.js";
 
 const logger = testLogger as unknown as Logger;
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -60,6 +62,8 @@ function createService(args: {
   bundled: BundledPluginRegistration[];
 }): PluginService {
   return createPluginService({
+      aiServices: createAiServiceRegistry(),
+    telemetry: createNoopTelemetryService(),
     db: args.db,
     hub: {
       getDaemonSessionIdForHost: () => null,
@@ -90,10 +94,19 @@ describe("official plugin registry invariants", () => {
       automations: "Workflow management",
       connect: "Host access",
       "custom-instructions": "Context & knowledge",
+      "plugin-api-tester": "Developer tools",
       docs: "Context & knowledge",
       github: "Developer tools",
       "inline-vis": "Interface",
+      "keep-awake": "Host access",
       memory: "Context & knowledge",
+      "monaco-editor": "Interface",
+      "pdf-preview": "Interface",
+      "plugin-api-docs": "Developer tools",
+      "provider-acp": "Agent interaction",
+      "provider-claude-code": "Agent interaction",
+      "provider-codex": "Agent interaction",
+      "provider-pi": "Agent interaction",
       "provider-retry": "Agent interaction",
       secrets: "Developer tools",
       "side-chat": "Agent interaction",
@@ -127,7 +140,7 @@ describe("store-installed official plugins", () => {
     delete globals.__builtinFixtureLoads;
     db = createConnection(":memory:");
     migrate(db);
-    workDir = await mkdtemp(join(tmpdir(), "bb-official-plugins-"));
+    workDir = await mkdtemp(join(tmpdir(), "bb-community-plugins-"));
   });
 
   afterEach(async () => {

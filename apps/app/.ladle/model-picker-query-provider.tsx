@@ -21,7 +21,7 @@ import {
   STORY_SERVICE_TIER_SUPPORT,
 } from "./story-fixtures";
 
-const supportedPermissionModes = ["accept-edits", "auto", "full"] as const;
+const permissionModes = ["accept-edits", "auto", "full"] as const;
 
 const STORY_COMPOSER_ACTIONS_BY_PROVIDER: Record<
   string,
@@ -51,19 +51,23 @@ const STORY_COMPOSER_ACTIONS_BY_PROVIDER: Record<
 const STORY_PROVIDER_INFOS: ProviderInfo[] = STORY_PROVIDER_OPTIONS.map(
   (provider) => ({
     id: provider.value,
+    pluginId: `provider-${provider.value}`,
     displayName: provider.label,
     logoUrl: null,
     available: true,
+    maintenance: { health: true, usage: true, installation: true },
     composerActions: [
       ...(STORY_COMPOSER_ACTIONS_BY_PROVIDER[provider.value] ?? []),
     ],
     capabilities: {
-      supportsArchive: true,
-      supportsRename: true,
+      supportsThreadArchive: true,
+      supportsThreadRename: true,
       supportsServiceTier: STORY_SERVICE_TIER_SUPPORT[provider.value] ?? false,
-      supportsUserQuestion: true,
+      supportsNativeUserQuestion: true,
       supportsFork: true,
-      supportedPermissionModes: [...supportedPermissionModes],
+      supportsSessionRewind: true,
+      modelCatalogScope: "workspace",
+      permissionModes: [...permissionModes],
     },
   }),
 );

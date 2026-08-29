@@ -1325,6 +1325,8 @@ function repairBranchLocalQueuedGroupingBeforeInitialThreadSections(
 }
 
 const STAGED_CONNECT_MACHINE_ID_COLUMN = "_bb_connect_machine_id_pending";
+const STAGED_PROTECT_UNMANAGED_WORKSPACE_COLUMN =
+  "_bb_protect_unmanaged_workspace_pending";
 
 function stageExistingConnectMachineIdColumn(
   db: DbConnection,
@@ -1352,6 +1354,50 @@ function stageExistingConnectMachineIdColumn(
   return true;
 }
 
+function stageExistingProtectUnmanagedWorkspaceColumn(
+  db: DbConnection,
+  migrationsFolder: string,
+): boolean {
+  if (
+    !tableExists(db, "__drizzle_migrations") ||
+    !tableExists(db, "projects") ||
+    !columnExists(db, "projects", "protect_unmanaged_workspace")
+  ) {
+    return false;
+  }
+
+  const migration = requireExpectedAppliedMigration(
+    readExpectedAppliedMigrations(migrationsFolder),
+    "0110_unknown_phantom_reporter",
+  );
+  if (readAppliedMigrationCreatedAts(db).has(migration.createdAt)) {
+    return false;
+  }
+
+  db.$client.exec(
+    `ALTER TABLE projects RENAME COLUMN protect_unmanaged_workspace TO ${STAGED_PROTECT_UNMANAGED_WORKSPACE_COLUMN}`,
+  );
+  return true;
+}
+
+function restoreStagedProtectUnmanagedWorkspaceColumn(db: DbConnection): void {
+  if (
+    !columnExists(db, "projects", STAGED_PROTECT_UNMANAGED_WORKSPACE_COLUMN)
+  ) {
+    return;
+  }
+  if (!columnExists(db, "projects", "protect_unmanaged_workspace")) {
+    db.$client.exec(
+      `ALTER TABLE projects RENAME COLUMN ${STAGED_PROTECT_UNMANAGED_WORKSPACE_COLUMN} TO protect_unmanaged_workspace`,
+    );
+    return;
+  }
+  db.$client.exec(
+    `UPDATE projects SET protect_unmanaged_workspace = ${STAGED_PROTECT_UNMANAGED_WORKSPACE_COLUMN};
+     ALTER TABLE projects DROP COLUMN ${STAGED_PROTECT_UNMANAGED_WORKSPACE_COLUMN};`,
+  );
+}
+
 function restoreStagedConnectMachineIdColumn(db: DbConnection): void {
   if (!columnExists(db, "hosts", STAGED_CONNECT_MACHINE_ID_COLUMN)) {
     return;
@@ -1366,6 +1412,32 @@ function restoreStagedConnectMachineIdColumn(db: DbConnection): void {
     `UPDATE hosts SET connect_machine_id = ${STAGED_CONNECT_MACHINE_ID_COLUMN};
      ALTER TABLE hosts DROP COLUMN ${STAGED_CONNECT_MACHINE_ID_COLUMN};`,
   );
+}
+
+function seedKeepAwakePluginConfiguration(db: DbConnection): void {
+  if (
+    !tableExists(db, "app_settings") ||
+    !columnExists(db, "app_settings", "caffeinate") ||
+    !tableExists(db, "plugin_kv")
+  ) {
+    return;
+  }
+  // Idempotently preserve the retired core preference in the plugin's one
+  // configuration record. Once plugin-owned state exists, never overwrite it.
+  db.$client.exec(`
+    INSERT INTO plugin_kv (plugin_id, key, value, updated_at)
+    SELECT
+      'keep-awake',
+      'configuration',
+      CASE caffeinate
+        WHEN 1 THEN '{"enabled":true,"selection":{"mode":"all"}}'
+        ELSE '{"enabled":false,"selection":{"mode":"all"}}'
+      END,
+      updated_at
+    FROM app_settings
+    WHERE id = 'current'
+    ON CONFLICT (plugin_id, key) DO NOTHING
+  `);
 }
 
 function repairBranchLocalThreadSearchMigrations(db: DbConnection): void {
@@ -1552,6 +1624,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
   const sqlite = db.$client;
 
   sqlite.pragma("foreign_keys = OFF");
+  let stagedProtectUnmanagedWorkspace = false;
   try {
     assertNoDuplicatePendingInteractionProviderRequests(db);
     if (options.deferDestructiveLegacyCleanup === true) {
@@ -1571,6 +1644,8 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
       db,
       migrationsFolder,
     );
+    stagedProtectUnmanagedWorkspace =
+      stageExistingProtectUnmanagedWorkspaceColumn(db, migrationsFolder);
     try {
       drizzleMigrate(db, { migrationsFolder });
     } finally {
@@ -1578,11 +1653,15 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
     }
     applyReorderedCleanupMigrations(db, migrationsFolder);
     applyQueuedMessageGroupingSchema(db);
+    seedKeepAwakePluginConfiguration(db);
     replayMissingCanonicalTailAfterLatestAppliedCanonicalMigration(
       db,
       migrationsFolder,
     );
   } finally {
+    if (stagedProtectUnmanagedWorkspace) {
+      restoreStagedProtectUnmanagedWorkspaceColumn(db);
+    }
     sqlite.pragma("foreign_keys = ON");
   }
 

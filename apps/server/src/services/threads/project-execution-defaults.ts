@@ -13,19 +13,19 @@ import type {
 } from "./thread-create-request.js";
 import { resolveCreateThreadExecutionDefaults } from "./thread-default-policy.js";
 
-export interface RememberProjectExecutionDefaultsForCreateArgs {
+interface RememberProjectExecutionDefaultsForCreateArgs {
   execution: ResolvedThreadExecutionOptions;
   request: ThreadCreateServiceRequest;
 }
 
-export interface ResolveProjectExecutionDefaultsForCreateArgs {
+interface ResolveProjectExecutionDefaultsForCreateArgs {
   executionInputSources?: ThreadCreateServiceRequestInput["executionInputSources"];
   model?: ThreadCreateServiceRequestInput["model"];
   projectId: string;
   providerId?: ThreadCreateServiceRequestInput["providerId"];
 }
 
-export interface ResolvedProjectExecutionDefaultsForCreate {
+interface ResolvedProjectExecutionDefaultsForCreate {
   executionDefaults: ProjectExecutionDefaults | null;
   providerId: string;
   requestedModel: string | null;
@@ -72,7 +72,7 @@ function resolveRequestedCreateExecutionValue<TValue>({
 }
 
 export function resolveProjectExecutionDefaultsForCreate(
-  deps: Pick<AppDeps, "db">,
+  deps: Pick<AppDeps, "db" | "providerRegistry">,
   args: ResolveProjectExecutionDefaultsForCreateArgs,
 ): ResolvedProjectExecutionDefaultsForCreate {
   const storedDefaults = getProjectExecutionDefaults(deps.db, {
@@ -88,10 +88,13 @@ export function resolveProjectExecutionDefaultsForCreate(
     sources: args.executionInputSources,
     value: args.model,
   });
-  const resolution = resolveCreateThreadExecutionDefaults({
-    requestedProviderId,
-    storedDefaults,
-  });
+  const resolution = resolveCreateThreadExecutionDefaults(
+    deps.providerRegistry,
+    {
+      requestedProviderId,
+      storedDefaults,
+    },
+  );
   const { executionDefaults, providerId } = resolution;
 
   return {

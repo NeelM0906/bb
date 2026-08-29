@@ -11,7 +11,6 @@ import {
   ResourceOverflowMenu,
   type ResourceOverflowMenuItem,
 } from "@bb/shared-ui/resource-list";
-import { PLUGIN_SUBMISSION_FORM_URL } from "@bb/domain";
 import { Switch } from "@bb/shared-ui/switch";
 import {
   Tooltip,
@@ -23,17 +22,19 @@ import { formatHomePathForDisplay } from "@bb/shared-ui/lib/utils";
 import { Icon } from "@bb/shared-ui/icon";
 import { Link } from "react-router-dom";
 import { getPluginConfigurationRoutePath } from "@/lib/route-paths";
-import { PluginIcon } from "@/components/plugin/PluginIcon";
+import { CheckPluginUpdatesButton } from "@/components/plugin/management/CheckPluginUpdatesButton";
 import {
   PluginDetailReleaseControl,
   PluginDetailReleaseStatus,
   pluginHasUpdateSurfaces,
 } from "@/components/plugin/management/PluginUpdatesCard";
 import {
+  CatalogEntryIcon,
   formatAbsoluteDate,
   PluginLogo,
 } from "@/components/plugin/management/plugin-ui";
 import { pluginRuntimeStatusPresentation } from "@/components/plugin/management/plugin-status";
+import { PluginUrlLink } from "@/components/plugin/PluginUrlLink";
 import {
   PluginHealthBanner,
   PluginIncludes,
@@ -46,8 +47,6 @@ import {
 } from "@/components/tools/plugin-detail-table";
 import { PluginBannerBar } from "@/components/tools/plugin-detail-banner";
 import { ProvenancePill } from "@/components/tools/ProvenancePill";
-import { isOfficialProvenance } from "@/components/plugin/plugin-provenance";
-import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 import {
   usePluginSource,
   type PluginCatalogSearchEntry,
@@ -61,15 +60,14 @@ import {
 import { usePluginSlots } from "@/lib/plugin-slots";
 import { useClipboardCopy } from "@/lib/clipboard";
 
-function pluginSourceLabel(plugin: PluginListItem): string | null {
-  return plugin.provenance === "builtin" || plugin.provenance === "catalog"
-    ? "BB Official"
-    : null;
-}
-
-/** Passive provenance shown beside an installed plugin's name. */
+/**
+ * Passive publisher shown beside an installed plugin's name: `BB Official` for
+ * a plugin bundled with the app, the listing marketplace's display name for a
+ * catalog install. A plugin the user added from a source wears no pill —
+ * naming a publisher there would be a trust signal bb cannot back.
+ */
 export function PluginProvenancePill({ plugin }: { plugin: PluginListItem }) {
-  const label = pluginSourceLabel(plugin);
+  const label = plugin.publisherLabel;
   return label === null ? null : <ProvenancePill label={label} />;
 }
 
@@ -79,6 +77,18 @@ export function pluginIsLocalSource(plugin: PluginListItem): boolean {
 
 export function pluginRemovalLabel(plugin: PluginListItem): string {
   return pluginIsLocalSource(plugin) ? "Remove from bb" : "Uninstall";
+}
+
+/**
+ * What a removal deletes, matching the server's `remove`: settings, secrets,
+ * and schedules go with the registration on every source kind; only managed
+ * git/npm files are deleted from disk. Moving a local plugin is an install of
+ * the new path, which keeps that configuration.
+ */
+export function pluginRemovalDescription(plugin: PluginListItem): string {
+  return pluginIsLocalSource(plugin)
+    ? `Remove "${plugin.id}" from bb and delete its settings, secrets, and schedules? Its source files stay on disk. To move it to another directory, install the new path instead; that keeps its settings.`
+    : `Uninstall "${plugin.id}" and delete its managed files, settings, secrets, and schedules?`;
 }
 
 function PluginPath({ path }: { path: string }) {
@@ -114,7 +124,15 @@ function PluginPath({ path }: { path: string }) {
 }
 
 /**
- * Read-only detail for an uninstalled BB Official catalog entry.
+ * The repository link's text: the URL without its scheme, so a GitHub entry
+ * reads as `github.com/owner/repo` and a reader knows the destination.
+ */
+function repositoryLinkLabel(url: string): string {
+  return url.replace(/^https?:\/\//u, "").replace(/\/+$/u, "");
+}
+
+/**
+ * Read-only detail for an uninstalled catalog entry.
  *
  * The catalog exposes identity, category, description, and compatibility. It
  * cannot enumerate runtime capabilities until the plugin is installed and
@@ -130,16 +148,42 @@ export function CatalogPluginDetail({
   return (
     <ResourceDetailPage
       maxWidthClassName="max-w-5xl"
-      leading={
-        <PluginIcon
-          pluginId={entry.pluginId}
-          icon={entry.icon}
-          className="size-full"
-        />
-      }
+      leading={<CatalogEntryIcon entry={entry} className="size-full" />}
       title={entry.displayName}
-      titleMeta={<ProvenancePill label="BB Official" />}
-      metadata={<span>{entry.category}</span>}
+      titleMeta={<ProvenancePill label={entry.publisherLabel} />}
+      metadata={
+        <>
+          <span>{entry.category}</span>
+          {entry.author === null ? null : (
+            <span>
+              {" · By: "}
+              {entry.author.url === null ? (
+                entry.author.name
+              ) : (
+                <PluginUrlLink
+                  href={entry.author.url}
+                  className="underline underline-offset-2"
+                >
+                  {entry.author.name}
+                </PluginUrlLink>
+              )}
+            </span>
+          )}
+          {entry.repositoryUrl === null ? null : (
+            <span>
+              {" · "}
+              <a
+                href={entry.repositoryUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2"
+              >
+                {repositoryLinkLabel(entry.repositoryUrl)}
+              </a>
+            </span>
+          )}
+        </>
+      }
       actions={
         <ResourceInstallControl
           accessibleLabel={`Install ${entry.displayName}`}
@@ -178,39 +222,10 @@ export function CatalogPluginDetailBanner({
   );
 }
 
-/**
- * The installed plugin page's highest-priority runtime condition.
- *
- * These render outside ToolsScrollPage rather than inside the detail column.
- * Only present-tense operational health belongs in this selector; acquisition
- * compatibility uses CatalogPluginDetailBanner, while release opportunities
- * and history stay with the version controls in the detail page.
- */
-export type PluginDetailBannerKind =
-  | "failed"
-  | "degraded"
-  | "incompatible"
-  | "missing"
-  | "needs-configuration";
-
-export function pluginDetailBannerKind(
-  plugin: PluginListItem,
-  hasFrontendFailure: boolean,
-): PluginDetailBannerKind | null {
-  if (!plugin.enabled) return null;
-  if (plugin.status === "error") return "failed";
-  if (plugin.status === "degraded") return "degraded";
-  if (plugin.status === "incompatible") return "incompatible";
-  if (plugin.status === "missing") return "missing";
-  if (plugin.status === "needs-configuration") return "needs-configuration";
-  if (hasFrontendFailure) return "failed";
-  return null;
-}
-
 function pluginHealthBannerState(
   plugin: PluginListItem,
   frontendDiagnostic: PluginFrontendDiagnostic | undefined,
-): { plugin: PluginListItem; reloadable?: boolean } | null {
+): { plugin: PluginListItem } | null {
   if (!plugin.enabled) return null;
   if (pluginRuntimeStatusPresentation(plugin) !== null) return { plugin };
 
@@ -248,7 +263,6 @@ export function PluginDetailBanners({ plugin }: { plugin: PluginListItem }) {
     <PluginHealthBanner
       plugin={banner.plugin}
       runtimeStatus={pluginRuntimeStatusPresentation(banner.plugin)}
-      reloadable={banner.reloadable}
     />
   );
 }
@@ -348,22 +362,6 @@ export function PluginDetail({
           },
         ]
       : []),
-    // An ownership action like Edit: you submit your own plugin, so it only
-    // renders on user-provenance plugins — official ones are already in the
-    // marketplace. The intake form is the whole submission UI for now, and it
-    // opens in the external browser like every other Tools-route link: the
-    // in-app browser is a thread-panel surface, so UrlOpenRoutingProvider is
-    // never mounted here and the preference cannot apply.
-    ...(isOfficialProvenance(plugin.provenance)
-      ? []
-      : [
-          {
-            label: "Submit to marketplace",
-            icon: "Github" as const,
-            onSelect: () =>
-              openUrlInExternalBrowser(PLUGIN_SUBMISSION_FORM_URL),
-          },
-        ]),
     {
       label: pluginRemovalLabel(plugin),
       icon: "Trash2" as const,
@@ -398,12 +396,10 @@ export function PluginDetail({
         />
       }
       overflowMenu={
-        overflowItems.length > 0 ? (
-          <ResourceOverflowMenu
-            label={`${pluginName} actions`}
-            items={overflowItems}
-          />
-        ) : undefined
+        <ResourceOverflowMenu
+          label={`${pluginName} actions`}
+          items={overflowItems}
+        />
       }
     >
       <ResourceDetailStack>
@@ -441,6 +437,11 @@ export function PluginDetail({
           actions={
             hasReleaseControl ? (
               <PluginDetailReleaseControl plugin={plugin} />
+            ) : hasUpdateManagement ? (
+              <CheckPluginUpdatesButton
+                pluginId={plugin.id}
+                appearance="inline"
+              />
             ) : undefined
           }
         >

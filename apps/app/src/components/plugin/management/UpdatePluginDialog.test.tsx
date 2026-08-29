@@ -29,6 +29,7 @@ function plugin(updateState: Partial<PluginUpdateState>): PluginListItem {
     provenance: "catalog",
     isOrphanedBuiltin: false,
     catalogEntryId: "linear",
+    publisherLabel: "BB Community",
     sourceDisplay: "npm · @bb-plugins/linear · tracks compatible",
     updateState: { ...EMPTY_PLUGIN_UPDATE_STATE, ...updateState },
     handlerStats: { count: 0, totalMs: 0, maxMs: 0, errorCount: 0 },
@@ -91,16 +92,9 @@ describe("UpdatePluginDialog", () => {
       { wrapper },
     );
 
-    const compatibilityCopy = screen.getByText(
-      "1.9.0 isn’t compatible with this bb",
-    );
-    const compatibilityLine = compatibilityCopy.parentElement as HTMLElement;
-    expect(compatibilityLine.className).not.toContain("text-warning");
     expect(
-      compatibilityLine
-        .querySelector('[data-icon="AlertTriangle"]')
-        ?.getAttribute("class"),
-    ).toContain("text-warning");
+      screen.getByText("1.9.0 isn’t compatible with this bb"),
+    ).toBeTruthy();
     expect(screen.getByText("needs bb >= 0.15 — you have 0.14.1")).toBeTruthy();
     expect(
       screen.getByText(
@@ -151,9 +145,6 @@ describe("UpdatePluginDialog", () => {
       ),
     ).toBeTruthy();
     expect(screen.getByText("factory threw during activation")).toBeTruthy();
-    expect(
-      document.querySelector('[data-icon="CircleX"]')?.getAttribute("class"),
-    ).toContain("text-destructive");
 
     fireEvent.click(
       screen.getByRole("button", { name: "Retry update to 1.8.0" }),

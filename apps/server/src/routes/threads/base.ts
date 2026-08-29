@@ -45,6 +45,7 @@ import {
 } from "../../services/threads/thread-lifecycle.js";
 import { createThreadFromRequest } from "../../services/threads/thread-create.js";
 import { createThreadForkFromRequest } from "../../services/threads/thread-fork.js";
+import { snapshotProviderPlanCommands } from "../../services/providers/provider-plan-command.js";
 import { requireChildThreadsConfirmation } from "../../services/threads/child-thread-confirmation.js";
 import {
   overlayThreadListEntryLiveRuntime,
@@ -237,6 +238,7 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       {
         kind: "list",
         now: Date.now(),
+        planCommands: snapshotProviderPlanCommands(deps.providerRegistry),
         options: {
           ...(query.projectId ? { projectId: query.projectId } : {}),
           ...(query.parentThreadId
@@ -364,7 +366,6 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       assertValidParentThread(deps, {
         childThreadId: thread.id,
         parentThreadId: payload.parentThreadId,
-        projectId: thread.projectId,
       });
     }
 
@@ -433,7 +434,6 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     ) {
       await handleThreadOwnershipChange(deps, {
         previousThread: thread,
-        queueParentMessages: true,
         updatedThread: updated,
       });
     }

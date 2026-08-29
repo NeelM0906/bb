@@ -1,4 +1,4 @@
-import type { BbPluginApi } from "@bb/plugin-sdk";
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
 
 type PluginDatabase = ReturnType<BbPluginApi["storage"]["database"]>;
 
@@ -234,6 +234,10 @@ const MIGRATIONS = [
       WHEN 'readonly' THEN 'accept-edits'
     END
     WHERE permission_mode IN ('workspace-write', 'readonly');
+  `,
+  `
+    ALTER TABLE presets ADD COLUMN service_tier TEXT
+      CHECK (service_tier IN ('default', 'fast'));
   `,
 ] as const;
 

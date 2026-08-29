@@ -17,20 +17,20 @@ type MainFailureHandler = (error: unknown) => void;
 
 const entrypointDir = dirname(fileURLToPath(import.meta.url));
 
+/**
+ * In a packaged build the daemon bundle sits beside the provider bridge
+ * worker (the bootstrap every bridge artifact runs under), so their directory
+ * is the entrypoint directory; running from source it is not, and the
+ * bootstrap resolves from its TypeScript source instead.
+ */
 function resolveEntrypointBridgeBundleDir(): string | undefined {
-  return existsSync(join(entrypointDir, "bb-claude-code-bridge.mjs"))
+  return existsSync(join(entrypointDir, "bb-provider-bridge-worker.mjs"))
     ? entrypointDir
     : undefined;
 }
 
 function resolveDiagnosticsLogsDir(): string {
-  const hostDaemonStartConfig = loadHostDaemonStartConfig({
-    enableLocalApi: true,
-  });
-
-  if (hostDaemonStartConfig.dataDir === undefined) {
-    throw new Error("Host daemon data directory is required");
-  }
+  const hostDaemonStartConfig = loadHostDaemonStartConfig({});
 
   return join(hostDaemonStartConfig.dataDir, "logs");
 }

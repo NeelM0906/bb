@@ -20,7 +20,7 @@ import { BB_LOOPBACK_HOST, parsePortValue } from "./runtime.js";
 
 export type ServerBindHost = "127.0.0.1" | "0.0.0.0";
 
-export function parseBooleanEnvValue(args: EnvVarParseArgs): boolean {
+function parseBooleanEnvValue(args: EnvVarParseArgs): boolean {
   const normalizedValue = args.value.trim().toLowerCase();
   if (
     normalizedValue === "true" ||
@@ -42,7 +42,7 @@ export function parseBooleanEnvValue(args: EnvVarParseArgs): boolean {
   throw new Error(`${args.name} must be a boolean`);
 }
 
-export function parseAppSurfaceEnvValue(args: EnvVarParseArgs): AppSurface {
+function parseAppSurfaceEnvValue(args: EnvVarParseArgs): AppSurface {
   const parsed = parseAppSurface(args.value);
   if (parsed !== undefined) {
     return parsed;
@@ -50,9 +50,7 @@ export function parseAppSurfaceEnvValue(args: EnvVarParseArgs): AppSurface {
   throw new Error(`${args.name} must be one of ${formatAppSurfaceValues()}`);
 }
 
-export function parseOptionalPortEnvValue(
-  args: EnvVarParseArgs,
-): number | undefined {
+function parseOptionalPortEnvValue(args: EnvVarParseArgs): number | undefined {
   if (args.value === "0") {
     return undefined;
   }
@@ -63,7 +61,7 @@ export function parseOptionalPortEnvValue(
   });
 }
 
-export function parseOptionalTrimmedStringEnvValue(
+function parseOptionalTrimmedStringEnvValue(
   args: EnvVarParseArgs,
 ): string | undefined {
   const trimmedValue = args.value.trim();
@@ -192,6 +190,13 @@ export const BB_APP_VERSION_ENV = defineEnvVar<string>({
   parse: parseNonEmptyStringEnvValue,
 });
 
+export const BB_SERVER_LAUNCH_ID_ENV = defineEnvVar<string>({
+  description:
+    "Internal per-spawn identity the bb-app launcher hands its server child. The server echoes it on /health so the launcher can tell its own child apart from another bb server that already owns the port.",
+  name: "BB_SERVER_LAUNCH_ID",
+  parse: parseNonEmptyStringEnvValue,
+});
+
 export const BB_APP_SURFACE_ENV = defineEnvVar<AppSurface>({
   description:
     "Internal launcher marker for telemetry attribution. Set by bb-app and desktop launchers.",
@@ -210,6 +215,13 @@ export const BB_EXTERNAL_URL_ENV = defineEnvVar<string>({
   description:
     "Internet-facing HTTPS base URL used for generated public links. Does not control which host or port the server binds to.",
   name: "BB_EXTERNAL_URL",
+  parse: parseOptionalUrlEnvValue,
+});
+
+export const BB_MARKETPLACE_URL_ENV = defineEnvVar<string>({
+  description:
+    "Manifest URL of the reserved bb-community plugin marketplace, which lists as BB Community. Point it at a local file server to test catalog refreshes.",
+  name: "BB_MARKETPLACE_URL",
   parse: parseOptionalUrlEnvValue,
 });
 
@@ -248,7 +260,7 @@ export const BB_POSTHOG_API_KEY_ENV = defineEnvVar<string>({
 
 export const BB_TELEMETRY_ENV = defineEnvVar<boolean>({
   description:
-    "Anonymous usage telemetry (app starts, thread creation counts, and user message counts). Set to false to opt out.",
+    "Anonymous usage telemetry (app starts, thread creation counts, user message counts, and plugin installs). Set to false to opt out.",
   name: "BB_TELEMETRY",
   parse: parseBooleanEnvValue,
 });
@@ -363,6 +375,9 @@ export const DEFAULT_BB_POSTHOG_API_KEY =
   "phc_tejoYoNLV6vG8QAd5eYXXvcsENFYnP4brpZDGqG7zvpy";
 export const DEFAULT_BB_TELEMETRY = true;
 export const DEFAULT_BB_DEV_APP_HOST = "";
+/** Published by the registry repository through the getbb.app worker's R2 route. */
+export const DEFAULT_BB_MARKETPLACE_URL =
+  "https://getbb.app/marketplace/v1/marketplace.json";
 export const DEFAULT_BB_INFERENCE = DEFAULTS.inferenceModel;
 export const DEFAULT_BB_INFERENCE_FALLBACK = DEFAULTS.inferenceFallbackModel;
 export const DEFAULT_BB_TRANSCRIPTION = DEFAULTS.transcriptionModel;

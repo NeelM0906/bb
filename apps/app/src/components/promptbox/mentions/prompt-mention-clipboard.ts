@@ -3,19 +3,18 @@ import {
   promptMentionResourceSchema,
   type PromptMentionResource,
 } from "@bb/domain";
-import { PLUGIN_MENTION_TRIGGER_VALUES } from "@/lib/plugin-mention-triggers";
+import { PLUGIN_MENTION_TRIGGER_VALUES } from "@bb/client-core";
 
-export const PROMPT_MENTION_CLIPBOARD_RESOURCE_ATTR =
-  "data-prompt-mention-resource";
-export const PROMPT_MENTION_CLIPBOARD_SERIALIZED_TEXT_ATTR =
+const PROMPT_MENTION_CLIPBOARD_RESOURCE_ATTR = "data-prompt-mention-resource";
+const PROMPT_MENTION_CLIPBOARD_SERIALIZED_TEXT_ATTR =
   "data-prompt-mention-serialized-text";
 
-export interface PromptMentionClipboardPayload {
+interface PromptMentionClipboardPayload {
   resource: PromptMentionResource;
   serializedText: string;
 }
 
-export interface PromptMentionClipboardDataAttributes {
+interface PromptMentionClipboardDataAttributes {
   "data-prompt-mention": "true";
   "data-prompt-mention-resource": string;
   "data-prompt-mention-serialized-text": string;
@@ -49,6 +48,28 @@ export function promptMentionClipboardDataAttributes(
     "data-prompt-mention": "true",
     [PROMPT_MENTION_CLIPBOARD_RESOURCE_ATTR]: JSON.stringify(args.resource),
     [PROMPT_MENTION_CLIPBOARD_SERIALIZED_TEXT_ATTR]: args.serializedText,
+  };
+}
+
+/**
+ * The exact rich clipboard representation the composer already emits for an
+ * inline pill. A trailing space keeps sequentially pasted references
+ * independently editable without becoming one run of text.
+ */
+export function promptMentionClipboardContent(
+  resource: PromptMentionResource,
+): { text: string; html: string } {
+  const serializedText = serializedTextForPromptMentionResource(resource);
+  const element = document.createElement("span");
+  for (const [name, value] of Object.entries(
+    promptMentionClipboardDataAttributes({ resource, serializedText }),
+  )) {
+    element.setAttribute(name, value);
+  }
+  element.textContent = serializedText;
+  return {
+    text: `${serializedText} `,
+    html: `${element.outerHTML} `,
   };
 }
 

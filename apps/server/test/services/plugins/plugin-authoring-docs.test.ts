@@ -1,16 +1,19 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import * as pluginSdkApp from "@bb/plugin-sdk/app";
+import * as pluginSdkApp from "@get-bb/plugin-sdk/app";
 import {
   type BbPluginApi,
   type PluginAppBuilder,
   type PluginAppSlots,
   type PluginContentScriptContext,
   type PluginContentScriptRegistration,
+  type PluginDiffRendererProps,
   type PluginFileOpenerProps,
   type PluginHomepageSectionProps,
   type PluginHttpAuthMode,
+  type PluginCommandPaletteActionContext,
+  type PluginCommandPaletteActionRegistration,
   type PluginMessageActionContext,
   type PluginMessageActionRegistration,
   type PluginMessageDirectiveProps,
@@ -18,9 +21,12 @@ import {
   type PluginNavPanelRegistration,
   type PluginNewThreadPanelProps,
   type PluginPendingInteractionProps,
+  type PluginProviderIconRegistration,
+  type PluginTimelineRendererProps,
   type PluginSettingDescriptor,
   type PluginSettingsSectionProps,
   type PluginSidebarFooterActionProps,
+  type PluginSourceCodeRendererProps,
   type PluginThreadHeaderActionProps,
   type PluginThreadListProps,
   type PluginSidebarFooterActionRegistration,
@@ -28,7 +34,7 @@ import {
   type PluginThreadPanelProps,
   type ThreadChatMessageAction,
   type ThreadChatProps,
-} from "@bb/plugin-sdk";
+} from "@get-bb/plugin-sdk";
 
 const FRONTEND_RUNTIME_EXPORT_NAMES = Object.keys(pluginSdkApp).sort();
 
@@ -61,11 +67,13 @@ const BB_PLUGIN_API_KEYS = [
   "background",
   "cli",
   "agents",
+  "providers",
   "ui",
   "events",
   "status",
   "server",
   "hosts",
+  "experimental_aiServices",
   "sdk",
   "onDispose",
 ] as const satisfies readonly (keyof BbPluginApi)[];
@@ -161,8 +169,15 @@ type SlotPropsByName = {
   experimental_threadList: PluginThreadListProps;
   experimental_threadHeaderAction: PluginThreadHeaderActionProps;
   fileOpener: PluginFileOpenerProps;
+  experimental_sourceCodeRenderer: PluginSourceCodeRendererProps;
+  experimental_diffRenderer: PluginDiffRendererProps;
   messageDirective: PluginMessageDirectiveProps;
   messageAction: PluginMessageActionContext;
+  commandPaletteAction: PluginCommandPaletteActionContext;
+  // Registration-object slot: the component receives only className, so the
+  // registration type is the documented surface.
+  experimental_providerIcon: PluginProviderIconRegistration;
+  experimental_timelineRenderer: PluginTimelineRendererProps;
 };
 
 type MissingSlot = Exclude<keyof PluginAppSlots, keyof SlotPropsByName>;
@@ -228,15 +243,44 @@ const FRONTEND_SLOT_PROP_FIELDS = {
     "isCompactViewport",
     "onNavigate",
     "searchQuery",
+    "Original",
+    "experimental_Original",
   ],
   experimental_threadHeaderAction: [
     "threadId",
     "projectId",
     "isCompactViewport",
   ],
-  fileOpener: ["path", "source"],
+  fileOpener: ["path", "source", "Original", "experimental_Original"],
+  experimental_sourceCodeRenderer: [
+    "content",
+    "path",
+    "overflow",
+    "highlightedLines",
+    "Original",
+    "experimental_Original",
+  ],
+  experimental_diffRenderer: [
+    "patch",
+    "path",
+    "view",
+    "overflow",
+    "showLineNumbers",
+    "experimental_fullFileContents",
+    "Original",
+    "experimental_Original",
+  ],
   messageDirective: ["attributes", "source", "message", "openWorkspaceFile"],
   messageAction: ["threadId", "message", "selectedText", "openPanel"],
+  commandPaletteAction: ["threadId", "projectId", "openPanel"],
+  experimental_providerIcon: ["providerId", "icon"],
+  experimental_timelineRenderer: [
+    "row",
+    "payload",
+    "presentation",
+    "thread",
+    "Original",
+  ],
 } as const satisfies {
   [S in keyof SlotPropsByName]: readonly (keyof SlotPropsByName[S])[];
 };
@@ -263,6 +307,7 @@ const NAV_PANEL_REGISTRATION_FIELDS = [
   "icon",
   "path",
   "component",
+  "fixedTabs",
   "experimental_sidebarAccessory",
   "headerContent",
 ] as const satisfies readonly (keyof PluginNavPanelRegistration)[];
@@ -307,6 +352,22 @@ const _assertAllMessageActionRegistrationFieldsListed: MissingMessageActionRegis
   ? true
   : never = true;
 void _assertAllMessageActionRegistrationFieldsListed;
+
+const COMMAND_PALETTE_ACTION_REGISTRATION_FIELDS = [
+  "id",
+  "title",
+  "isAvailable",
+  "run",
+] as const satisfies readonly (keyof PluginCommandPaletteActionRegistration)[];
+
+type MissingCommandPaletteActionRegistrationField = Exclude<
+  keyof PluginCommandPaletteActionRegistration,
+  (typeof COMMAND_PALETTE_ACTION_REGISTRATION_FIELDS)[number]
+>;
+const _assertAllCommandPaletteActionRegistrationFieldsListed: MissingCommandPaletteActionRegistrationField extends never
+  ? true
+  : never = true;
+void _assertAllCommandPaletteActionRegistrationFieldsListed;
 
 /**
  * Mirrors ThreadChatProps (app-contract.ts), compile-time checked in both
@@ -365,7 +426,7 @@ describe("bb-plugin-authoring skill", () => {
     }
   });
 
-  it("documents every @bb/plugin-sdk/app runtime export", () => {
+  it("documents every @get-bb/plugin-sdk/app runtime export", () => {
     for (const name of FRONTEND_RUNTIME_EXPORT_NAMES) {
       expect(skill, `${name} is not documented in the skill`).toContain(name);
     }
@@ -452,6 +513,15 @@ describe("bb-plugin-authoring skill", () => {
       ).toContain(field);
     }
     expect(skill).toContain("sourceSeqEnd");
+  });
+
+  it("documents every commandPaletteAction registration field", () => {
+    for (const field of COMMAND_PALETTE_ACTION_REGISTRATION_FIELDS) {
+      expect(
+        skill,
+        `commandPaletteAction registration field "${field}" is not documented in the skill`,
+      ).toContain(field);
+    }
   });
 
   it("documents every ThreadChat prop", () => {

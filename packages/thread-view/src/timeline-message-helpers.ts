@@ -20,7 +20,7 @@ export function isTimelineTerminalMessage(
   );
 }
 
-export function isTimelineSummaryGroupableSteerMessage(
+function isTimelineSummaryGroupableSteerMessage(
   message: EventProjectionMessage,
 ): boolean {
   return (
@@ -39,7 +39,7 @@ export function isTimelineUngroupableMessage(
   if (message.kind === "assistant-text") {
     return !isTimelineIgnoredBlankAssistantMessage(message);
   }
-  return message.kind === "debug/raw-event";
+  return false;
 }
 
 export function isTimelineSummaryCountedMessage(

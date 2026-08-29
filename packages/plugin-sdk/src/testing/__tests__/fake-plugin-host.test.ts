@@ -4,8 +4,14 @@ import {
   PLUGIN_CLI_OUTPUT_MAX_BYTES,
   type BbPluginApi,
   type PluginAgentConfigurationContext,
+  type PluginAgentToolPresentation,
 } from "../../backend-contract.js";
 import { defineRpcContract } from "../../rpc-contract.js";
+import {
+  parsePluginAgentToolPresentation,
+  PLUGIN_AGENT_STATUS_LABEL_MAX_CHARS,
+  RESERVED_BB_CLI_COMMANDS,
+} from "../../internal/host-policy.js";
 import { createFakePluginHost, makeThreadResponse } from "../index.js";
 
 describe("ui.requestInput", () => {
@@ -76,6 +82,61 @@ describe("ui.requestInput", () => {
 });
 
 describe("host control plane", () => {
+  it("validates typed host calls and delivers host lifecycle events", async () => {
+    const contract = defineRpcContract({
+      ping: {
+        input: z.object({ value: z.string() }).strict(),
+        output: z.object({ pong: z.string() }).strict(),
+      },
+    });
+    const experimental_signals = {
+      changed: {
+        payload: z.object({ sequence: z.number().int() }).strict(),
+      },
+    };
+    const { bb, harness } = createFakePluginHost({
+      experimental_callHostRpc: ({ input }) => ({
+        pong: String(Reflect.get(Object(input), "value")),
+      }),
+    });
+    const client = bb.hosts.experimental_client({
+      contract,
+      experimental_signals,
+    });
+
+    await expect(
+      client.call("ping", { value: "hello" }, { hostId: "host-1" }),
+    ).resolves.toEqual({ pong: "hello" });
+    expect(harness.experimental_hostRpcCalls).toMatchObject([
+      {
+        method: "ping",
+        input: { value: "hello" },
+        hostId: "host-1",
+      },
+    ]);
+
+    const events: unknown[] = [];
+    client.experimental_onWorkerExit((event) => {
+      events.push({ workerExit: event });
+    });
+    client.experimental_onSignal("changed", (event) => {
+      events.push({ signal: event });
+    });
+    await harness.experimental_emitHostWorkerExit("host-1");
+    expect(events.at(-1)).toEqual({ workerExit: { hostId: "host-1" } });
+    await harness.experimental_emitHostSignal("host-1", "changed", {
+      sequence: 2,
+    });
+    expect(events.at(-1)).toEqual({
+      signal: { hostId: "host-1", payload: { sequence: 2 } },
+    });
+    await expect(
+      harness.experimental_emitHostSignal("host-1", "changed", {
+        sequence: 2.5,
+      }),
+    ).rejects.toThrow(/validation failed/u);
+  });
+
   it("uses validated current-state replacements and read-only tunnel identity", async () => {
     const { bb, harness } = createFakePluginHost({
       sharedPortTunnelIdentities: {
@@ -138,6 +199,22 @@ describe("storage", () => {
     ]);
     const rows = again.prepare("SELECT body, starred FROM notes").all();
     expect(rows).toEqual([{ body: "hello", starred: 0 }]);
+  });
+
+  it("database() replaces a handle the plugin closed itself, like the host", () => {
+    const { bb } = createFakePluginHost();
+    const db = bb.storage.database();
+    db.exec("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)");
+    db.prepare("INSERT INTO notes (body) VALUES (?)").run("hello");
+    db.close();
+
+    const reopened = bb.storage.database();
+    expect(reopened).not.toBe(db);
+    expect(reopened.open).toBe(true);
+    expect(reopened.prepare("SELECT body FROM notes").all()).toEqual([
+      { body: "hello" },
+    ]);
+    expect(bb.storage.database()).toBe(reopened);
   });
 });
 
@@ -208,6 +285,25 @@ describe("settings", () => {
         broken: { type: "select", label: "B", options: ["a"], default: "z" },
       }),
     ).toThrow('default for setting "broken" must be one of its options');
+    // A secret is a one-line password field; a multi-line secret has no
+    // rendering, so the pair is refused where every other descriptor rule is.
+    expect(() =>
+      bb.settings.define({
+        pem: {
+          type: "string",
+          label: "Key",
+          secret: true,
+          experimental_multiline: true,
+        },
+      }),
+    ).toThrow(
+      'invalid descriptor for setting "pem" (experimental_multiline): a secret setting cannot be experimental_multiline',
+    );
+    expect(() =>
+      bb.settings.define({
+        notes: { type: "string", label: "Notes", experimental_multiline: true },
+      }),
+    ).not.toThrow();
   });
 });
 
@@ -345,6 +441,42 @@ describe("http", () => {
       error: "plugin route failed: nope",
     });
   });
+
+  it("adopts a structurally valid Response from another realm like the host (#1661)", async () => {
+    const { bb, harness } = createFakePluginHost();
+    bb.http.route("GET", "/foreign", () => {
+      const real = new Response(JSON.stringify({ foreign: true }), {
+        status: 201,
+        headers: { "content-type": "application/json", "x-foreign": "yes" },
+      });
+      // Not `instanceof Response` in this realm; same structural shape.
+      return {
+        status: real.status,
+        statusText: real.statusText,
+        headers: real.headers,
+        body: real.body,
+        arrayBuffer: () => real.arrayBuffer(),
+        clone: () => real.clone(),
+      } as unknown as Response;
+    });
+    bb.http.route(
+      "GET",
+      "/not-a-response",
+      () => ({ status: 200 }) as Response,
+    );
+
+    const foreign = await harness.fetchHttp("GET", "/foreign");
+    expect(foreign.status).toBe(201);
+    expect(foreign.headers.get("x-foreign")).toBe("yes");
+    expect(await foreign.json()).toEqual({ foreign: true });
+
+    const malformed = await harness.fetchHttp("GET", "/not-a-response");
+    expect(malformed.status).toBe(500);
+    expect(await malformed.json()).toEqual({
+      ok: false,
+      error: "plugin route failed: http route handler must return a Response",
+    });
+  });
 });
 
 describe("cli", () => {
@@ -399,14 +531,22 @@ describe("cli", () => {
   });
 
   it("uses the production host's reserved CLI names", () => {
-    const reservedHost = createFakePluginHost();
-    expect(() =>
-      reservedHost.bb.cli.register({
-        name: "skill",
-        summary: "nope",
-        run: () => ({ exitCode: 0 }),
-      }),
-    ).toThrow('cli command name "skill" is reserved by the bb CLI');
+    for (const name of RESERVED_BB_CLI_COMMANDS) {
+      const reservedHost = createFakePluginHost();
+      expect(() =>
+        reservedHost.bb.cli.register({
+          name,
+          summary: "nope",
+          run: () => ({ exitCode: 0 }),
+        }),
+      ).not.toThrow();
+      expect(reservedHost.harness.logEntries).toEqual([
+        {
+          level: "warn",
+          message: `CLI command "${name}" collides with core command "bb ${name}"; core keeps the short form. Use "bb plugin run test-plugin" to invoke this plugin.`,
+        },
+      ]);
+    }
 
     const availableHost = createFakePluginHost();
     expect(() =>
@@ -416,6 +556,7 @@ describe("cli", () => {
         run: () => ({ exitCode: 0 }),
       }),
     ).not.toThrow();
+    expect(availableHost.harness.logEntries).toEqual([]);
   });
 
   it("rejects a duplicate registration like the production host", () => {
@@ -602,7 +743,11 @@ describe("agent tools", () => {
       branchName: null,
     },
     host: { id: "host-test", name: "Test host" },
-    provider: { id: "codex", model: "gpt-5" },
+    provider: {
+      id: "codex",
+      model: "gpt-5",
+      capabilities: { supportsNativeUserQuestion: false },
+    },
     origin: { kind: null, pluginId: null },
   } satisfies PluginAgentConfigurationContext;
 
@@ -611,10 +756,6 @@ describe("agent tools", () => {
     bb.agents.registerTool({
       name: "lookup_doc",
       description: "Look up a doc",
-      experimental_statusLabels: {
-        pending: "Looking up a doc",
-        completed: "Looked up a doc",
-      },
       parameters: z.object({ query: z.string().min(1) }),
       execute: ({ query }, ctx) => `${query} for ${ctx.threadId}`,
     });
@@ -622,18 +763,208 @@ describe("agent tools", () => {
       type: "object",
       properties: { query: { type: "string" } },
     });
-    expect(
-      harness.registrations.agentTools[0]?.experimentalStatusLabels,
-    ).toEqual({
-      pending: "Looking up a doc",
-      completed: "Looked up a doc",
-    });
     await expect(
       harness.callAgentTool("lookup_doc", { query: "hi" }),
     ).resolves.toBe("hi for thread-test");
     await expect(
       harness.callAgentTool("lookup_doc", { query: 3 }),
     ).rejects.toThrow('tool "lookup_doc" arguments are invalid');
+  });
+
+  it("records a tool's presentation and hands it to the provider-facing tool set", async () => {
+    const { bb, harness } = createFakePluginHost();
+    const presentation = {
+      label: { pending: "Looking up a doc", completed: "Looked up a doc" },
+      icon: { glyph: "Book" },
+      suppress: false,
+      tint: { light: "#123456", dark: "#abcdef" },
+    };
+    bb.agents.registerTool({
+      name: "lookup_doc",
+      description: "Look up a doc",
+      presentation,
+      parameters: { type: "object" },
+      execute: () => "ok",
+    });
+    bb.agents.registerTool({
+      name: "plain_tool",
+      description: "No presentation",
+      parameters: { type: "object" },
+      execute: () => "ok",
+    });
+    expect(harness.registrations.agentTools[0]?.presentation).toEqual(
+      presentation,
+    );
+    expect(harness.registrations.agentTools[1]?.presentation).toBeNull();
+    const resolved = await harness.resolveAgentConfiguration(
+      configurationContext,
+    );
+    expect(resolved.tools.map((tool) => tool.presentation)).toEqual([
+      presentation,
+      null,
+    ]);
+  });
+
+  it("lets a tool presentation name one of the plugin's own declared icons and nothing else, like production", () => {
+    const { bb } = createFakePluginHost({
+      pluginId: "tooled",
+      experimental_declaredIconNames: ["stamp"],
+    });
+    const tool = (name: string, glyph: string) => ({
+      name,
+      description: "Names an icon",
+      presentation: { icon: { glyph } },
+      parameters: { type: "object" },
+      execute: () => "ok",
+    });
+    expect(() => bb.agents.registerTool(tool("stamp_tool", "tooled/stamp"))).not.toThrow();
+    expect(() => bb.agents.registerTool(tool("undeclared_tool", "tooled/seal"))).toThrow(
+      'tool "undeclared_tool" presentation.icon "tooled/seal" is not an icon declared by plugin "tooled"',
+    );
+    expect(() => bb.agents.registerTool(tool("foreign_tool", "other-plugin/stamp"))).toThrow(
+      'tool "foreign_tool" presentation.icon "other-plugin/stamp" is not an icon declared by plugin "tooled"',
+    );
+    // A host glyph is never a declared-icon question.
+    expect(() => bb.agents.registerTool(tool("host_tool", "Zap"))).not.toThrow();
+  });
+
+  it("rejects a presentation with the production host's exact messages", () => {
+    const { bb } = createFakePluginHost();
+    const register = (presentation: PluginAgentToolPresentation) =>
+      bb.agents.registerTool({
+        name: "lookup_doc",
+        description: "Look up a doc",
+        presentation,
+        parameters: { type: "object" },
+        execute: () => "ok",
+      });
+    expect(() =>
+      register({
+        label: {
+          pending: "p".repeat(PLUGIN_AGENT_STATUS_LABEL_MAX_CHARS + 1),
+          completed: "Looked up a doc",
+        },
+      }),
+    ).toThrow(
+      `tool "lookup_doc" presentation.label strings must be non-empty and at most ${PLUGIN_AGENT_STATUS_LABEL_MAX_CHARS} characters`,
+    );
+    expect(() =>
+      register({ label: { pending: "Looking up a doc", completed: "  " } }),
+    ).toThrow(
+      `tool "lookup_doc" presentation.label strings must be non-empty and at most ${PLUGIN_AGENT_STATUS_LABEL_MAX_CHARS} characters`,
+    );
+    expect(() => register({ icon: { glyph: "" } })).toThrow(
+      'tool "lookup_doc" presentation.icon must be { glyph: string }',
+    );
+    expect(() =>
+      // @ts-expect-error — a plugin compiled against its own types can still
+      // pass a glyph name where the contract wants { glyph }.
+      register({ icon: "Book" }),
+    ).toThrow('tool "lookup_doc" presentation.icon must be { glyph: string }');
+    expect(() =>
+      // @ts-expect-error — an array is not a presentation object.
+      register([]),
+    ).toThrow('tool "lookup_doc" presentation must be an object');
+  });
+
+  it("records a valid presentation normalized the way the production host stores it", () => {
+    const { bb, harness } = createFakePluginHost();
+    const declared = {
+      label: { pending: "Looking up a doc", completed: "Looked up a doc" },
+      icon: { glyph: "Book" },
+      // Undeclared fields are dropped, not carried into the record.
+      extra: { markup: "<b>" },
+    };
+    bb.agents.registerTool({
+      name: "lookup_doc",
+      description: "Look up a doc",
+      presentation: declared,
+      parameters: { type: "object" },
+      execute: () => "ok",
+    });
+    const recorded = harness.registrations.agentTools[0]?.presentation;
+    expect(recorded).toEqual(
+      parsePluginAgentToolPresentation("lookup_doc", declared),
+    );
+    expect(recorded).toEqual({
+      label: { pending: "Looking up a doc", completed: "Looked up a doc" },
+      icon: { glyph: "Book" },
+    });
+    expect(recorded).not.toBe(declared);
+    expect(recorded?.label).not.toBe(declared.label);
+  });
+
+  it.each([
+    [
+      "experimental_presentation",
+      'registerTool: "experimental_presentation" was renamed to "presentation" in SDK 0.4.16 (tool "stale_tool")',
+    ],
+    [
+      "experimental_statusLabels",
+      'registerTool: "experimental_statusLabels" was folded into "presentation" (labels) in SDK 0.4.16 (tool "stale_tool")',
+    ],
+    [
+      "experimental_rowStyle",
+      'registerTool: tool "stale_tool" contains unknown field: experimental_rowStyle',
+    ],
+  ])(
+    "rejects a registration built against SDK <0.4.16 that carries %s with the production host's message",
+    (field, message) => {
+      const { bb, harness } = createFakePluginHost();
+      expect(() =>
+        bb.agents.registerTool({
+          name: "stale_tool",
+          description: "Built against an SDK before 0.4.16",
+          [field]: { pending: "Working", completed: "Worked" },
+          parameters: { type: "object" },
+          execute: () => "ok",
+        }),
+      ).toThrow(message);
+      expect(harness.registrations.agentTools).toEqual([]);
+    },
+  );
+
+  it("rejects recursive schemas at registration and configuration", async () => {
+    const { bb, harness } = createFakePluginHost();
+
+    expect(() =>
+      bb.agents.registerTool({
+        name: "recursive_zod",
+        description: "Recursive zod schema",
+        parameters: z.object({ value: z.json() }),
+        execute: () => "unused",
+      }),
+    ).toThrow(/recursive JSON Schema \$ref/);
+
+    bb.agents.registerTool({
+      name: "acyclic_ref",
+      description: "Acyclic local reference",
+      parameters: {
+        type: "object",
+        properties: { label: { $ref: "#/$defs/label" } },
+        $defs: { label: { type: "string" } },
+      },
+      execute: () => "ok",
+    });
+    bb.agents.configure(() => ({
+      tools: [
+        {
+          name: "acyclic_ref",
+          parameters: {
+            type: "object",
+            properties: { nested: { $ref: "#" } },
+          },
+        },
+      ],
+      skills: [],
+    }));
+
+    await expect(
+      harness.resolveAgentConfiguration(configurationContext),
+    ).resolves.toEqual({ tools: [], skills: [], instructions: null });
+    expect(harness.logEntries.at(-1)?.message).toContain(
+      "recursive JSON Schema $ref",
+    );
   });
 
   it("rejects duplicate keyed registrations like the production host", () => {
@@ -688,7 +1019,11 @@ describe("agent tools", () => {
       ...configurationContext,
       thread: { ...configurationContext.thread, id: "thread-beta" },
       host: { id: "host-beta", name: "Beta host" },
-      provider: { id: "claude-code", model: "claude-opus" },
+      provider: {
+        id: "claude-code",
+        model: "claude-opus",
+        capabilities: { supportsNativeUserQuestion: false },
+      },
     };
     const beta = await harness.resolveAgentConfiguration(betaContext);
 
@@ -838,5 +1173,248 @@ describe("realtime and status", () => {
       "needs configuration",
       "set a token",
     ]);
+  });
+});
+
+describe("providers.register", () => {
+  function agentDeclaration(
+    overrides: Record<string, unknown> = {},
+  ): Parameters<BbPluginApi["providers"]["register"]>[0] {
+    return {
+      id: "my-agent",
+      displayName: "My Agent",
+      icon: "./icons/agent.svg",
+      maintenance: { health: true, usage: false, installation: false },
+      capabilities: {
+        supportsServiceTier: false,
+        supportsNativeUserQuestion: true,
+        fork: "tip",
+        supportsManualCompaction: true,
+        supportsThreadArchive: false,
+        supportsThreadRename: false,
+        permissionModes: ["accept-edits", "full"],
+        reasoningLevels: ["low", "medium", "high"],
+      },
+      composerActions: ["plan"],
+      ...overrides,
+    } as Parameters<BbPluginApi["providers"]["register"]>[0];
+  }
+
+  it("rejects malformed declarations with the shared host policy", () => {
+    const { bb } = createFakePluginHost();
+    const register = bb.providers.register;
+
+    expect(() => register(agentDeclaration({ id: "Bad_Id!" }))).toThrow(
+      /invalid provider id/,
+    );
+    expect(() => register(agentDeclaration({ id: "x" }))).toThrow(
+      /invalid provider id/,
+    );
+    expect(() => register(agentDeclaration({ displayName: "   " }))).toThrow(
+      /displayName must be 1-80 non-blank characters/,
+    );
+    expect(() =>
+      register(
+        agentDeclaration({
+          capabilities: {
+            ...agentDeclaration().capabilities,
+            permissionModes: [],
+          },
+        }),
+      ),
+    ).toThrow(/permissionModes must include at least one entry/);
+    expect(() =>
+      register(
+        agentDeclaration({
+          capabilities: {
+            ...agentDeclaration().capabilities,
+            reasoningLevels: ["low", "low"],
+          },
+        }),
+      ),
+    ).toThrow(/reasoningLevels entry "low" is duplicated/);
+    expect(() =>
+      register(
+        agentDeclaration({
+          capabilities: { ...agentDeclaration().capabilities, fork: true },
+        }),
+      ),
+    ).toThrow(/capabilities.fork must be one of none, tip, checkpoint/);
+    expect(() =>
+      register(
+        agentDeclaration({
+          maintenance: { usage: "yes" as unknown as boolean, installation: false },
+        }),
+      ),
+    ).toThrow(/maintenance.usage must be a boolean/);
+    expect(() =>
+      register(agentDeclaration({ icon: "./../outside.svg" })),
+    ).toThrow(/icon must not escape the plugin directory/);
+    // The `bb.branding.icon` grammar: "./" means a plugin file, anything else
+    // is a host glyph name. A path without the prefix is neither.
+    expect(() => register(agentDeclaration({ icon: "/abs/icon.svg" }))).toThrow(
+      /icon looks like a path but does not start with "\.\/"/,
+    );
+    expect(() =>
+      register(agentDeclaration({ composerActions: ["plan", "plan"] })),
+    ).toThrow(/composerActions entry "plan" is duplicated/);
+    expect(() =>
+      register(agentDeclaration({ experimental_visibility: "sometimes" })),
+    ).toThrow(/experimental_visibility must be "always" or "installed"/);
+    expect(() =>
+      register(
+        agentDeclaration({
+          experimental_visibility: "installed",
+          maintenance: { health: false },
+        }),
+      ),
+    ).toThrow(/"installed" requires maintenance.health/);
+    expect(() =>
+      register(
+        agentDeclaration({
+          experimental_bridgeOptions: { timeout: Number.POSITIVE_INFINITY },
+        }),
+      ),
+    ).toThrow(/experimental_bridgeOptions\.timeout must be finite JSON/);
+    // A bare glyph name is the other half of the grammar and is accepted; this
+    // one commits, so it goes last.
+    expect(() => register(agentDeclaration({ icon: "Zap" }))).not.toThrow();
+  });
+
+  it("refuses a provider icon naming an undeclared or foreign icon, like production", () => {
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "tooled",
+      experimental_declaredIconNames: ["stamp"],
+    });
+    expect(() =>
+      bb.providers.register(agentDeclaration({ icon: "tooled/seal" })),
+    ).toThrow(
+      'provider "my-agent" icon "tooled/seal" is not an icon declared by plugin "tooled"',
+    );
+    expect(() =>
+      bb.providers.register(agentDeclaration({ icon: "other-plugin/stamp" })),
+    ).toThrow(
+      'provider "my-agent" icon "other-plugin/stamp" is not an icon declared by plugin "tooled"',
+    );
+    expect(harness.registrations.providerRegistrations).toEqual([]);
+    bb.providers.register(agentDeclaration({ icon: "tooled/stamp" }));
+    expect(harness.registrations.providerRegistrations[0]?.icon).toBe(
+      "tooled/stamp",
+    );
+  });
+
+  it("refuses a plugin that declares no bb.host entry, like production", () => {
+    const { bb, harness } = createFakePluginHost({
+      experimental_hostEntry: false,
+    });
+    expect(() => bb.providers.register(agentDeclaration())).toThrow(
+      'provider "my-agent" has no bridge to run on: this plugin declares no "bb.host" entry in its manifest',
+    );
+    expect(harness.registrations.providerRegistrations).toEqual([]);
+  });
+
+  it("round-trips a registration through the harness and dispose", () => {
+    const { bb, harness } = createFakePluginHost();
+    const handle = bb.providers.register(
+      agentDeclaration({ displayName: "  My Agent  " }),
+    );
+
+    expect(harness.registrations.providerRegistrations).toHaveLength(1);
+    const registered = harness.registrations.providerRegistrations[0]!;
+    // Normalized frozen copy: trimmed display name, contract fields only.
+    expect(registered.displayName).toBe("My Agent");
+    expect(Object.isFrozen(registered)).toBe(true);
+    expect(Object.isFrozen(registered.capabilities)).toBe(true);
+    expect(registered.experimental_visibility).toBe("always");
+
+    // Live ids are collision-rejected until disposed.
+    expect(() => bb.providers.register(agentDeclaration())).toThrow(
+      /already registered/,
+    );
+
+    handle.dispose();
+    handle.dispose(); // idempotent
+    expect(harness.registrations.providerRegistrations).toEqual([]);
+
+    // A disposed id can be re-registered (settings-driven re-declaration).
+    bb.providers.register(
+      agentDeclaration({ displayName: "Second Declaration" }),
+    );
+    expect(
+      harness.registrations.providerRegistrations.map(
+        (declaration) => declaration.displayName,
+      ),
+    ).toEqual(["Second Declaration"]);
+  });
+
+  it("normalizes and deeply freezes opaque provider bridge options", () => {
+    const { bb, harness } = createFakePluginHost();
+    bb.providers.register(
+      agentDeclaration({
+        experimental_visibility: "installed",
+        experimental_bridgeOptions: {
+          launch: { command: "example-agent", args: ["serve"] },
+        },
+      }),
+    );
+
+    const registered = harness.registrations.providerRegistrations[0]!;
+    expect(registered.experimental_visibility).toBe("installed");
+    expect(registered.experimental_bridgeOptions).toEqual({
+      launch: { command: "example-agent", args: ["serve"] },
+    });
+    expect(Object.isFrozen(registered.experimental_bridgeOptions)).toBe(true);
+    expect(Object.isFrozen(registered.experimental_bridgeOptions?.launch)).toBe(
+      true,
+    );
+  });
+
+  it("defaults maintenance support a plugin does not declare to false", () => {
+    const { bb, harness } = createFakePluginHost();
+    const declaration = agentDeclaration();
+    Reflect.deleteProperty(declaration, "maintenance");
+
+    bb.providers.register(declaration);
+
+    expect(
+      harness.registrations.providerRegistrations[0]?.maintenance,
+    ).toEqual({ health: false, usage: false, installation: false });
+  });
+
+  it("clears registrations on dispose", async () => {
+    const { bb, harness } = createFakePluginHost();
+    bb.providers.register(
+      agentDeclaration({ id: "my-second-agent" }),
+    );
+    expect(
+      harness.registrations.providerRegistrations.map((entry) => entry.id),
+    ).toEqual(["my-second-agent"]);
+
+    await harness.dispose();
+    expect(harness.registrations.providerRegistrations).toEqual([]);
+    expect(() =>
+      bb.providers.register(agentDeclaration()),
+    ).toThrow("used a stale API handle");
+  });
+});
+
+describe("experimental_aiServices.register", () => {
+  const declaration = { id: "acme-ai", displayName: "Acme AI", kinds: ["inference" as const] };
+
+  it("refuses the ids the server serves directly, like production", () => {
+    const { bb } = createFakePluginHost();
+    for (const id of ["openai", "anthropic"]) {
+      expect(() => bb.experimental_aiServices.register({ ...declaration, id })).toThrow(
+        /is reserved: the server serves it directly/u,
+      );
+    }
+    expect(() => bb.experimental_aiServices.register(declaration)).not.toThrow();
+  });
+
+  it("refuses a plugin that declares no bb.host entry, like production", () => {
+    const { bb } = createFakePluginHost({ experimental_hostEntry: false });
+    expect(() => bb.experimental_aiServices.register(declaration)).toThrow(
+      /needs a bb\.host entry to run on: this plugin declares none/u,
+    );
   });
 });

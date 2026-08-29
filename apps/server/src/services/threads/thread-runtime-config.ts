@@ -33,7 +33,7 @@ import {
   getPluginSkillRootContributions,
   resolvePluginAgentConfiguration,
 } from "../plugins/plugin-agent-contributions.js";
-import { resolveSkillCatalogSources } from "../skills/skill-catalog.js";
+import { resolveSkillCatalog } from "../skills/skill-catalog.js";
 import { discoverPluginSkillIds } from "../skills/injected-skills.js";
 import { resolveWorkspaceProjectSkills } from "../skills/workspace-skills.js";
 import { resolveSharedSkills } from "../skills/shared-skills.js";
@@ -44,7 +44,6 @@ import {
   readDataDirAgentInstructions,
   readWorkspaceAgentInstructions,
 } from "./workspace-agent-instructions.js";
-export { getSupportedReasoningLevelsForProvider } from "./thread-reasoning-policy.js";
 
 const STANDARD_AGENT_INSTRUCTIONS = renderTemplate(
   "standardAgentAppendInstructions",
@@ -64,25 +63,24 @@ export interface ThreadRuntimeCommandEnvironment {
   workspaceProvisionType: WorkspaceProvisionType;
 }
 
-export interface ResolveExecutionOptionsArgs {
+interface ResolveExecutionOptionsArgs {
   projectDefaults?: ProjectExecutionDefaults | null;
   requestedExecution: RequestedExecutionOptions;
   threadId: string;
 }
 
-export interface RequestedExecutionOptions extends ThreadExecutionOptions {
+interface RequestedExecutionOptions extends ThreadExecutionOptions {
   source: ThreadExecutionSource;
 }
 
-export interface ResolveThreadRuntimeCommandConfigArgs {
+interface ResolveThreadRuntimeCommandConfigArgs {
   environment: ThreadRuntimeCommandEnvironment;
   model: string;
   thread: Thread;
 }
 
-export interface ResolvePermissionEscalationArgs {
+interface ResolvePermissionEscalationArgs {
   initiator: ThreadTurnInitiator;
-  thread: Thread;
 }
 
 export interface ResolvedThreadRuntimeCommandConfig {
@@ -152,7 +150,7 @@ export function resolvePermissionEscalation(
 }
 
 export async function resolveExecutionOptions(
-  deps: Pick<AppDeps, "db">,
+  deps: Pick<AppDeps, "db" | "providerRegistry">,
   args: ResolveExecutionOptionsArgs,
 ): Promise<ResolvedThreadExecutionOptions> {
   const plan = await resolveExistingThreadExecutionPlan(deps, {
@@ -229,7 +227,18 @@ export async function resolveThreadRuntimeCommandConfig(
         branchName: environment.branchName,
       },
       host: { id: host.id, name: host.name },
-      provider: { id: args.thread.providerId, model: args.model },
+      provider: {
+        id: args.thread.providerId,
+        model: args.model,
+        capabilities: {
+          // Absent registration (a provider whose plugin is disabled
+          // mid-thread) reads as "no native affordance", which is the safe
+          // answer: the plugin contributes its own.
+          supportsNativeUserQuestion:
+            deps.providerRegistry.get(args.thread.providerId)?.info.capabilities
+              .supportsNativeUserQuestion ?? false,
+        },
+      },
       origin: {
         kind: args.thread.originKind,
         pluginId: args.thread.originPluginId,
@@ -237,11 +246,11 @@ export async function resolveThreadRuntimeCommandConfig(
     },
     skillIdsByPlugin,
   });
-  const injectedSkillSources = resolveSkillCatalogSources(deps, {
+  const injectedSkillSources = resolveSkillCatalog(deps, {
     projectSkillSources,
     sharedSkillSources: sharedSkills.runtimeSources,
     pluginSkillSelections: conditionalConfiguration.selectedSkillIdsByPlugin,
-  });
+  }).map((entry) => entry.runtimeSource);
   const dataDirAgentInstructions = readDataDirAgentInstructions(
     deps.logger,
     deps.config.dataDir,

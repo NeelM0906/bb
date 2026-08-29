@@ -4,7 +4,8 @@ import type {
   ThreadSearchResponse,
   ThreadTimelineResponse,
 } from "@bb/server-contract";
-import { describe, expect, it } from "vitest";
+import { QueryObserver } from "@tanstack/react-query";
+import { describe, expect, it, vi } from "vitest";
 import { createAppQueryClient } from "@/lib/query-client";
 import {
   sidebarNavigationQueryKey,
@@ -19,6 +20,7 @@ import { threadDefaultExecutionOptionsQueryKey } from "../queries/thread-default
 import {
   applyQueuedMessageCreateResult,
   applyQueuedMessageUpdateResult,
+  applySendThreadMessageSuccess,
   applyThreadGoalClearResult,
   applyThreadPlanCancellationResult,
   beginCreateQueuedMessageTransaction,
@@ -927,5 +929,201 @@ describe("thread runtime cache owner", () => {
         threadTimelineQueryKey("thread-1"),
       )?.rows,
     ).toEqual([]);
+  });
+  it("keeps a held message visible and the thread idle when the server defers the send", async () => {
+    const queryClient = createAppQueryClient({
+      defaultOptions: { queries: { gcTime: Infinity, retry: false } },
+      showMutationErrorToasts: false,
+    });
+    const idleThread = {
+      id: "thread-1",
+      status: "idle",
+      updatedAt: 1,
+      runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null },
+    };
+    queryClient.setQueryData(threadQueryKey("thread-1"), idleThread);
+    queryClient.setQueryData(
+      threadTimelineQueryKey("thread-1"),
+      makeTimelineResponse(),
+    );
+    const request = {
+      id: "thread-1",
+      mode: "steer-if-active" as const,
+      input: [{ type: "text" as const, text: "worker report", mentions: [] }],
+    };
+    const transaction = await beginSendThreadMessageTransaction({
+      queryClient,
+      request,
+    });
+    expect(transaction.kind).toBe("accepted-turn");
+
+    // The thread awaits a user interaction, so the server holds the message
+    // (#1650): nothing runs, but the message was accepted and must not vanish.
+    // Realtime is down, the case where an accepted send refetches the timeline
+    // and would drop the optimistic row for a turn the server never started.
+    applySendThreadMessageSuccess({
+      delivery: "deferred",
+      queryClient,
+      realtimeConnected: false,
+      request,
+      transaction,
+    });
+    await Promise.resolve();
+
+    const timeline = queryClient.getQueryData<ThreadTimelineResponse>(
+      threadTimelineQueryKey("thread-1"),
+    );
+    expect(timeline?.rows).toHaveLength(1);
+    expect(
+      queryClient.getQueryState(threadTimelineQueryKey("thread-1"))
+        ?.isInvalidated,
+    ).toBe(false);
+    // No turn started, so the working indicator must not mount.
+    expect(queryClient.getQueryData(threadQueryKey("thread-1"))).toMatchObject({
+      status: "idle",
+      runtime: { displayStatus: "idle" },
+    });
+    expect(
+      queryClient.getQueryData(threadPromptHistoryQueryKey("thread-1")),
+    ).toMatchObject([{ input: request.input }]);
+  });
+
+  it("keeps an accepted send local while realtime is connected: prompt history is prepended, not refetched, and default execution options only go stale", async () => {
+    const queryClient = createAppQueryClient({
+      defaultOptions: { queries: { gcTime: Infinity, retry: false } },
+      showMutationErrorToasts: false,
+    });
+    queryClient.setQueryData(threadQueryKey("thread-1"), {
+      id: "thread-1",
+      status: "idle",
+      runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null },
+    });
+    const promptHistoryQueryFn = vi.fn(async () => []);
+    const defaultExecutionOptionsQueryFn = vi.fn(async () => null);
+    const promptHistoryObserver = new QueryObserver(queryClient, {
+      queryKey: threadPromptHistoryQueryKey("thread-1"),
+      queryFn: promptHistoryQueryFn,
+      staleTime: Infinity,
+    });
+    const defaultExecutionOptionsObserver = new QueryObserver(queryClient, {
+      queryKey: threadDefaultExecutionOptionsQueryKey("thread-1"),
+      queryFn: defaultExecutionOptionsQueryFn,
+      staleTime: Infinity,
+    });
+    const unsubscribers = [
+      promptHistoryObserver.subscribe(() => {}),
+      defaultExecutionOptionsObserver.subscribe(() => {}),
+    ];
+    await vi.waitFor(() => {
+      expect(promptHistoryQueryFn).toHaveBeenCalledTimes(1);
+      expect(defaultExecutionOptionsQueryFn).toHaveBeenCalledTimes(1);
+    });
+    const request = {
+      id: "thread-1",
+      mode: "auto" as const,
+      input: [{ type: "text" as const, text: "Accepted prompt", mentions: [] }],
+    };
+    const transaction = await beginSendThreadMessageTransaction({
+      queryClient,
+      request,
+    });
+    expect(transaction.kind).toBe("accepted-turn");
+
+    applySendThreadMessageSuccess({
+      delivery: "sent",
+      queryClient,
+      realtimeConnected: true,
+      request,
+      transaction,
+    });
+    await Promise.resolve();
+
+    expect(
+      queryClient.getQueryData(threadPromptHistoryQueryKey("thread-1")),
+    ).toMatchObject([{ input: request.input }]);
+    expect(promptHistoryQueryFn).toHaveBeenCalledTimes(1);
+    expect(
+      queryClient.getQueryState(threadPromptHistoryQueryKey("thread-1"))
+        ?.isInvalidated,
+    ).toBe(false);
+    expect(
+      queryClient.getQueryState(
+        threadDefaultExecutionOptionsQueryKey("thread-1"),
+      )?.isInvalidated,
+    ).toBe(true);
+    expect(defaultExecutionOptionsQueryFn).toHaveBeenCalledTimes(1);
+
+    for (const unsubscribe of unsubscribers) {
+      unsubscribe();
+    }
+  });
+
+  it("refetches only the queue list for a queued send while realtime is connected", async () => {
+    const queryClient = createAppQueryClient({
+      defaultOptions: { queries: { gcTime: Infinity, retry: false } },
+      showMutationErrorToasts: false,
+    });
+    queryClient.setQueryData(threadQueryKey("thread-1"), { status: "active" });
+    const queuedMessagesQueryFn = vi.fn(async () => []);
+    const promptHistoryQueryFn = vi.fn(async () => []);
+    const threadQueryFn = vi.fn(async () => ({ status: "active" }));
+    const observers = [
+      new QueryObserver(queryClient, {
+        queryKey: threadQueuedMessagesQueryKey("thread-1"),
+        queryFn: queuedMessagesQueryFn,
+        staleTime: Infinity,
+      }),
+      new QueryObserver(queryClient, {
+        queryKey: threadPromptHistoryQueryKey("thread-1"),
+        queryFn: promptHistoryQueryFn,
+        staleTime: Infinity,
+      }),
+      new QueryObserver(queryClient, {
+        queryKey: threadQueryKey("thread-1"),
+        queryFn: threadQueryFn,
+        staleTime: Infinity,
+      }),
+    ];
+    const unsubscribers = observers.map((observer) =>
+      observer.subscribe(() => {}),
+    );
+    await vi.waitFor(() => {
+      expect(queuedMessagesQueryFn).toHaveBeenCalledTimes(1);
+      expect(promptHistoryQueryFn).toHaveBeenCalledTimes(1);
+    });
+    const request = {
+      id: "thread-1",
+      mode: "queue-if-active" as const,
+      input: [{ type: "text" as const, text: "Queued prompt", mentions: [] }],
+    };
+    const transaction = await beginSendThreadMessageTransaction({
+      queryClient,
+      request,
+    });
+    expect(transaction.kind).toBe("queued-message");
+
+    applySendThreadMessageSuccess({
+      delivery: "sent",
+      queryClient,
+      realtimeConnected: true,
+      request,
+      transaction,
+    });
+    await vi.waitFor(() => {
+      expect(queuedMessagesQueryFn).toHaveBeenCalledTimes(2);
+    });
+
+    expect(
+      queryClient.getQueryData(threadPromptHistoryQueryKey("thread-1")),
+    ).toMatchObject([{ input: request.input }]);
+    expect(promptHistoryQueryFn).toHaveBeenCalledTimes(1);
+    expect(threadQueryFn).not.toHaveBeenCalled();
+    expect(
+      queryClient.getQueryState(threadQueryKey("thread-1"))?.isInvalidated,
+    ).toBe(false);
+
+    for (const unsubscribe of unsubscribers) {
+      unsubscribe();
+    }
   });
 });

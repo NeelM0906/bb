@@ -16,10 +16,7 @@ export {
 } from "./projects.js";
 export type {
   CreateProjectInput,
-  CreateProjectLocalPathSourceInput,
   ProjectRow,
-  MarkProjectDeletedArgs,
-  ReorderProjectArgs,
   ReorderProjectResult,
   UpdateProjectInput,
 } from "./projects.js";
@@ -28,30 +25,16 @@ export {
   createThreadSection,
   deleteThreadSection,
   getThreadSectionById,
-  getThreadSectionByName,
   listThreadSections,
   normalizeThreadSectionName,
   renameThreadSection,
 } from "./thread-sections.js";
-export type {
-  CreateThreadSectionResult,
-  CreateThreadSectionInput,
-  DeleteThreadSectionInput,
-  RenameThreadSectionResult,
-  RenameThreadSectionInput,
-  ThreadSectionMutationResult,
-  ThreadSectionRow,
-} from "./thread-sections.js";
-
 export {
   createPromptHistoryEntry,
   listStoredProjectPromptHistoryRows,
   listStoredThreadPromptHistoryRows,
 } from "./prompt-history.js";
 export type {
-  CreatePromptHistoryEntryInput,
-  ListStoredProjectPromptHistoryArgs,
-  ListStoredThreadPromptHistoryArgs,
   StoredPromptHistoryEntryRow,
 } from "./prompt-history.js";
 
@@ -60,29 +43,15 @@ export {
   listProjectExecutionDefaultsByProjectIds,
   upsertProjectExecutionDefaults,
 } from "./project-execution-defaults.js";
-export type {
-  GetProjectExecutionDefaultsArgs,
-  ListProjectExecutionDefaultsByProjectIdsArgs,
-  UpsertProjectExecutionDefaultsArgs,
-} from "./project-execution-defaults.js";
-
 export {
   createProjectSource,
   countProjectSources,
   getProjectSourceForProject,
-  listProjectSources,
   listProjectSourcesByProjectIds,
   getProjectSourceByHost,
-  getDefaultProjectSource,
-  toProjectSource,
   updateProjectSource,
   deleteProjectSource,
 } from "./project-sources.js";
-export type {
-  CreateProjectSourceInput,
-  UpdateProjectSourceInput,
-} from "./project-sources.js";
-
 export {
   createThread,
   countLiveThreadsInEnvironment,
@@ -92,11 +61,10 @@ export {
   hasActiveThreadAttention,
   setThreadExecutionOverride,
   hasLiveThreadAtHostPath,
-  hasNonTerminalThreadInEnvironment,
   hasPendingThreadShutdownInEnvironment,
   hasRevivableArchivedThreadInEnvironment,
   listHostThreadIds,
-  listActiveVisiblePinnedThreadRoots,
+  listActiveHostThreads,
   listActiveVisiblePinnedThreadRootsWithPendingInteractionState,
   listLiveThreadsInEnvironment,
   listThreadMentionRowsByIds,
@@ -113,55 +81,25 @@ export {
   deleteThread,
   archiveThread,
   markThreadDeleted,
-  markThreadAttentionRequested,
   unpinThread,
   unarchiveThread,
   applyThreadLifecycleEvent,
   applyThreadLifecycleEventInTransaction,
   requireThreadLifecycleEventApplied,
   searchThreadsWithPendingInteractionState,
-  upsertThreadSearchSegments,
-  upsertThreadTitleSearchSegments,
-  ThreadLifecycleEventNotAppliedError,
   THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT,
   THREAD_SEARCH_LIMIT_PER_GROUP_MAX,
 } from "./threads.js";
 export type {
   ApplyThreadLifecycleEventArgs,
-  ApplyThreadLifecycleEventNoopReason,
   ApplyThreadLifecycleEventOutcome,
-  CountLiveThreadsInEnvironmentArgs,
-  CountNonDeletedAssignedChildThreadsArgs,
-  CreateThreadInput,
-  HasLiveThreadAtHostPathArgs,
-  HasNonTerminalThreadInEnvironmentArgs,
-  ListNonDeletedChildThreadsArgs,
-  ListUnarchivedAssignedChildThreadsArgs,
-  ListUnarchivedHiddenSourceThreadsArgs,
-  ListThreadsOptions,
-  ListThreadEnvironmentAssignmentsOnHostArgs,
-  ListLiveThreadsInEnvironmentArgs,
-  ListThreadsForProjectsOptions,
-  MarkThreadDeletedArgs,
-  MarkThreadAttentionRequestedArgs,
-  PinThreadArgs,
-  ReorderPinnedThreadArgs,
   ReorderPinnedThreadResult,
-  ThreadEnvironmentAssignmentRow,
-  ThreadMentionRow,
   ThreadSearchHighlightRange,
   ThreadSearchMatch,
   ThreadSearchResult,
   ThreadSearchResultGroup,
-  ThreadSearchResults,
   ThreadWithPendingInteractionState,
   ThreadExecutionOverride,
-  SearchThreadsWithPendingInteractionStateArgs,
-  SetThreadExecutionOverrideInput,
-  UnpinThreadArgs,
-  UpsertThreadSearchSegmentInput,
-  UpsertThreadSearchSegmentsArgs,
-  UpsertThreadTitleSearchSegmentsArgs,
   UpdateThreadInput,
 } from "./threads.js";
 
@@ -172,34 +110,30 @@ export {
   setAppSettings,
 } from "./app-settings.js";
 export { getStoredThreadTabs, replaceStoredThreadTabs } from "./thread-tabs.js";
-export type {
-  ReplaceThreadTabsResult,
-  StoredThreadTabs,
-} from "./thread-tabs.js";
 export { getExperiments, setExperiments } from "./experiments.js";
 export {
   deleteInstalledPlugin,
   getInstalledPlugin,
   getInstalledPluginRegistration,
   listInstalledPlugins,
+  listInstalledPluginsFromMarketplace,
   listUnnormalizedPluginRegistrations,
   markInstalledPluginRemoved,
   normalizeInstalledPluginRegistration,
-  setInstalledPluginActiveArtifact,
+  setInstalledPluginDirectProvenance,
   setInstalledPluginEnabled,
   setInstalledPluginUpdateState,
   setInstalledPluginSourceClassification,
   setInstalledPluginLastFailure,
   upsertInstalledPlugin,
   type InstalledPluginRow,
-  type LegacyInstalledPluginRegistration,
   type LegacyPluginExactResolution,
   type NormalizeLegacyInstalledPluginInput,
   type PluginExactResolution,
+  type PluginGitSelector,
   type PluginProvenance,
   type PluginSourceIntent,
   type PluginUpdateState,
-  type UpsertInstalledPluginInput,
 } from "./plugins.js";
 export {
   createPluginArtifact,
@@ -207,11 +141,29 @@ export {
   getPluginArtifactByResolution,
   getPluginArtifact,
   listPluginArtifacts,
+  listPluginArtifactsAtOrUnderPath,
+  listPluginArtifactsInGitCheckout,
+  listPluginArtifactsUnderPath,
+  listPendingGitPluginArtifacts,
   listRecentPluginArtifacts,
+  setPluginArtifactGitCheckoutRoot,
   setPluginArtifactValidation,
-  type CreatePluginArtifactInput,
   type PluginArtifactRow,
 } from "./plugin-artifacts.js";
+export {
+  deletePluginMarketplace,
+  getPluginMarketplace,
+  getPluginMarketplaceIcon,
+  listPluginMarketplaceIcons,
+  listPluginMarketplaces,
+  replacePluginMarketplaceIcons,
+  recordPluginMarketplaceRefreshFailure,
+  upsertPluginMarketplace,
+  type PluginMarketplaceIconRow,
+  type PluginMarketplaceRow,
+  type PluginMarketplaceSourceKind,
+  type UpsertPluginMarketplaceIconInput,
+} from "./plugin-marketplaces.js";
 export {
   deleteAllPluginSettings,
   deletePluginKvValue,
@@ -222,8 +174,6 @@ export {
   setPluginSettingsValues,
   listPluginKvRows,
   listPluginSettingRows,
-  type PluginKvRow,
-  type PluginSettingRow,
 } from "./plugin-storage.js";
 export {
   claimPluginScheduledRun,
@@ -233,7 +183,6 @@ export {
   prunePluginSchedules,
   recordPluginScheduleResult,
   upsertPluginSchedule,
-  type PluginScheduleRow,
 } from "./plugin-schedules.js";
 export {
   createPluginStateSnapshot,
@@ -256,25 +205,15 @@ export {
 } from "./app-theme.js";
 
 export {
-  getThreadDynamicContextFileState,
-  upsertThreadDynamicContextFileState,
-  upsertThreadDynamicContextFileStateInTransaction,
-} from "./thread-dynamic-context-file-states.js";
-export type {
-  ThreadDynamicContextFileStateKey,
-  UpsertThreadDynamicContextFileStateInput,
-} from "./thread-dynamic-context-file-states.js";
-
-export {
   createEnvironment,
   clearEnvironmentPathCanonicalizationsForHost,
   getEnvironment,
   getEnvironmentCanonicalPath,
   findProjectEnvironmentByHostPath,
   listEnvironments,
+  listEnvironmentsByIds,
   listUncanonicalizedLiveUnmanagedEnvironmentsOnHost,
   findForeignManagedEnvironmentAtHostPath,
-  listEnvironmentsByIds,
   listRetiredLoadedEnvironmentIdsOnHost,
   recordEnvironmentCanonicalPath,
   recordObservedEnvironmentWorkspaceMetadata,
@@ -282,8 +221,6 @@ export {
 } from "./environments.js";
 export type {
   CreateEnvironmentInput,
-  ListRetiredLoadedEnvironmentIdsOnHostArgs,
-  UpdateEnvironmentMetadataInput,
 } from "./environments.js";
 
 export {
@@ -291,38 +228,32 @@ export {
   getHost,
   getNonDestroyedHost,
   listHosts,
-  listHostsByIds,
   listNonDestroyedHostsByIds,
   listPublicHosts,
-  markHostSeen,
   updateHost,
   deleteHost,
-  deleteHostRecord,
 } from "./hosts.js";
-export type { UpsertHostInput, UpdateHostInput } from "./hosts.js";
 
 export {
   appendDaemonEventsInTransaction,
   appendStoredThreadEvent,
-  appendStoredThreadEventInTransaction,
+  copyStoredThreadEventsInTransaction,
+  findLastCompletedRootStoredTurn,
+  findLastRootStoredTurnStarted,
   appendStoredThreadEventsInTransaction,
   deleteThreadEventSuffixInTransaction,
   getHighWaterMarks,
-  findStoredClientTurnRequestSequenceByRequestId,
   findStoredEventRow,
   getActiveStoredTurnId,
   hasRootStoredTurnStarted,
   hasStoredTurnStarted,
   getLastStoredProviderThreadId,
-  getRootStoredTurnStartedSequence,
-  getStoredProviderThreadIdAtOrBeforeSequence,
   getLastStoredTurnRequestEvent,
   getStoredTurnRequestEventForTurn,
   getLatestThreadOutputEventRow,
+  getLatestStoredConversationOutlineSequence,
   getLatestThreadSystemErrorEventRow,
   getLatestThreadSequence,
-  getLatestStoredEventRowByType,
-  cloneThreadEventsInTransaction,
   insertEvents,
   listActiveBackgroundTaskCountsByThreadIds,
   listContextWindowUsageRows,
@@ -331,7 +262,6 @@ export {
   listRecentStoredEventRows,
   listStoredConversationOutlineEventRows,
   listTimelineSegmentAnchorsDescending,
-  findTimelineSegmentAnchorSequenceAfter,
   findTimelineWindowBudgetFloorSequence,
   findStoredTimelineWindowByteBudgetFloor,
   getStoredEventRowsByParentToolCallIdsDataBytes,
@@ -341,9 +271,7 @@ export {
   listStoredClientTurnRequestIdsInRange,
   listStoredClientTurnRequestRowsByKeys,
   listStoredEventRowsByParentToolCallIds,
-  listStoredEventRowsByThreadIdsAndTypes,
   listStoredEventRows,
-  listStoredEventRowsInRange,
   isTimelineCursorSequencePresent,
   listItemEventSpansByItems,
   listStoredBufferedTextDeltaRowsByItems,
@@ -351,20 +279,20 @@ export {
   scopedItemRefKey,
   listStoredThreadProvisioningRowsByProvisioningId,
   listStoredTimelineWindowEventRows,
-  listStoredToolCallRowsByItemIds,
+  listStoredDelegatingItemRowsByItemIds,
   listStoredTurnInputAcceptedRowsByClientRequestIds,
   listStoredTurnRejectedRowsByClientRequestIds,
   listStoredTurnCompletedRowsByTurnIds,
   listStoredTurnStartedKeys,
   listStoredTurnStartedRowsByTurnIdsUpToSequence,
   getLatestThreadInterruptedReason,
-  getStoredTimelineWindowEventDataBytes,
-  listLatestGoalEventRowsByThreadIds,
+  listLatestThreadStateEventRowsByThreadIds,
   listLatestBackgroundTaskStateRowsByItemIds,
   listLatestOpenBackgroundTaskStateRowsForThread,
   listTodoSnapshotEventRowsForThread,
   listOpenTurnInputAcceptedRowsByThreadIds,
   listOpenBackgroundTaskItemRowsForHost,
+  listOpenBackgroundTaskItemRowsForThread,
   listThreadIdsWithLatestHostDaemonRestartInterruption,
   listThreadTurnInterruptionEventStates,
   MissingStoredTurnStartedError,
@@ -376,55 +304,15 @@ export {
 } from "./events.js";
 export type {
   AcceptedDaemonEvent,
-  ActiveBackgroundTaskCountRow,
   AppendDaemonEventInput,
   AppendDaemonEventsResult,
   AppendStoredThreadEventArgs,
-  CompletedStoredTurnRow,
-  CloneThreadEventsArgs,
-  CloneThreadEventsResult,
-  DeleteThreadEventSuffixArgs,
-  DeleteThreadEventSuffixResult,
-  FindStoredClientTurnRequestSequenceByRequestIdArgs,
-  GetStoredTurnRequestEventForTurnArgs,
-  GetRootStoredTurnStartedSequenceArgs,
-  GetLatestThreadInterruptedReasonArgs,
-  GetLatestThreadSequenceArgs,
-  HasStoredTurnStartedArgs,
-  InsertEventInput,
-  InsertEventsResult,
-  ListActiveBackgroundTaskCountsByThreadIdsArgs,
-  ListEventsOptions,
-  ListLatestGoalEventRowsByThreadIdsArgs,
-  ListLatestOpenBackgroundTaskStateRowsForThreadArgs,
-  ListTimelineSegmentAnchorsDescendingArgs,
-  TimelineSegmentAnchorLookupArgs,
-  ListOpenTurnInputAcceptedRowsByThreadIdsArgs,
-  ListStoredClientTurnRequestRowsByKeysArgs,
-  ListStoredClientTurnRequestIdsInRangeArgs,
-  ListStoredEventRowsByThreadIdsAndTypesArgs,
-  ListStoredThreadProvisioningRowsByProvisioningIdArgs,
-  ListStoredTimelineWindowEventRowsArgs,
-  ListStoredTurnStartedKeysArgs,
-  ListThreadIdsWithLatestHostDaemonRestartInterruptionArgs,
-  ListThreadTurnInterruptionEventStatesArgs,
-  ListStoredTurnStartedRowsByTurnIdsUpToSequenceArgs,
-  MissingStoredTurnStartedDetails,
-  PruneContextWindowUsageEventsBeforeSequenceArgs,
-  ListOpenBackgroundTaskItemRowsForHostArgs,
   OpenBackgroundTaskItemRow,
-  PruneBackgroundTaskProgressEventsArgs,
-  PruneTokenUsageEventsBeforeSequenceArgs,
-  PruneResolvedItemDeltasArgs,
-  PruneThreadEventsBeforeSequenceArgs,
   InlineOutputCharLimit,
-  ItemEventSpanRow,
   ScopedItemRef,
   StoredEventRow,
   StandardTimelineSegmentAnchorRow,
   ThreadClientTurnRequestKey,
-  ThreadTurnKey,
-  ThreadTurnInterruptionEventState,
   StoredTurnRequestEventRow,
 } from "./events.js";
 
@@ -436,14 +324,8 @@ export {
   updateTerminalSessions,
 } from "./terminal-sessions.js";
 export type {
-  CreateTerminalSessionInput,
-  ListTerminalSessionsArgs,
   TerminalSessionMutation,
   TerminalSessionRow,
-  TerminalSessionScope,
-  TerminalSessionSingleScope,
-  UpdateTerminalSessionArgs,
-  UpdateTerminalSessionsArgs,
 } from "./terminal-sessions.js";
 
 export {
@@ -454,7 +336,6 @@ export {
   interruptPendingInteractionsForThreadIds,
   interruptPendingInteractionsForThreads,
   interruptPendingInteractionsForPlugin,
-  listActivePendingInteractionsForPlugin,
   listActivePluginPendingInteractions,
   listPendingInteractionsByThread,
   setPendingInteractionInterrupted,
@@ -462,14 +343,7 @@ export {
   setPendingInteractionResolved,
 } from "./pending-interactions.js";
 export type {
-  CreatePendingInteractionInput,
-  InterruptPendingInteractionsForThreadIdsArgs,
-  InterruptPendingInteractionsForThreadsArgs,
-  InterruptPendingInteractionsForPluginArgs,
-  ListPendingInteractionsArgs,
-  PendingInteractionProviderRequestIdentity,
   PendingInteractionRow,
-  SetPendingInteractionResolvingArgs,
 } from "./pending-interactions.js";
 
 export {
@@ -481,21 +355,16 @@ export {
   listLatestSessionsForHosts,
 } from "./sessions.js";
 export type {
-  GetLatestSessionForHostArgs,
   HostDaemonSessionRow,
-  ListLatestSessionsForHostsArgs,
-  OpenSessionInput,
 } from "./sessions.js";
 
 export {
   claimQueuedThreadMessage,
   claimQueuedThreadMessageGroup,
-  claimNextQueuedThreadMessage,
   claimNextQueuedThreadMessageGroup,
   createQueuedThreadMessage,
+  createQueuedThreadMessageInTransaction,
   deleteClaimedQueuedThreadMessageBatchInTransaction,
-  deleteClaimedQueuedThreadMessage,
-  deleteClaimedQueuedThreadMessageInTransaction,
   deleteQueuedThreadMessage,
   getQueuedThreadMessage,
   hasQueuedThreadMessages,
@@ -507,7 +376,18 @@ export {
   setQueuedThreadMessageGroupBoundary,
   updateQueuedThreadMessage,
 } from "./queued-thread-messages.js";
-
+export {
+  createDeferredThreadMessage,
+  deleteDeferredThreadMessage,
+  deleteDeferredThreadMessagesForThread,
+  listDeferredThreadMessages,
+  listThreadIdsWithDeliverableDeferredThreadMessages,
+  listThreadIdsWithUndeliverableDeferredThreadMessages,
+} from "./deferred-thread-messages.js";
+export type {
+  CreateDeferredThreadMessageInput,
+  DeferredThreadMessageRow,
+} from "./deferred-thread-messages.js";
 export {
   createWorkAdmission,
   getCurrentThreadWorkAdmission,
@@ -533,22 +413,9 @@ export type {
   WorkAdmissionRow,
 } from "./work-admissions.js";
 export type {
-  ClaimedQueuedThreadMessageRow,
-  ClaimedQueuedThreadMessageMutationArgs,
-  CreateQueuedThreadMessageInput,
-  DeleteClaimedQueuedThreadMessageArgs,
-  DeleteClaimedQueuedThreadMessageBatchInTransactionArgs,
-  DeleteClaimedQueuedThreadMessageInTransactionArgs,
   QueuedThreadMessageRow,
-  QueuedMessageThreadRow,
-  ReleaseQueuedMessageClaimArgs,
-  ReleaseStaleQueuedMessageClaimsArgs,
-  ReorderQueuedThreadMessageArgs,
   ReorderQueuedThreadMessageResult,
-  SetQueuedThreadMessageGroupBoundaryArgs,
   SetQueuedThreadMessageGroupBoundaryResult,
-  UpdateQueuedThreadMessageInput,
-  UpdateQueuedThreadMessageResult,
 } from "./queued-thread-messages.js";
 
 export {
@@ -556,18 +423,13 @@ export {
   COMPLETED_EVENT_OUTPUT_RETENTION_MS,
   DEFAULT_CLOSED_SESSION_PRUNE_BATCH_SIZE,
   DEFAULT_COMPLETED_EVENT_OUTPUT_TRUNCATION_BATCH_SIZE,
+  DEFAULT_DESTROYED_ENVIRONMENT_PRUNE_BATCH_SIZE,
+  DESTROYED_ENVIRONMENT_TTL_MS,
   pruneClosedSessions,
   pruneDestroyedEnvironments,
   truncateCompletedEventItemOutputs,
   sweepManagedEnvironments,
 } from "./sweeps.js";
-export type {
-  PruneClosedSessionsArgs,
-  PruneClosedSessionsResult,
-  TruncateCompletedEventItemOutputsArgs,
-  TruncateCompletedEventItemOutputsResult,
-} from "./sweeps.js";
-
 export {
   compactDatabase,
   dropDeferredLegacyTables,

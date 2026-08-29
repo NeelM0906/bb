@@ -71,10 +71,10 @@ type ManagedWorktreeEnvironmentProvisionCommand = Extract<
   { type: "environment.provision"; workspaceProvisionType: "managed-worktree" }
 >;
 
-export type ManagedWorktreeEnvironmentProvisionLiveCommand =
+type ManagedWorktreeEnvironmentProvisionLiveCommand =
   QueuedCommand<ManagedWorktreeEnvironmentProvisionCommand>;
 
-export function isManagedWorktreeEnvironmentProvisionLiveCommand(
+function isManagedWorktreeEnvironmentProvisionLiveCommand(
   queued: QueuedCommand,
 ): queued is ManagedWorktreeEnvironmentProvisionLiveCommand {
   return (
@@ -144,6 +144,11 @@ interface RegisterTestHostRpcCaptureArgs {
   deferProjectInspectForPaths?: ReadonlySet<string>;
   hostId: string;
   sessionId: string;
+  /** Checkout the fake daemon reports for `host.list_branches`. */
+  listBranchesResult?: HostDaemonOnlineRpcResult<"host.list_branches">;
+  onListBranches?: (
+    command: Extract<HostDaemonRpcCommand, { type: "host.list_branches" }>,
+  ) => void;
 }
 
 interface TestHostRpcSocket {
@@ -301,7 +306,7 @@ function buildDefaultBranchListResult(
   };
 }
 
-export interface CreateTestDaemonEventEnvelopeArgs {
+interface CreateTestDaemonEventEnvelopeArgs {
   event: ThreadEvent;
   threadId?: string;
 }
@@ -370,6 +375,25 @@ export function registerTestHostRpcCapture(
         return;
       }
       const command = hostDaemonRpcCommandSchema.parse(message.command);
+      if (
+        command.type === "plugin.host.dispose" ||
+        command.type === "plugin.host.cancel"
+      ) {
+        deps.hub.recordHostOnlineRpcResponse({
+          message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+            type: "host-rpc.response",
+            requestId: message.requestId,
+            commandType: command.type,
+            ok: true,
+            result:
+              command.type === "plugin.host.dispose"
+                ? { disposed: true }
+                : { cancelled: true },
+          }),
+          sessionId: args.sessionId,
+        });
+        return;
+      }
       if (respondToRuntimeWorkspaceFileCommand(deps, args, message)) {
         return;
       }
@@ -469,13 +493,16 @@ export function registerTestHostRpcCapture(
         return;
       }
       if (command.type === "host.list_branches") {
+        args.onListBranches?.(command);
         deps.hub.recordHostOnlineRpcResponse({
           message: hostDaemonOnlineRpcResponseMessageSchema.parse({
             type: "host-rpc.response",
             requestId: message.requestId,
             commandType: command.type,
             ok: true,
-            result: buildDefaultBranchListResult(command.selectedBranch),
+            result:
+              args.listBranchesResult ??
+              buildDefaultBranchListResult(command.selectedBranch),
           }),
           sessionId: args.sessionId,
         });
@@ -545,7 +572,16 @@ export async function waitForQueuedCommand(
     await sleep(10);
   }
 
-  throw new Error("Timed out waiting for queued command");
+  const captured = pendingHostRpcRequests
+    .filter((queued) => isCapturedRpcForHarness(harness, queued))
+    .map((queued) =>
+      queued.command.type === "plugin.host.call"
+        ? `${queued.command.type}:${queued.command.pluginId}/${queued.command.method}`
+        : queued.command.type,
+    );
+  throw new Error(
+    `Timed out waiting for queued command; captured: ${captured.join(", ") || "none"}`,
+  );
 }
 
 export async function waitForQueuedCommandAfter(

@@ -1,3 +1,4 @@
+export * from "./api-client.js";
 export * from "./api-types.js";
 export * from "./api/thread-tabs.js";
 export * from "./common.js";
@@ -26,6 +27,9 @@ export {
   HOST_CHANGE_KINDS,
   hostChangedMessageSchema,
   hostChangeKindSchema,
+  pingMessageSchema,
+  pongMessageLenientSchema,
+  pongMessageSchema,
   PROJECT_CHANGE_KINDS,
   projectChangedMessageSchema,
   projectChangeKindSchema,
@@ -47,6 +51,8 @@ export type {
   EnvironmentChangedMessage,
   HostChangeKind,
   HostChangedMessage,
+  PingMessage,
+  PongMessage,
   ProjectChangeKind,
   ProjectChangedMessage,
   RealtimeSubscriptionTarget,

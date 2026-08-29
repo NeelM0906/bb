@@ -11,7 +11,6 @@ import {
 } from "./interactive-request-registry.js";
 import { startEventLoopStallMonitor } from "./event-loop-stall-monitor.js";
 import { startHostDaemonHealthMonitor } from "./host-daemon-health-monitor.js";
-import { shutdownDefaultListModelsRuntimes } from "./command-dispatch-support.js";
 import { startLocalApiServer, type LocalApiServer } from "./local-api.js";
 import type { HostDaemonLocalApiConfig } from "./local-api-config.js";
 import type { HostDaemonLogger } from "./logger.js";
@@ -38,10 +37,6 @@ import {
   ensureDataDirSkillsRootPath,
 } from "./injected-skills.js";
 import {
-  createCaffeinateManager,
-  type CaffeinateManager,
-} from "./command-handlers/caffeinate.js";
-import {
   ServerConnection,
   type HandleServerSessionInvalidatedArgs,
   type ServerSessionInvalidationSource,
@@ -61,6 +56,7 @@ import {
   type HostWatcher,
 } from "@bb/host-watcher";
 import { HostAdmissionController } from "./host-admission-controller.js";
+import { PluginHostManager } from "./plugin-host-manager.js";
 
 interface SessionState {
   value: string | null;
@@ -102,11 +98,12 @@ interface IdleProviderSessionReaperRuntimeManager {
 interface StartIdleProviderSessionReaperArgs {
   logger: HostDaemonLogger;
   nowMs: () => number;
+  resolveProviderSessionReapingEnabled: () => Promise<boolean>;
   runtimeManager: IdleProviderSessionReaperRuntimeManager;
   setIntervalFn: IdleProviderSessionReaperIntervalFn;
 }
 
-export interface CreateHostDaemonAppOptions {
+interface CreateHostDaemonAppOptions {
   dataDir: string;
   serverUrl: string;
   hostKey: string;
@@ -121,18 +118,15 @@ export interface CreateHostDaemonAppOptions {
   machineCredential?: string;
   connectMachineId?: string;
   autoUpdate?: boolean;
-  installUpdateTarball?: (tarballPath: string) => Promise<void>;
   releaseLock: () => Promise<void>;
   localApiConfig: HostDaemonLocalApiConfig | null;
   createRuntime?: RuntimeManagerOptions["createRuntime"];
-  caffeinateManager?: CaffeinateManager;
   runtimeShellEnv?: AgentRuntimeOptions["shellEnv"];
   runtimeShellEnvResolvedAtMs?: number;
   resolveRuntimeShellEnv?: () => Promise<
     NonNullable<AgentRuntimeOptions["shellEnv"]>
   >;
   nowMs?: () => number;
-  threadStorageRootPath?: string;
   hostWatcher?: HostWatcher;
   hostAdmissionLimit?: number;
   onToolCall?: (request: ToolCallRequest) => Promise<ToolCallResponse>;
@@ -169,11 +163,22 @@ export function startIdleProviderSessionReaper(
       return;
     }
     running = true;
-    void args.runtimeManager
-      .reapIdleProviderSessions({
-        idleForMs: IDLE_PROVIDER_SESSION_REAP_AFTER_MS,
-        nowMs: args.nowMs(),
+    void args
+      .resolveProviderSessionReapingEnabled()
+      .catch((error) => {
+        args.logger.warn(
+          { ...runtimeErrorLogFields(error) },
+          "Failed to read idle provider session experiment policy",
+        );
+        return false;
       })
+      .then((providerSessionReapingEnabled) =>
+        args.runtimeManager.reapIdleProviderSessions({
+          idleForMs: IDLE_PROVIDER_SESSION_REAP_AFTER_MS,
+          nowMs: args.nowMs(),
+          providerSessionReapingEnabled,
+        }),
+      )
       .then((result) => {
         if (result.reapedSessions.length === 0) {
           return;
@@ -225,17 +230,10 @@ interface MaybeInvalidateSessionArgs {
 export async function createHostDaemonApp(
   options: CreateHostDaemonAppOptions,
 ): Promise<HostDaemonApp> {
-  const threadStorageRootPath = await ensureThreadStorageRoot(
-    options.dataDir,
-    options.threadStorageRootPath
-      ? { configuredRoot: options.threadStorageRootPath }
-      : {},
-  );
+  const threadStorageRootPath = await ensureThreadStorageRoot(options.dataDir);
   const dataDirSkillsRootPath = await ensureDataDirSkillsRootPath(
     options.dataDir,
   );
-  const caffeinateManager =
-    options.caffeinateManager ?? createCaffeinateManager();
   await cleanupInjectedSkillStagingDirs({
     dataDir: options.dataDir,
     keepCatalogHashes: [],
@@ -295,13 +293,13 @@ export async function createHostDaemonApp(
   async function flushThreadEventsBeforeInteractiveRegistration(): Promise<void> {
     // Interactive registration creates server-owned turn-scoped timeline state,
     // so the server must first observe the provider turn/started for that turn.
-    await eventSink.flushRequired();
+    await eventSink.flush();
   }
 
   async function flushThreadEventsBeforeToolCall(): Promise<void> {
     // Dynamic tool calls can append server-owned turn-scoped events, so the
     // server must first observe any provider turn/started already emitted.
-    await eventSink.flushRequired();
+    await eventSink.flush();
   }
 
   const serverClient = createServerClient({
@@ -437,6 +435,7 @@ export async function createHostDaemonApp(
     hostWatcher: options.hostWatcher,
     refreshWorkspace: (args) =>
       runtimeManager.refreshEnvironmentWorkspace(args),
+    shellEnv: () => runtimeManager.getShellEnv(),
     threadStorageRootPath,
     onThreadStorageChanged: ({ environmentId }) => {
       sendServerMessage({
@@ -624,14 +623,6 @@ export async function createHostDaemonApp(
         throw error;
       }
     },
-    onStderr: (line) => {
-      if (line.includes('"component":"claude-code-mock-cli-traffic-proxy"')) {
-        options.logger.info(
-          { providerStderr: line },
-          "Claude Code mock CLI traffic proxy request",
-        );
-      }
-    },
     onProcessExit: (info) => {
       const threadIds = info.threads.map((thread) => thread.threadId);
       if (!info.expected && info.stderr) {
@@ -708,9 +699,12 @@ export async function createHostDaemonApp(
       throw error;
     }
   };
+  const resolveProviderSessionReapingEnabled = async () =>
+    (await serverClient.getRuntimePolicy()).providerSessionReaping;
   const idleProviderSessionReaper = startIdleProviderSessionReaper({
     logger: options.logger,
     nowMs: Date.now,
+    resolveProviderSessionReapingEnabled,
     runtimeManager,
     setIntervalFn: (callback, intervalMs) => {
       const timer = setInterval(callback, intervalMs);
@@ -729,8 +723,20 @@ export async function createHostDaemonApp(
     limit: options.hostAdmissionLimit ?? DEFAULT_HOST_ADMISSION_LIMIT,
     listProviderProcessDiagnostics: () =>
       runtimeManager.listProviderProcessDiagnostics(),
-    reapIdleProviderSessions: (args) =>
-      runtimeManager.reapIdleProviderSessions(args),
+    reapIdleProviderSessions: async (args) => {
+      const providerSessionReapingEnabled =
+        await resolveProviderSessionReapingEnabled().catch((error) => {
+          options.logger.warn(
+            { ...runtimeErrorLogFields(error) },
+            "Failed to read idle provider session experiment policy",
+          );
+          return false;
+        });
+      return runtimeManager.reapIdleProviderSessions({
+        ...args,
+        providerSessionReapingEnabled,
+      });
+    },
     nowMs,
   });
   let sendTerminalMessage: TerminalManagerOptions["sendMessage"] = (message) =>
@@ -740,6 +746,29 @@ export async function createHostDaemonApp(
     logger: options.logger,
     runtimeManager,
     sendMessage: (message) => sendTerminalMessage(message),
+  });
+  const pluginHostManager = new PluginHostManager({
+    dataDir: options.dataDir,
+    hostWatcher: options.hostWatcher,
+    logger: options.logger,
+    shellEnv: () => runtimeManager.getShellEnv(),
+    fetchArtifact: (args) =>
+      runSessionRequest({
+        source: "fetchPluginHostArtifact",
+        request: () => serverClient.fetchPluginHostArtifact(args),
+      }),
+    onWorkerExit: (event) => {
+      sendServerMessage({
+        type: "plugin-host.worker-exited",
+        ...event,
+      });
+    },
+    onSignal: (event) => {
+      sendServerMessage({
+        type: "plugin-host.signal",
+        ...event,
+      });
+    },
   });
 
   const router = new CommandRouter({
@@ -754,21 +783,57 @@ export async function createHostDaemonApp(
         source: "fetchSkillTree",
         request: () => serverClient.fetchSkillTree(treeHash),
       }),
+    fetchPluginHostArtifact: (args) =>
+      runSessionRequest({
+        source: "fetchPluginHostArtifact",
+        request: () => serverClient.fetchPluginHostArtifact(args),
+      }),
     runtimeManager,
     terminalManager,
     listModels: async (args) => {
       await refreshRuntimeShellEnv();
-      const runtime = await runtimeManager.ensureProviderMaintenanceRuntime({
-        dataDir: options.dataDir,
-      });
-      return runtime.listModels(args);
+      return runtimeManager.withProviderMaintenanceRuntime(
+        { dataDir: options.dataDir },
+        (runtime) => runtime.listModels(args),
+      );
+    },
+    providerHealth: async (args) => {
+      await refreshRuntimeShellEnv();
+      return runtimeManager.withProviderMaintenanceRuntime(
+        { dataDir: options.dataDir },
+        (runtime) => runtime.providerHealth(args),
+      );
+    },
+    providerUsage: async (args) => {
+      await refreshRuntimeShellEnv();
+      return runtimeManager.withProviderMaintenanceRuntime(
+        { dataDir: options.dataDir },
+        (runtime) => runtime.providerUsage(args),
+      );
+    },
+    providerInstallationStatus: async (args) => {
+      await refreshRuntimeShellEnv();
+      return runtimeManager.withProviderMaintenanceRuntime(
+        { dataDir: options.dataDir },
+        (runtime) => runtime.providerInstallationStatus(args),
+      );
+    },
+    providerInstallationRun: async (args) => {
+      await refreshRuntimeShellEnv();
+      return runtimeManager.withProviderMaintenanceRuntime(
+        { dataDir: options.dataDir },
+        (runtime) => runtime.providerInstallationRun(args),
+      );
+    },
+    refreshShellEnv: async () => {
+      await refreshRuntimeShellEnv();
     },
     resolveInteractiveRequest: async (request) => {
       interactiveRequestRegistry.resolve(request);
     },
     ensureConnectTunnelIdentity: () => connectTunnel.ensureTunnelIdentity(),
     hostAdmissionController,
-    caffeinateManager,
+    pluginHostManager,
     threadStorageRootPath,
     logger: options.logger,
     eventSink: {
@@ -786,6 +851,7 @@ export async function createHostDaemonApp(
     hostType: options.hostType,
     dataDir: options.dataDir,
     instanceId: options.instanceId,
+    localApiPort: options.localApiConfig?.port ?? null,
     logger: options.logger,
     machineCredential: options.machineCredential,
     connectMachineId: options.connectMachineId,
@@ -794,7 +860,6 @@ export async function createHostDaemonApp(
       dataDir: options.dataDir,
       enabled: options.autoUpdate ?? false,
       fetchFn: options.fetchFn,
-      installTarball: options.installUpdateTarball,
       logger: options.logger,
       serverUrl: options.serverUrl,
     }),
@@ -832,6 +897,9 @@ export async function createHostDaemonApp(
       // applying generation 0 synchronously prevents that newer websocket
       // replacement from being overwritten by the initial empty snapshot.
       connectTunnel.replaceAuthoritativeShareSet(session.connectShares);
+      await pluginHostManager.reconcileGenerations(
+        session.pluginHostGenerations,
+      );
       if (session.retiredEnvironmentIds.length > 0) {
         await Promise.all(
           session.retiredEnvironmentIds.map((environmentId) =>
@@ -879,6 +947,7 @@ export async function createHostDaemonApp(
         devAppPort: options.devAppPort,
         appUrl: options.appUrl,
         getConnected: () => connection.sessionId != null,
+        shellEnv: () => runtimeManager.getShellEnv(),
       })
     : null;
   const eventLoopStallMonitor = startEventLoopStallMonitor({
@@ -908,7 +977,7 @@ export async function createHostDaemonApp(
       idleProviderSessionReaper.stop();
       eventLoopStallMonitor.stop();
       hostDaemonHealthMonitor.stop();
-      caffeinateManager.shutdown();
+      await pluginHostManager.shutdown();
       await options.closeMachineAuthProxy?.();
       await localApi?.close();
       connectTunnel.shutdown();
@@ -920,7 +989,6 @@ export async function createHostDaemonApp(
       await runtimeManager.shutdownAll();
       await eventSink.flush();
       await eventSink.dispose();
-      await shutdownDefaultListModelsRuntimes();
       await connection.shutdown();
     },
     onStart: async () => {

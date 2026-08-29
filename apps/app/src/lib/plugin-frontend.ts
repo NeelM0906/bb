@@ -22,23 +22,37 @@ import * as radixTooltip from "@radix-ui/react-tooltip";
 import * as sonner from "sonner";
 import * as vaul from "vaul";
 import * as pierreDiffs from "@pierre/diffs";
-import * as pierreDiffsReact from "@pierre/diffs/react";
+// Host-resident libraries (RUNTIME_SLOT_BY_SPECIFIER rule 2): no singleton
+// semantics, but every plugin app used to bundle its own copy — the
+// shared-ui Icon alone carries the hugeicons map. The host already ships
+// all of them, so plugins read them from here. Anything slotted here is
+// exposed as a whole namespace, which keeps rolldown from tree-shaking it
+// out of the boot chunk: that is why zod (mostly unused by the app) is
+// deliberately not a slot.
+import * as clsx from "clsx";
+import * as tailwindMerge from "tailwind-merge";
+import * as classVarianceAuthority from "class-variance-authority";
+import * as sharedUiIcon from "@bb/shared-ui/icon";
 import { createDebouncedCallbackScheduler } from "@bb/domain";
 import type {
   PluginContentScriptDisposer,
   PluginContentScriptRegistration,
   PluginSdkApp,
-} from "@bb/plugin-sdk";
-import { normalizePluginThreadRowStatus } from "@bb/plugin-sdk/internal/composer-customization-validation";
+} from "@get-bb/plugin-sdk";
+import { normalizePluginThreadRowStatus } from "@get-bb/plugin-sdk/internal/composer-customization-validation";
 import { resetCrashedPluginSlots } from "@/components/plugin/PluginSlotMount";
 import { runWithPluginDomIsolationAsync } from "./foreign-dom-mutation-guard";
+import { applyPluginCss, retainPluginCss } from "./plugin-css";
 import {
   collectPluginAppRegistrations,
   isPluginAppDefinition,
 } from "./plugin-app-definition";
 import { setPluginLogoUrls, type PluginLogoUrls } from "./plugin-logos";
+import { createGatedPierreDiffsReact } from "./plugin-pierre-diffs-react";
+import { getPluginPanelRoutePluginId } from "./route-paths";
 import { pluginSdkAppImplementation } from "./plugin-sdk-app-impl";
 import {
+  beginPluginSlotBatch,
   removePluginSlotRegistrations,
   setPluginSlotRegistrations,
   type PluginRegistrationSet,
@@ -71,9 +85,11 @@ import {
  */
 
 /** Mirror of the `app.bundle` slice of a GET /api/v1/plugins entry. */
-export interface PluginFrontendBundle {
+interface PluginFrontendBundle {
   jsUrl: string;
   cssUrl: string | null;
+  /** dist/app.js size; smaller bundles load first (see reconcile). */
+  jsBytes: number;
   hash: string;
   sdkMajor: number;
   sdkVersion: string;
@@ -85,7 +101,7 @@ export interface PluginFrontendCandidate {
   bundle: PluginFrontendBundle;
 }
 
-export type PluginFrontendRecord =
+type PluginFrontendRecord =
   | {
       pluginId: string;
       status: "loaded";
@@ -100,13 +116,13 @@ export type PluginFrontendRecord =
       sdkVersion: string;
     };
 
-export interface PluginFrontendFailure {
+interface PluginFrontendFailure {
   phase: "load" | "setup" | "mount" | "dispose";
   message: string;
   scriptId: string | null;
 }
 
-export interface PluginFrontendActiveGenerationDiagnostic {
+interface PluginFrontendActiveGenerationDiagnostic {
   generation: number;
   hash: string;
   contentScriptIds: readonly string[];
@@ -135,7 +151,7 @@ export type PluginFrontendDiagnostic =
       lastFailure: null;
     };
 
-export interface PluginFrontendLoaderDeps {
+interface PluginFrontendLoaderDeps {
   importModule: (url: string) => Promise<unknown>;
   injectCss: (pluginId: string, url: string) => void;
   warn: (message: string) => void;
@@ -218,6 +234,10 @@ interface BbPluginRuntime {
   vaul: unknown;
   pierreDiffs: unknown;
   pierreDiffsReact: unknown;
+  clsx: unknown;
+  tailwindMerge: unknown;
+  classVarianceAuthority: unknown;
+  sharedUiIcon: unknown;
 }
 
 type RuntimeHost = typeof globalThis & { __bbPluginRuntime?: BbPluginRuntime };
@@ -237,7 +257,7 @@ export function installPluginRuntime(): void {
     reactDomClient,
     jsxRuntime,
     jsxDevRuntime,
-    // The real `@bb/plugin-sdk/app` surface: definePluginApp, the hooks, and
+    // The real `@get-bb/plugin-sdk/app` surface: definePluginApp, the hooks, and
     // the curated UI kit. Kept in type-sync with the facade package via
     // `satisfies PluginSdkApp` in plugin-sdk-app-impl.
     pluginSdkApp: pluginSdkAppImplementation,
@@ -254,7 +274,13 @@ export function installPluginRuntime(): void {
     sonner,
     vaul,
     pierreDiffs,
-    pierreDiffsReact,
+    // Diff components wrapped in the host's worker-pool gate; see
+    // plugin-pierre-diffs-react.tsx.
+    pierreDiffsReact: createGatedPierreDiffsReact(),
+    clsx,
+    tailwindMerge,
+    classVarianceAuthority,
+    sharedUiIcon,
   };
 }
 
@@ -264,6 +290,7 @@ function isFrontendBundle(value: unknown): value is PluginFrontendBundle {
   return (
     typeof bundle.jsUrl === "string" &&
     (bundle.cssUrl === null || typeof bundle.cssUrl === "string") &&
+    typeof bundle.jsBytes === "number" &&
     typeof bundle.hash === "string" &&
     typeof bundle.sdkMajor === "number" &&
     typeof bundle.sdkVersion === "string" &&
@@ -292,6 +319,7 @@ async function fetchFrontendCandidates(): Promise<PluginFrontendCandidate[]> {
       logoUrl?: unknown;
       logoDarkUrl?: unknown;
       iconUrl?: unknown;
+      icons?: unknown;
       app?: { bundle?: unknown };
     } | null;
     if (typeof typed?.id !== "string") continue;
@@ -302,12 +330,21 @@ async function fetchFrontendCandidates(): Promise<PluginFrontendCandidate[]> {
       typeof typed.iconUrl === "string" ? typed.iconUrl : null;
     const icon = typeof typed.icon === "string" ? typed.icon : null;
     const displayName = typeof typed.name === "string" ? typed.name : null;
+    // Declared icons: an older server sends no `icons`, which reads as a
+    // plugin that declares none.
+    const icons = new Map<string, string>();
+    if (typeof typed.icons === "object" && typed.icons !== null) {
+      for (const [name, url] of Object.entries(typed.icons)) {
+        if (typeof url === "string") icons.set(name, url);
+      }
+    }
     logoUrls.set(typed.id, {
       displayName,
       icon,
       compactIconUrl,
       logoUrl,
       logoDarkUrl,
+      icons,
     });
     if (typed.status !== "running") {
       continue;
@@ -320,42 +357,56 @@ async function fetchFrontendCandidates(): Promise<PluginFrontendCandidate[]> {
   return candidates;
 }
 
+export { applyPluginCss } from "./plugin-css";
+
+/** How many plugin bundles import at once during a reconcile pass. */
+export const PLUGIN_FRONTEND_LOAD_CONCURRENCY = 3;
+
 /**
- * Point a plugin's stylesheet `<link data-bb-plugin-css="<id>">` at `url`,
- * or remove it (`url: null`). A changed URL swaps in a fresh element (the
- * new sheet loads, then the old element is removed) rather than mutating
- * `href`, so a reload never flashes unstyled plugin UI. If the fresh sheet
- * fails to load, it is dropped and the old sheet stays in place.
+ * Load order for a reconcile pass: the plugin owning the current panel route
+ * first (its UI is what the page shows), then ascending bundle size so many
+ * light plugins register before one heavy one. Stable for equal sizes.
  */
-export function applyPluginCss(pluginId: string, url: string | null): void {
-  const marker = "data-bb-plugin-css";
-  const existing = [
-    ...document.head.querySelectorAll(`link[${marker}="${pluginId}"]`),
-  ];
-  if (url === null) {
-    for (const link of existing) link.remove();
-    return;
-  }
-  if (existing.some((link) => link.getAttribute("href") === url)) return;
-  const link = document.createElement("link");
-  link.rel = "stylesheet";
-  link.href = url;
-  link.setAttribute(marker, pluginId);
-  link.onload = () => {
-    for (const old of existing) old.remove();
+export function orderPluginFrontendCandidates(
+  candidates: readonly PluginFrontendCandidate[],
+  routePluginId: string | null,
+): PluginFrontendCandidate[] {
+  return [...candidates].sort((left, right) => {
+    if (left.pluginId === routePluginId) return -1;
+    if (right.pluginId === routePluginId) return 1;
+    return left.bundle.jsBytes - right.bundle.jsBytes;
+  });
+}
+
+/**
+ * Run `worker` over `items` with at most `limit` in flight, preserving start
+ * order. The reconcile worker contains per-plugin failures itself; an
+ * unexpected throw rejects this promise like `Promise.all` did before.
+ */
+async function runWithConcurrencyLimit<T>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const lane = async (): Promise<void> => {
+    while (next < items.length) {
+      const item = items[next++]!;
+      await worker(item);
+    }
   };
-  link.onerror = () => {
-    link.remove();
-    console.warn(`bb plugin "${pluginId}": failed to load stylesheet ${url}`);
-  };
-  document.head.appendChild(link);
+  const lanes = Array.from(
+    { length: Math.max(1, Math.min(limit, items.length)) },
+    () => lane(),
+  );
+  await Promise.all(lanes);
 }
 
 // ---------------------------------------------------------------------------
 // Reconcile: boot + live reload share one injectable state transition.
 // ---------------------------------------------------------------------------
 
-export interface PluginFrontendReconcileState {
+interface PluginFrontendReconcileState {
   records: Map<string, PluginFrontendRecord>;
   /** Bundle hash last applied per plugin; an unchanged hash is a no-op. */
   appliedHashes: Map<string, string>;
@@ -383,15 +434,32 @@ export function createPluginFrontendReconcileState(): PluginFrontendReconcileSta
 export interface PluginFrontendReconcileDeps {
   fetchCandidates: () => Promise<PluginFrontendCandidate[]>;
   importModule: (url: string) => Promise<unknown>;
-  /** Replace (string) or remove (null) the plugin's CSS `<link>`. */
-  applyCss: (pluginId: string, url: string | null) => void;
+  /**
+   * Publish (string) or remove (null) the generation's CSS URL. Awaited before
+   * content scripts or registrations go live so injected implementations can
+   * preserve the same ordering as the synchronous production CSS manager.
+   */
+  applyCss: (pluginId: string, url: string | null) => void | Promise<void>;
+  /** Retain the published CSS through one non-React consumer's lifetime. */
+  retainCss: (pluginId: string) => () => void;
   resetCrashedSlots: (pluginId: string) => void;
   setRegistrations: (
     pluginId: string,
     registrations: PluginRegistrationSet,
   ) => void;
   removeRegistrations: (pluginId: string) => void;
+  /**
+   * Hold slot-store notifications while a reconcile run activates several
+   * plugins; returns the closer. Production binds `beginPluginSlotBatch`.
+   */
+  beginSlotBatch: () => () => void;
   warn: (message: string) => void;
+  /**
+   * The plugin whose panel is the current route (`/plugins/:pluginId/...`),
+   * or null. Its bundle imports first so the page the user asked for is not
+   * queued behind unrelated plugins.
+   */
+  routePluginId: () => string | null;
   /** Test override; production allows 10s for async mount setup. */
   mountTimeoutMs?: number;
   diagnosticsChanged?: () => void;
@@ -408,6 +476,7 @@ interface ActivePluginFrontendGeneration {
   controller: AbortController;
   statusOwner: symbol;
   scripts: MountedContentScript[];
+  cssRelease: (() => void) | null;
   disposed: boolean;
 }
 
@@ -473,6 +542,8 @@ async function disposeGeneration(
     );
     if (failure !== null) failures.push(failure);
   }
+  activation.cssRelease?.();
+  activation.cssRelease = null;
   clearPluginThreadRowStatusesByOwner(activation.statusOwner);
   return failures;
 }
@@ -481,6 +552,7 @@ async function deactivateCommittedGeneration(
   pluginId: string,
   state: PluginFrontendReconcileState,
   deps: PluginFrontendReconcileDeps,
+  removePublishedUi = true,
 ): Promise<PluginFrontendFailure[]> {
   const active = state.activeGenerations.get(pluginId);
   if (active === undefined) {
@@ -491,8 +563,10 @@ async function deactivateCommittedGeneration(
   clearPluginThreadRowStatuses(pluginId);
   state.activeGenerations.delete(pluginId);
   state.appliedHashes.delete(pluginId);
-  deps.removeRegistrations(pluginId);
-  deps.applyCss(pluginId, null);
+  if (removePublishedUi) {
+    deps.removeRegistrations(pluginId);
+    deps.applyCss(pluginId, null);
+  }
   return failures;
 }
 
@@ -595,6 +669,7 @@ async function activateContentScripts(
   registrations: readonly PluginContentScriptRegistration[],
   controller: AbortController,
   statusOwner: symbol,
+  cssRelease: (() => void) | null,
   deps: PluginFrontendReconcileDeps,
 ): Promise<
   | { ok: true; activation: ActivePluginFrontendGeneration }
@@ -606,6 +681,7 @@ async function activateContentScripts(
     controller,
     statusOwner,
     scripts: [],
+    cssRelease,
     disposed: false,
   };
   try {
@@ -671,8 +747,33 @@ export async function reconcilePluginFrontends(
     state.diagnostics.delete(pluginId);
     deps.diagnosticsChanged?.();
   }
-  await Promise.all(
-    candidates.map(async (candidate) => {
+  // One notification burst per run instead of one per plugin: every
+  // `usePluginSlots` reader (timeline static context, markdown directive
+  // registry, composer customizations, ...) would otherwise re-render once
+  // per bundle as they resolve.
+  const closeSlotBatch = deps.beginSlotBatch();
+  try {
+    await reconcileCandidates(candidates, state, deps);
+  } finally {
+    closeSlotBatch();
+  }
+}
+
+async function reconcileCandidates(
+  candidates: readonly PluginFrontendCandidate[],
+  state: PluginFrontendReconcileState,
+  deps: PluginFrontendReconcileDeps,
+): Promise<void> {
+  // Bounded, ordered loading: every bundle is a separate parse/eval on the
+  // main thread and, on a phone, they used to all land during the window in
+  // which the route chunk itself was still arriving. Three at a time keeps
+  // the network busy without stacking a dozen evaluations, and the order
+  // (route-owning plugin, then smallest first) gets the most useful and the
+  // most plugins on screen earliest.
+  await runWithConcurrencyLimit(
+    orderPluginFrontendCandidates(candidates, deps.routePluginId()),
+    PLUGIN_FRONTEND_LOAD_CONCURRENCY,
+    async (candidate) => {
       const pluginId = candidate.pluginId;
       const previous = state.records.get(pluginId);
       if (
@@ -728,7 +829,7 @@ export async function reconcilePluginFrontends(
         const definition = record.module.default;
         if (!isPluginAppDefinition(definition)) {
           throw new Error(
-            "the bundle's default export is not definePluginApp(...) from @bb/plugin-sdk/app",
+            "the bundle's default export is not definePluginApp(...) from @get-bb/plugin-sdk/app",
           );
         }
         collected = collectPluginAppRegistrations(definition, (reason) => {
@@ -759,10 +860,20 @@ export async function reconcilePluginFrontends(
 
       const generation = (state.generationByPluginId.get(pluginId) ?? 0) + 1;
       state.generationByPluginId.set(pluginId, generation);
+      // Publish the URL before either non-React scripts mount or slot-store
+      // notifications can render plugin code. Inactive plugins only preload;
+      // an already-mounted generation starts a safe side-by-side replacement.
+      await deps.applyCss(pluginId, candidate.bundle.cssUrl);
+      const cssRelease =
+        collected.contentScripts.length > 0 ? deps.retainCss(pluginId) : null;
       const disposeFailures = await deactivateCommittedGeneration(
         pluginId,
         state,
         deps,
+        // Keep the old registration mounted until candidate content scripts
+        // succeed. The final setRegistrations call replaces it atomically, so
+        // an old UI consumer holds the active sheet through the CSS handoff.
+        false,
       );
       const controller = new AbortController();
       const statusOwner = Symbol(
@@ -777,6 +888,7 @@ export async function reconcilePluginFrontends(
         collected.contentScripts,
         controller,
         statusOwner,
+        cssRelease,
         deps,
       );
       state.pendingControllers.delete(pluginId);
@@ -785,9 +897,13 @@ export async function reconcilePluginFrontends(
         if (activationResult.ok) {
           await disposeGeneration(pluginId, activationResult.activation, deps);
         }
+        deps.removeRegistrations(pluginId);
+        deps.applyCss(pluginId, null);
         return;
       }
       if (!activationResult.ok) {
+        deps.removeRegistrations(pluginId);
+        deps.applyCss(pluginId, null);
         const failed: PluginFrontendRecord = {
           pluginId,
           status: "failed",
@@ -805,7 +921,6 @@ export async function reconcilePluginFrontends(
 
       state.activeGenerations.set(pluginId, activationResult.activation);
       deps.setRegistrations(pluginId, collected);
-      deps.applyCss(pluginId, candidate.bundle.cssUrl);
       state.records.set(pluginId, record);
       state.appliedHashes.set(pluginId, candidate.bundle.hash);
       publishDiagnostic(state, deps, {
@@ -820,7 +935,7 @@ export async function reconcilePluginFrontends(
         },
         lastFailure: disposeFailures[0] ?? null,
       });
-    }),
+    },
   );
 }
 
@@ -912,13 +1027,24 @@ function publishBrowserDiagnostics(): void {
   for (const listener of browserDiagnosticsListeners) listener();
 }
 
+/**
+ * Longest a reconcile run holds slot notifications: bundles that resolve
+ * within this window flush together; a slow bundle cannot keep the others'
+ * UI off screen past it.
+ */
+const PLUGIN_SLOT_BATCH_MAX_HOLD_MS = 150;
+
 const browserReconcileDeps: PluginFrontendReconcileDeps = {
   fetchCandidates: fetchFrontendCandidates,
   importModule: (url) => import(/* @vite-ignore */ url),
   applyCss: applyPluginCss,
+  retainCss: retainPluginCss,
+  routePluginId: () => getPluginPanelRoutePluginId(window.location.pathname),
   resetCrashedSlots: resetCrashedPluginSlots,
   setRegistrations: setPluginSlotRegistrations,
   removeRegistrations: removePluginSlotRegistrations,
+  beginSlotBatch: () =>
+    beginPluginSlotBatch({ maxHoldMs: PLUGIN_SLOT_BATCH_MAX_HOLD_MS }),
   warn: (message) => console.warn(message),
   diagnosticsChanged: publishBrowserDiagnostics,
 };
@@ -941,23 +1067,69 @@ export function subscribePluginFrontendDiagnostics(
   };
 }
 
-/** App-window teardown path; exported for lifecycle tests. */
-export function teardownPluginFrontends(): Promise<void> {
+/** App-window teardown path. */
+function teardownPluginFrontends(): Promise<void> {
   return disposePluginFrontends(state, browserReconcileDeps);
 }
 
-let pageHideListenerInstalled = false;
+interface PluginFrontendPageLifecycleDeps {
+  isTornDown: () => boolean;
+  /** Fresh boot after a teardown: resets boot state and reconciles. */
+  reboot: () => void;
+  /** Frontends survived the freeze; pick up plugin changes made meanwhile. */
+  reconcile: () => void;
+  teardown: () => void;
+}
 
-function installPluginFrontendTeardown(): void {
-  if (pageHideListenerInstalled) return;
-  pageHideListenerInstalled = true;
-  window.addEventListener(
-    "pagehide",
-    () => {
+/**
+ * Page lifecycle policy for plugin frontends. A `pagehide` with `persisted`
+ * means the page is entering the back/forward cache: WebKit may restore it
+ * without a reload, so the frontends stay mounted (tearing down would leave
+ * a restored page with no plugin UI). Only a real unload tears down. On a
+ * persisted `pageshow` the frontends either reconcile (still mounted) or,
+ * if a teardown did happen, boot again.
+ */
+export function createPluginFrontendPageLifecycle(
+  deps: PluginFrontendPageLifecycleDeps,
+): {
+  onPageHide: (event: { persisted: boolean }) => void;
+  onPageShow: (event: { persisted: boolean }) => void;
+} {
+  return {
+    onPageHide(event) {
+      if (event.persisted) return;
+      deps.teardown();
+    },
+    onPageShow(event) {
+      if (!event.persisted) return;
+      if (deps.isTornDown()) {
+        deps.reboot();
+        return;
+      }
+      deps.reconcile();
+    },
+  };
+}
+
+let pageLifecycleListenersInstalled = false;
+
+function installPluginFrontendPageLifecycle(): void {
+  if (pageLifecycleListenersInstalled) return;
+  pageLifecycleListenersInstalled = true;
+  const lifecycle = createPluginFrontendPageLifecycle({
+    isTornDown: () => state.tornDown,
+    reboot: () => {
+      state.tornDown = false;
+      bootPromise = null;
+      void bootPluginFrontends();
+    },
+    reconcile: () => schedulePluginFrontendReconcile(),
+    teardown: () => {
       void teardownPluginFrontends();
     },
-    { once: true },
-  );
+  });
+  window.addEventListener("pagehide", (event) => lifecycle.onPageHide(event));
+  window.addEventListener("pageshow", (event) => lifecycle.onPageShow(event));
 }
 
 /**
@@ -967,7 +1139,7 @@ function installPluginFrontendTeardown(): void {
 export function bootPluginFrontends(): Promise<void> {
   bootPromise ??= (async () => {
     installPluginRuntime();
-    installPluginFrontendTeardown();
+    installPluginFrontendPageLifecycle();
     await reconcilePluginFrontends(state, browserReconcileDeps);
   })().catch((error: unknown) => {
     // Inventory fetch/network failure — plugin UI is absent, app unharmed.

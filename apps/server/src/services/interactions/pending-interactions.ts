@@ -20,7 +20,10 @@ import {
 import {
   isApprovalPendingInteractionPayload,
   isPluginPendingInteractionPayload,
+  isPluginExtensionInteractionRequestPayload,
+  isPluginExtensionPendingInteraction,
   isPluginPendingInteraction,
+  parseExtensionKind,
   type JsonValue,
   type PendingInteraction,
   type PendingInteractionCreate,
@@ -30,8 +33,7 @@ import {
 import type { HostDaemonCommand } from "@bb/host-daemon-contract";
 import type { CommandResultReportForType } from "../../internal/command-result-side-effects.js";
 import { ApiError } from "../../errors.js";
-import type { AppDeps } from "../../types.js";
-import type { LifecycleCoordinationDeps } from "../../lifecycle-coordination-deps.js";
+import type { AppDeps, LoggedWorkSessionDeps } from "../../types.js";
 import { productionErrorLogFields } from "../lib/error-log-fields.js";
 import {
   threadEnvironmentUnavailableDetails,
@@ -54,7 +56,7 @@ import {
   validatePendingInteractionResolution,
 } from "./pending-interaction-validation.js";
 
-export type RegisterPendingInteractionResult =
+type RegisterPendingInteractionResult =
   | {
       outcome: "created" | "existing";
       interaction: PendingInteraction;
@@ -178,7 +180,7 @@ interface InterruptPendingInteractionsForThreadIdsLifecycleArgs {
   threadIds: readonly string[];
 }
 
-type CreateLifecycleDeps = LifecycleCoordinationDeps &
+type CreateLifecycleDeps = LoggedWorkSessionDeps &
   Pick<AppDeps, "terminalSessions">;
 
 function buildResolveConflictError(interaction: PendingInteraction): ApiError {
@@ -189,9 +191,24 @@ function buildResolveConflictError(interaction: PendingInteraction): ApiError {
   );
 }
 
+/** The plugins a server can hand a plugin-defined request to. */
+export interface PendingInteractionPluginDirectory {
+  isLoaded(pluginId: string): boolean;
+}
+
 function getUnsupportedPendingInteractionReason(
   interaction: PendingInteractionCreate,
+  plugins: PendingInteractionPluginDirectory | null,
 ): string | null {
+  if (isPluginExtensionInteractionRequestPayload(interaction.payload)) {
+    // A request only a loaded plugin can render. Refusing it here gives the
+    // bridge a clear error instead of a pending row only a stop can clear.
+    const { pluginId } = parseExtensionKind(interaction.payload.kind);
+    if (plugins === null || !plugins.isLoaded(pluginId)) {
+      return `Plugin "${pluginId}" is not loaded on this server, so the "${interaction.payload.kind}" request has no form to render`;
+    }
+    return null;
+  }
   if (!isApprovalPendingInteractionPayload(interaction.payload)) {
     return null;
   }
@@ -221,6 +238,8 @@ function buildInteractiveResolveCommand(
 }
 
 type PendingInteractionLifecycleArgs = CreateLifecycleDeps;
+
+export type ThreadInteractionSettledListener = (threadId: string) => void;
 
 function buildInteractionChangeMetadata({
   db,
@@ -260,7 +279,10 @@ function notifyInteractionChanged({
 export class PendingInteractionLifecycle {
   private readonly deps: CreateLifecycleDeps;
   private readonly pluginWaiters = new Map<string, PluginInteractionWaiter>();
+  private pluginDirectory: PendingInteractionPluginDirectory | null = null;
   private started = false;
+  private interactionSettledListener: ThreadInteractionSettledListener | null =
+    null;
 
   constructor(args: PendingInteractionLifecycleArgs) {
     this.deps = {
@@ -270,10 +292,21 @@ export class PendingInteractionLifecycle {
       lifecycleDedupers: args.lifecycleDedupers,
       logger: args.logger,
       machineAuth: args.machineAuth,
+      providerRegistry: args.providerRegistry,
+      pluginHostArtifacts: args.pluginHostArtifacts,
+      aiServices: args.aiServices,
       skillTreeRegistry: args.skillTreeRegistry,
       telemetry: args.telemetry,
       terminalSessions: args.terminalSessions,
     };
+  }
+
+  /**
+   * The plugin runtime registers the plugins it has loaded, so a provider's
+   * plugin-defined request is accepted only while its plugin can render it.
+   */
+  setPluginDirectory(directory: PendingInteractionPluginDirectory): void {
+    this.pluginDirectory = directory;
   }
 
   start(): void {
@@ -290,6 +323,20 @@ export class PendingInteractionLifecycle {
         return updated ? [updated] : [];
       }),
     );
+  }
+
+  /**
+   * Registers the one listener that runs after an interaction reaches a
+   * terminal state (resolving, resolved, or interrupted). It releases work held
+   * back while the thread was blocked. The listener must re-check
+   * `hasPendingThreadInteraction`: a thread can settle one interaction and
+   * still hold another, and a `resolving` interaction still counts as pending.
+   * It may run inside a database transaction, so it must only schedule work.
+   */
+  setThreadInteractionSettledListener(
+    listener: ThreadInteractionSettledListener,
+  ): void {
+    this.interactionSettledListener = listener;
   }
 
   listThreadInteractions(threadId: string): PendingInteraction[] {
@@ -342,8 +389,10 @@ export class PendingInteractionLifecycle {
         reason: `Thread ${interaction.threadId} belongs to provider ${thread.providerId}, not ${interaction.providerId}`,
       };
     }
-    const unsupportedReason =
-      getUnsupportedPendingInteractionReason(interaction);
+    const unsupportedReason = getUnsupportedPendingInteractionReason(
+      interaction,
+      this.pluginDirectory,
+    );
     if (unsupportedReason) {
       return {
         outcome: "rejected",
@@ -524,6 +573,28 @@ export class PendingInteractionLifecycle {
     return pending;
   }
 
+  /**
+   * A plugin form's submitted value, routed by who raised the form: a
+   * plugin's own request settles its in-memory waiter; a provider's
+   * plugin-defined request resolves like any provider interaction, with the
+   * value carried to the bridge as a request answer.
+   */
+  respondToInteraction(args: {
+    interactionId: string;
+    threadId: string;
+    value: JsonValue;
+  }): PendingInteraction {
+    const current = this.getThreadInteraction(args);
+    if (isPluginExtensionPendingInteraction(current)) {
+      return this.resolvePendingInteraction({
+        interactionId: args.interactionId,
+        threadId: args.threadId,
+        resolution: { kind: "request_answer", value: args.value },
+      });
+    }
+    return this.respondToPluginInteraction(args);
+  }
+
   respondToPluginInteraction(args: {
     interactionId: string;
     threadId: string;
@@ -556,7 +627,14 @@ export class PendingInteractionLifecycle {
   }): PendingInteraction {
     const current = this.getThreadInteraction(args);
     if (!isPluginPendingInteraction(current)) {
-      throw new ApiError(400, "invalid_request", "Plugin interaction expected");
+      // A provider's request ends with its turn, not with a cancel.
+      throw new ApiError(
+        400,
+        "invalid_request",
+        isPluginExtensionPendingInteraction(current)
+          ? "A provider's request cannot be cancelled; stop the turn instead"
+          : "Plugin interaction expected",
+      );
     }
     if (current.status !== "pending" && current.status !== "resolving") {
       throw buildResolveConflictError(current);
@@ -894,6 +972,7 @@ export class PendingInteractionLifecycle {
       hasPendingInteraction: false,
       threadId: interaction.threadId,
     });
+    this.notifyInteractionSettled(interaction.threadId);
   }
 
   private settleInteractionTerminalStateInTransaction(
@@ -906,6 +985,21 @@ export class PendingInteractionLifecycle {
       hasPendingInteraction: false,
       threadId: interaction.threadId,
     });
+    this.notifyInteractionSettled(interaction.threadId);
+  }
+
+  private notifyInteractionSettled(threadId: string): void {
+    if (!this.interactionSettledListener) {
+      return;
+    }
+    try {
+      this.interactionSettledListener(threadId);
+    } catch (error) {
+      this.deps.logger.warn(
+        { err: error, threadId },
+        "Pending interaction settled listener failed",
+      );
+    }
   }
 
   private cancelPluginInteractionFromCallback(args: {

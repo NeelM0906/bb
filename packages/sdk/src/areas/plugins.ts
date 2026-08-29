@@ -1,18 +1,20 @@
+import { jsonValueSchema, type JsonValue } from "@bb/domain";
 import {
-  jsonValueSchema,
-  PLUGIN_SUBMISSION_FORM_URL,
-  type JsonValue,
-} from "@bb/domain";
-import {
+  installedPluginSchema,
+  pluginCatalogInstallPlanResponseSchema,
   pluginCatalogInstallRequestSchema,
   pluginCatalogSearchResponseSchema,
   pluginCatalogStatusResponseSchema,
+  pluginMarketplaceAddRequestSchema,
+  pluginMarketplaceListResponseSchema,
+  pluginMarketplaceMutationResponseSchema,
+  pluginMarketplaceNameSchema,
+  pluginMarketplaceRefreshRequestSchema,
+  pluginMarketplaceRefreshResponseSchema,
+  pluginMarketplaceRemoveResponseSchema,
   pluginApplyUpdateRequestSchema,
   pluginApplyUpdateResultSchema,
-  pluginInstallResponseSchema,
   pluginInstallSourceRequestSchema,
-  pluginListResponseSchema,
-  pluginReloadResponseSchema,
   pluginRemoveResponseSchema,
   pluginSettingsResponseSchema,
   pluginSettingsUpdateRequestSchema,
@@ -22,7 +24,11 @@ import {
   pluginUpdateCheckRequestSchema,
   pluginUpdateCheckResponseSchema,
   type InstalledPlugin,
+  type PluginCatalogInstallPlan as PluginCatalogInstallPlanContract,
+  type PluginCatalogResolvedSource,
   type PluginCatalogSearchResult as PluginCatalogSearchContract,
+  type PluginMarketplace as PluginMarketplaceContract,
+  type PluginMarketplaceRefreshResult as PluginMarketplaceRefreshContract,
   type PluginCatalogStatus as PluginCatalogStatusContract,
   type PluginApplyUpdateResult as PluginApplyUpdateContract,
   type PluginListResponse,
@@ -30,11 +36,49 @@ import {
   type PluginRemoveResponse,
   type PluginSettingsResponse,
   type PluginSourceDetail,
+  type PluginSourceSelection,
   type PluginTokenResponse,
   type PluginUpdateCheckEntry,
 } from "@bb/server-contract";
 import { z } from "zod";
 import type { CreateSdkAreaArgs } from "./common.js";
+
+/**
+ * A server older than `providerIds` (bb-app < 0.39) or `icons` answers with
+ * the installed-plugin shape minus those fields. The contract keeps them
+ * required — the server fills them once at its boundary — so the tolerance
+ * lives here, on the response side only: the SDK never sends this shape,
+ * and a default on the contract would leak into request bodies.
+ */
+const installedPluginResponseSchema = installedPluginSchema.extend({
+  providerIds: z.array(z.string()).default([]),
+  icons: z.record(z.string(), z.string()).default({}),
+});
+const pluginListResponseSchema = z.object({
+  plugins: z.array(installedPluginResponseSchema),
+});
+const pluginInstallResponseSchema = z.object({
+  ok: z.literal(true),
+  plugin: installedPluginResponseSchema,
+});
+const pluginReloadResponseSchema = z.object({
+  ok: z.literal(true),
+  plugins: z.array(installedPluginResponseSchema),
+});
+
+/**
+ * The plugin mutation routes' answer as a CLI reads it: `ok` either way, an
+ * `error` on failure, the affected plugin(s) on success — with the same
+ * response-side tolerance for `providerIds`. The CLI parses through this
+ * instead of re-declaring the contract shape beside it.
+ */
+export const pluginMutationResponseSchema = z.object({
+  ok: z.boolean(),
+  error: z.string().optional(),
+  plugin: installedPluginResponseSchema.optional(),
+  plugins: z.array(installedPluginResponseSchema).optional(),
+});
+export type PluginMutationResponse = z.infer<typeof pluginMutationResponseSchema>;
 
 export interface PluginIdArgs {
   pluginId: string;
@@ -42,14 +86,70 @@ export interface PluginIdArgs {
 
 /** Install directly from a path:, git:, npm:, or builtin: source spec. */
 export interface PluginInstallArgs {
+  /**
+   * `path:<dir>`, `builtin:<name>`, `npm:<package>[@<version|tag|range>]`, or
+   * `git:<url>[@<spec>]`. A git spec is one ref, or a semver range resolved
+   * over the repository's `[<tagPrefix>]vX.Y.Z` release tags:
+   * `git:<url>@semver:<range>` and `git:<url>@semver:<tagPrefix>:<range>` say
+   * range explicitly, `git:<url>@ref:<name>` says ref explicitly, and a bare
+   * `^1.2.0` resolves over tags unless the repository also has a ref of that
+   * literal name (which is refused as ambiguous).
+   */
+  source: string;
+  /**
+   * Directory of a multi-plugin repository to install, relative to the
+   * repository root (`git:` and `path:` sources only).
+   */
+  subdirectory?: string;
+  /**
+   * Name of a `.bb/plugins.json` collection entry to install, resolved to its
+   * directory in the repository. Mutually exclusive with `subdirectory`.
+   */
+  plugin?: string;
   /** Permit installing from a BB-managed workspace that may later be deleted. */
   allowManagedWorkspaceSource?: boolean;
+}
+
+/** Install a catalog entry, from BB's official catalog or another marketplace. */
+export interface PluginCatalogInstallArgs {
+  entryId: string;
+  /**
+   * Marketplace that lists the entry. Omitted resolves across every
+   * marketplace: exactly one match installs, none falls back to the bundled
+   * official plugin of that name, and several are refused as ambiguous.
+   */
+  marketplace?: string;
+  /**
+   * Source facts returned by installPlan for a third-party entry. The server
+   * refuses the install when the listing or its git commit changed afterward.
+   */
+  confirmedSource?: PluginCatalogResolvedSource;
+}
+
+/** Ask what an install would do before confirming it. */
+export interface PluginCatalogInstallPlanArgs {
+  entryId: string;
+  marketplace?: string;
+  signal?: AbortSignal;
+}
+
+/** Add a marketplace by `https:` manifest URL, `git:<url>[@ref]`, or `path:<dir>`. */
+export interface PluginMarketplaceAddArgs {
   source: string;
 }
 
-/** Install an entry from BB's official catalog. */
-export interface PluginCatalogInstallArgs {
-  entryId: string;
+export interface PluginMarketplaceListArgs {
+  signal?: AbortSignal;
+}
+
+export interface PluginMarketplaceRefreshArgs {
+  /** One marketplace to refresh; omitted refreshes every one of them. */
+  name?: string;
+  signal?: AbortSignal;
+}
+
+export interface PluginMarketplaceRemoveArgs {
+  name: string;
 }
 
 export interface PluginReloadArgs {
@@ -115,18 +215,36 @@ export type PluginApplyUpdateResult = PluginApplyUpdateContract;
 
 export type PluginCatalogStatusResult = PluginCatalogStatusContract;
 export type PluginCatalogSearchResult = PluginCatalogSearchContract[];
+export type PluginCatalogInstallPlanResult = PluginCatalogInstallPlanContract;
+export type PluginMarketplaceListResult = PluginMarketplaceContract[];
+export type PluginMarketplaceAddResult = PluginMarketplaceContract;
+export type PluginMarketplaceRefreshResult = PluginMarketplaceRefreshContract[];
 
-export interface PluginCatalogSubmissionResult {
-  /** BB's canonical browser form for proposing a plugin to the marketplace. */
-  url: string;
+export interface PluginMarketplaceRemoveResult {
+  /** Installs whose provenance became `direct`; they keep running as before. */
+  convertedPluginIds: string[];
 }
 
 export interface PluginCatalogArea {
   install(args: PluginCatalogInstallArgs): Promise<PluginInstallResult>;
+  /** The true resolved source an install would use, before anything runs. */
+  installPlan(
+    args: PluginCatalogInstallPlanArgs,
+  ): Promise<PluginCatalogInstallPlanResult>;
   search(args: PluginCatalogSearchArgs): Promise<PluginCatalogSearchResult>;
   status(args?: PluginCatalogStatusArgs): Promise<PluginCatalogStatusResult>;
-  /** Return the canonical marketplace submission form; submitting stays browser-owned. */
-  submission(): PluginCatalogSubmissionResult;
+}
+
+/** Registered marketplaces. Adding one installs nothing; removing one uninstalls nothing. */
+export interface PluginMarketplacesArea {
+  add(args: PluginMarketplaceAddArgs): Promise<PluginMarketplaceAddResult>;
+  list(args?: PluginMarketplaceListArgs): Promise<PluginMarketplaceListResult>;
+  refresh(
+    args?: PluginMarketplaceRefreshArgs,
+  ): Promise<PluginMarketplaceRefreshResult>;
+  remove(
+    args: PluginMarketplaceRemoveArgs,
+  ): Promise<PluginMarketplaceRemoveResult>;
 }
 
 export interface PluginsArea {
@@ -136,6 +254,7 @@ export interface PluginsArea {
     args?: PluginCheckUpdatesArgs,
   ): Promise<PluginCheckUpdatesResult>;
   catalog: PluginCatalogArea;
+  marketplaces: PluginMarketplacesArea;
   disable(args: PluginIdArgs): Promise<PluginDisableResult>;
   enable(args: PluginIdArgs): Promise<PluginEnableResult>;
   getSettings(args: PluginGetSettingsArgs): Promise<PluginGetSettingsResult>;
@@ -151,6 +270,22 @@ export interface PluginsArea {
   updateSettings(
     args: PluginSettingsUpdateArgs,
   ): Promise<PluginUpdateSettingsResult>;
+}
+
+/**
+ * Returns the explicit selection a caller asked for, or `undefined` for a
+ * plain root install. The server fills the root default itself, and older
+ * servers validate the install body with a strict `{ source }`-only schema,
+ * so the SDK must not send a `selection` key the caller did not ask for.
+ */
+function pluginSourceSelection(
+  args: PluginInstallArgs,
+): PluginSourceSelection | undefined {
+  if (args.subdirectory !== undefined) {
+    return { kind: "subdirectory", path: args.subdirectory };
+  }
+  if (args.plugin !== undefined) return { kind: "entry", name: args.plugin };
+  return undefined;
 }
 
 function pluginPath(pluginId: string, suffix = ""): string {
@@ -192,6 +327,23 @@ export function createPluginsArea(args: CreateSdkAreaArgs): PluginsArea {
       );
       return response.plugin;
     },
+    async installPlan(input) {
+      const body = pluginCatalogInstallRequestSchema.parse(
+        input.marketplace === undefined
+          ? { entryId: input.entryId }
+          : { entryId: input.entryId, marketplace: input.marketplace },
+      );
+      const query = new URLSearchParams({ entryId: body.entryId });
+      if (body.marketplace !== undefined) {
+        query.set("marketplace", body.marketplace);
+      }
+      const response = await requestParsed(
+        `/api/v1/plugin-catalog/install-plan?${query.toString()}`,
+        pluginCatalogInstallPlanResponseSchema,
+        { signal: input.signal },
+      );
+      return response.plan;
+    },
     async search(input) {
       const query = z.string().parse(input.query);
       const response = await requestParsed(
@@ -209,8 +361,45 @@ export function createPluginsArea(args: CreateSdkAreaArgs): PluginsArea {
       );
       return response.catalog;
     },
-    submission() {
-      return { url: PLUGIN_SUBMISSION_FORM_URL };
+  };
+
+  const marketplaces: PluginMarketplacesArea = {
+    async add(input) {
+      const body = pluginMarketplaceAddRequestSchema.parse(input);
+      const response = await requestParsed(
+        "/api/v1/marketplaces",
+        pluginMarketplaceMutationResponseSchema,
+        jsonInit("POST", body),
+      );
+      return response.marketplace;
+    },
+    async list(input = {}) {
+      const response = await requestParsed(
+        "/api/v1/marketplaces",
+        pluginMarketplaceListResponseSchema,
+        { signal: input.signal },
+      );
+      return response.marketplaces;
+    },
+    async refresh(input = {}) {
+      const body = pluginMarketplaceRefreshRequestSchema.parse(
+        input.name === undefined ? {} : { name: input.name },
+      );
+      const response = await requestParsed(
+        "/api/v1/marketplaces/refresh",
+        pluginMarketplaceRefreshResponseSchema,
+        { ...jsonInit("POST", body), signal: input.signal },
+      );
+      return response.results;
+    },
+    async remove(input) {
+      const name = pluginMarketplaceNameSchema.parse(input.name);
+      const response = await requestParsed(
+        `/api/v1/marketplaces/${encodeURIComponent(name)}`,
+        pluginMarketplaceRemoveResponseSchema,
+        { method: "DELETE" },
+      );
+      return { convertedPluginIds: response.convertedPluginIds };
     },
   };
 
@@ -243,6 +432,7 @@ export function createPluginsArea(args: CreateSdkAreaArgs): PluginsArea {
       return response.results;
     },
     catalog,
+    marketplaces,
     async disable(input) {
       const response = await requestParsed(
         pluginPath(input.pluginId, "/disable"),
@@ -274,7 +464,22 @@ export function createPluginsArea(args: CreateSdkAreaArgs): PluginsArea {
       );
     },
     async install(input) {
-      const body = pluginInstallSourceRequestSchema.parse(input);
+      if (input.subdirectory !== undefined && input.plugin !== undefined) {
+        throw new Error(
+          "plugin install accepts subdirectory or plugin, not both",
+        );
+      }
+      const selection = pluginSourceSelection(input);
+      // Send only the keys the caller set. `.parse` validates the body but
+      // its output would fill in the root default the server owns.
+      const body = {
+        source: input.source,
+        ...(selection === undefined ? {} : { selection }),
+        ...(input.allowManagedWorkspaceSource === true
+          ? { allowManagedWorkspaceSource: true }
+          : {}),
+      };
+      pluginInstallSourceRequestSchema.parse(body);
       const response = await requestParsed(
         "/api/v1/plugins/install",
         pluginInstallResponseSchema,

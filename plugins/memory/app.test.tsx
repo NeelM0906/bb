@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadPluginApp, renderSlot } from "@bb/plugin-sdk/testing/app";
+import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 
 const app = await loadPluginApp(() => import("./app"));
 
@@ -26,7 +26,9 @@ afterEach(() => {
 });
 
 describe("memory settings", () => {
-  it("lists all memories and saves an inline edit", async () => {
+  it(
+    "lists all memories and saves an inline edit",
+    async () => {
     const slot = renderSlot(
       app.settingsSections[0]!,
       {},
@@ -63,7 +65,9 @@ describe("memory settings", () => {
       }),
     );
     await slot.findByText("Run all focused tests.");
-  });
+    },
+    20_000,
+  );
 
   it("confirms and deletes a memory", async () => {
     vi.stubGlobal(

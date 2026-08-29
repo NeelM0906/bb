@@ -7,34 +7,48 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { PLUGIN_INTERACTION_MAX_TITLE_LENGTH } from "@bb/domain/plugin-interaction-limits";
 import {
+  adoptHttpRouteResponse,
   AGENT_TOOL_NAME_PATTERN,
+  agentToolIconRefusalMessage,
+  aiServiceAlreadyRegisteredMessage,
+  assertAiServiceRegistrable,
+  assertNoRecursiveJsonSchemaReferences,
   BACKGROUND_NAME_PATTERN,
   CLI_COMMAND_NAME_PATTERN,
   enforcePluginCliOutputLimit,
+  isStandardSchema,
   isZodSchemaLike,
   KV_VALUE_MAX_BYTES,
   MENTION_PROVIDER_ID_PATTERN,
   normalizeMentionProviderTriggers,
+  parsePluginAgentToolPresentation,
+  pluginCliCollisionWarning,
   PLUGIN_AGENT_DYNAMIC_INSTRUCTIONS_MAX_CHARS,
   PLUGIN_AGENT_SELECTION_MAX_IDS,
   PLUGIN_AGENT_STATIC_INSTRUCTIONS_MAX_CHARS,
-  PLUGIN_AGENT_STATUS_LABEL_MAX_CHARS,
   PLUGIN_AGENT_TOOL_PARAMETERS_MAX_BYTES,
   PLUGIN_HTTP_METHODS,
+  providerAlreadyRegisteredMessage,
+  providerIconRefusalMessage,
+  providerWithoutBridgeMessage,
   readRpcMethodContract,
   registerSettingDescriptors,
+  rejectStaleAgentToolFields,
   RESERVED_AGENT_TOOL_NAMES,
-  RESERVED_BB_CLI_COMMANDS,
   RPC_METHOD_PATTERN,
   summarizeParseIssues,
+  undeclaredIconProblem,
+  validatePluginAiServiceDeclaration,
+  validatePluginProviderDeclaration,
   validateSettingsUpdate,
+  type NormalizedPluginProviderDeclaration,
 } from "../internal/host-policy.js";
 import type {
   BbPluginApi,
   PluginAgentConfiguration,
   PluginAgentConfigurationContext,
   PluginAgentToolContext,
-  PluginAgentToolExperimentalStatusLabels,
+  PluginAgentToolPresentation,
   PluginAgentToolResult,
   PluginAgents,
   PluginBackground,
@@ -56,6 +70,10 @@ import type {
   PluginMentionItem,
   PluginMentionSearchContext,
   PluginMentionTrigger,
+  PluginAiServiceDeclaration,
+  PluginAiServices,
+  PluginProviderDeclaration,
+  PluginProviders,
   PluginRealtime,
   PluginRpc,
   PluginServerApi,
@@ -75,7 +93,7 @@ import type {
   StandardSchemaV1Issue,
   StandardSchemaV1Result,
   JsonValue,
-} from "@bb/plugin-sdk";
+} from "@get-bb/plugin-sdk";
 import {
   createFakeSdk,
   type FakeSdkHarness,
@@ -158,8 +176,14 @@ export interface FakeCliRecord {
 export interface FakeAgentToolRecord {
   name: string;
   description: string;
-  experimentalStatusLabels: PluginAgentToolExperimentalStatusLabels | null;
   instructions: string | null;
+  /**
+   * The plugin's declared row presentation, null when it declared none.
+   * Parsed by the shared `parsePluginAgentToolPresentation`, so the record
+   * holds exactly what the production host stores and a presentation bb
+   * rejects is rejected here with the same message.
+   */
+  presentation: PluginAgentToolPresentation | null;
   /** JSON-schema object the host would send providers. */
   inputSchema: unknown;
   parse(
@@ -189,6 +213,13 @@ export interface FakeRealtimeSignal {
   payload: unknown;
 }
 
+export interface ExperimentalFakeHostRpcCall {
+  method: string;
+  input: unknown;
+  hostId: string;
+  signal?: AbortSignal;
+}
+
 /** Everything the plugin registered, exposed raw for assertions. */
 export interface FakePluginRegistrations {
   settingsDescriptors: PluginSettingDescriptors;
@@ -208,6 +239,12 @@ export interface FakePluginRegistrations {
     | null;
   threadEventHandlers: Record<PluginThreadEventName, number>;
   mentionProviders: FakeMentionProviderRecord[];
+  /** Live provider registrations from `bb.providers.register`
+   * (normalized declarations, registration order; dispose removes). */
+  providerRegistrations: NormalizedPluginProviderDeclaration[];
+  /** Live AI-service registrations from `experimental_aiServices.register`
+   * (normalized declarations, registration order; dispose removes). */
+  aiServiceRegistrations: PluginAiServiceDeclaration[];
 }
 
 /** Read-only state for assertions after a plugin registers or handles work. */
@@ -226,6 +263,8 @@ export interface FakePluginInspectionState {
     hostId: string;
     ports: number[];
   }>;
+  /** Calls made through bb.hosts.experimental_client, after input validation. */
+  readonly experimental_hostRpcCalls: readonly ExperimentalFakeHostRpcCall[];
   readonly pendingInteractions: readonly (PluginInteractionRequest & {
     id: string;
   })[];
@@ -233,6 +272,14 @@ export interface FakePluginInspectionState {
 
 /** Deterministic inputs that stand in for behavior normally driven by BB. */
 export interface FakePluginBehaviorDrivers {
+  /** Deliver an unexpected host-worker exit to every registered client. */
+  experimental_emitHostWorkerExit(hostId: string): Promise<void>;
+  /** Deliver a host signal through its registered payload schema. */
+  experimental_emitHostSignal(
+    hostId: string,
+    signal: string,
+    payload: unknown,
+  ): Promise<void>;
   submitInteraction(id: string, value: JsonValue): void;
   cancelInteraction(id: string): void;
   /**
@@ -353,6 +400,11 @@ export interface CreateFakePluginHostOptions {
    */
   loopbackBaseUrl?: string;
   /**
+   * Value served by `bb.server.experimental_dataDir`. Defaults to
+   * "/tmp/bb-fake-data-dir".
+   */
+  dataDir?: string;
+  /**
    * Pre-seeded stored settings values (as if saved before this load) —
    * including secret ones, which the fake keeps in memory instead of
    * files. Values with the wrong type for their descriptor fall back to
@@ -365,6 +417,28 @@ export interface CreateFakePluginHostOptions {
   agentSkillIds?: readonly string[];
   /** Read-only identities returned by bb.hosts.ensureSharedPortTunnel. */
   sharedPortTunnelIdentities?: Record<string, PluginSharedPortTunnelIdentity>;
+  /**
+   * Whether the plugin's manifest declares a `bb.host` entry. Production
+   * refuses `bb.providers.register` (the provider would have no bridge to
+   * run on) and `experimental_aiServices.register` (the service would have
+   * nothing to run on) without one; the fake applies the same rules.
+   * Defaults to true.
+   */
+  experimental_hostEntry?: boolean;
+  /**
+   * The icon names the plugin's manifest declares under
+   * `bb.branding.experimental_icons`. Production refuses a provider `icon`
+   * or a tool `presentation.icon.glyph` that is a namespaced glyph
+   * (`"<pluginId>/<name>"`) naming another plugin or a name not declared
+   * there; the fake applies the same rule against this list. Defaults to
+   * none declared, so every namespaced glyph is refused until the test
+   * names the icons the manifest would.
+   */
+  experimental_declaredIconNames?: readonly string[];
+  /** Deterministic stand-in for the targeted daemon host entry. */
+  experimental_callHostRpc?: (
+    call: ExperimentalFakeHostRpcCall,
+  ) => unknown | Promise<unknown>;
 }
 
 export interface FakePluginHost {
@@ -422,6 +496,19 @@ interface FakeRpcRecord {
   inputSchema: StandardSchemaV1;
   outputSchema: StandardSchemaV1;
   handler: (input: never) => unknown;
+}
+
+type FakeHostWorkerExitSubscription = (event: {
+  readonly hostId: string;
+}) => void | Promise<void>;
+
+interface FakeHostSignalSubscription {
+  signal: string;
+  payloadSchema: StandardSchemaV1;
+  handler: (event: {
+    hostId: string;
+    payload: unknown;
+  }) => void | Promise<void>;
 }
 
 function normalizeRpcIssues(
@@ -647,6 +734,10 @@ function normalizeAgentToolParameters(args: {
       `configure() output.tools[${index}].parameters must have root type "object"`,
     );
   }
+  assertNoRecursiveJsonSchemaReferences(
+    parameters,
+    `configure() output.tools[${index}].parameters`,
+  );
   return parameters;
 }
 
@@ -780,6 +871,7 @@ function createFakePluginHostInternal(
       ),
     } satisfies FakePluginPersistentState);
   const pluginId = options.pluginId ?? "test-plugin";
+  const declaredIconNames = new Set(options.experimental_declaredIconNames ?? []);
   const agentSkillIds = [...(options.agentSkillIds ?? [])];
   if (new Set(agentSkillIds).size !== agentSkillIds.length) {
     throw new Error("agentSkillIds must not contain duplicates");
@@ -842,13 +934,14 @@ function createFakePluginHostInternal(
   const storageRoot = persistentState.storageRoot;
 
   // One shared temp-file handle: every database() call sees the same data,
-  // like the host's handles over one on-disk file.
+  // like the host's handles over one on-disk file. Like the host, a handle
+  // the plugin closed itself is replaced on the next call.
   let databaseHandle: Database.Database | undefined;
   const storage: PluginStorage = {
     kv,
     database() {
       assertLive();
-      if (!databaseHandle) {
+      if (!databaseHandle?.open) {
         databaseHandle = new Database(join(storageRoot, "data.db"));
         databaseHandle.pragma("busy_timeout = 5000");
       }
@@ -1095,11 +1188,6 @@ function createFakePluginHostInternal(
           `invalid cli command name ${JSON.stringify(name)} — use lowercase letters, digits, and "-"`,
         );
       }
-      if (RESERVED_BB_CLI_COMMANDS.includes(name)) {
-        throw new Error(
-          `cli command name "${name}" is reserved by the bb CLI — pick another name`,
-        );
-      }
       if (
         typeof registration.summary !== "string" ||
         registration.summary.trim().length === 0
@@ -1138,17 +1226,85 @@ function createFakePluginHostInternal(
         commands: validatedCommands,
         run: registration.run.bind(registration),
       };
+      const warning = pluginCliCollisionWarning(pluginId, name);
+      if (warning) emitLog("warn", warning);
     },
   };
 
   // --- agents ---
   const agentTools: FakeAgentToolRecord[] = [];
+  const providerRegistrations: NormalizedPluginProviderDeclaration[] = [];
   let agentConfigurationProvider:
     | ((context: PluginAgentConfigurationContext) => PluginAgentConfiguration)
     | null = null;
   let instructionProvider:
     | ((ctx: { threadId: string; projectId: string }) => string | null)
     | null = null;
+  function registerProviderDeclaration(
+    declaration: PluginProviderDeclaration,
+  ): { dispose(): void } {
+    assertLive();
+    // The shared validator: the fake host must accept and reject provider
+    // declarations exactly like production.
+    const normalized = validatePluginProviderDeclaration(declaration);
+    // The same refusals production makes at the register call, in its
+    // order: the icon against the manifest's declared icons, then the
+    // bridge the declaration runs on, then the id.
+    const iconProblem =
+      normalized.icon === undefined
+        ? null
+        : undeclaredIconProblem(pluginId, declaredIconNames, normalized.icon);
+    if (iconProblem !== null) {
+      throw new Error(providerIconRefusalMessage(normalized.id, iconProblem));
+    }
+    if (options.experimental_hostEntry === false) {
+      throw new Error(providerWithoutBridgeMessage(normalized.id));
+    }
+    if (
+      providerRegistrations.some((existing) => existing.id === normalized.id)
+    ) {
+      throw new Error(providerAlreadyRegisteredMessage(normalized.id));
+    }
+    providerRegistrations.push(normalized);
+    let disposed = false;
+    const dispose = (): void => {
+      if (disposed) return;
+      disposed = true;
+      const index = providerRegistrations.indexOf(normalized);
+      if (index !== -1) providerRegistrations.splice(index, 1);
+    };
+    disposeHooks.push(dispose);
+    return { dispose };
+  }
+
+  const aiServiceRegistrations: PluginAiServiceDeclaration[] = [];
+  const experimental_aiServices: PluginAiServices = {
+    register(declaration) {
+      assertLive();
+      const normalized = validatePluginAiServiceDeclaration(declaration);
+      // The same refusals production makes at the register call. The fake
+      // host builds no artifact; the declared entry stands in for it.
+      assertAiServiceRegistrable({
+        id: normalized.id,
+        hostArtifact: options.experimental_hostEntry === false ? null : "declared",
+        hostArtifactProblem: null,
+      });
+      if (aiServiceRegistrations.some((existing) => existing.id === normalized.id)) {
+        throw new Error(aiServiceAlreadyRegisteredMessage(normalized.id));
+      }
+      aiServiceRegistrations.push(normalized);
+      let disposed = false;
+      const dispose = (): void => {
+        if (disposed) return;
+        disposed = true;
+        const index = aiServiceRegistrations.indexOf(normalized);
+        if (index !== -1) aiServiceRegistrations.splice(index, 1);
+      };
+      disposeHooks.push(dispose);
+      return { dispose };
+    },
+  };
+
   const agents: PluginAgents = {
     configure(provider) {
       assertLive();
@@ -1178,7 +1334,7 @@ function createFakePluginHostInternal(
       name: string;
       description: string;
       instructions?: string;
-      experimental_statusLabels?: PluginAgentToolExperimentalStatusLabels;
+      presentation?: PluginAgentToolPresentation;
       parameters: unknown;
       execute(
         params: never,
@@ -1197,6 +1353,7 @@ function createFakePluginHostInternal(
           `tool name "${name}" is a built-in bb tool — pick another name`,
         );
       }
+      rejectStaleAgentToolFields(name, tool);
       if (
         typeof tool.description !== "string" ||
         tool.description.trim().length === 0
@@ -1217,30 +1374,21 @@ function createFakePluginHostInternal(
           `tool "${name}" instructions exceed the ${PLUGIN_AGENT_STATIC_INSTRUCTIONS_MAX_CHARS}-character limit`,
         );
       }
-      const experimentalStatusLabels = tool.experimental_statusLabels;
-      if (
-        experimentalStatusLabels !== undefined &&
-        (typeof experimentalStatusLabels !== "object" ||
-          experimentalStatusLabels === null ||
-          typeof experimentalStatusLabels.pending !== "string" ||
-          typeof experimentalStatusLabels.completed !== "string" ||
-          experimentalStatusLabels.pending.trim().length === 0 ||
-          experimentalStatusLabels.completed.trim().length === 0)
-      ) {
-        throw new Error(
-          `tool "${name}" experimental_statusLabels must provide non-empty pending and completed strings`,
+      const presentation = parsePluginAgentToolPresentation(
+        name,
+        tool.presentation,
+      );
+      if (presentation?.icon !== undefined) {
+        // A namespaced glyph must name one of THIS plugin's declared icons,
+        // checked here like production checks it at the register call.
+        const problem = undeclaredIconProblem(
+          pluginId,
+          declaredIconNames,
+          presentation.icon.glyph,
         );
-      }
-      if (
-        experimentalStatusLabels !== undefined &&
-        (experimentalStatusLabels.pending.length >
-          PLUGIN_AGENT_STATUS_LABEL_MAX_CHARS ||
-          experimentalStatusLabels.completed.length >
-            PLUGIN_AGENT_STATUS_LABEL_MAX_CHARS)
-      ) {
-        throw new Error(
-          `tool "${name}" experimental_statusLabels exceed the ${PLUGIN_AGENT_STATUS_LABEL_MAX_CHARS}-character limit`,
-        );
+        if (problem !== null) {
+          throw new Error(agentToolIconRefusalMessage(name, problem));
+        }
       }
       if (typeof tool.execute !== "function") {
         throw new Error(
@@ -1283,16 +1431,14 @@ function createFakePluginHostInternal(
           `tool "${name}" parameters must be a zod schema or a JSON-schema object`,
         );
       }
+      assertNoRecursiveJsonSchemaReferences(
+        inputSchema,
+        `tool "${name}" parameters`,
+      );
       const record: FakeAgentToolRecord = {
         name,
         description: tool.description,
-        experimentalStatusLabels:
-          experimentalStatusLabels === undefined
-            ? null
-            : {
-                pending: experimentalStatusLabels.pending,
-                completed: experimentalStatusLabels.completed,
-              },
+        presentation,
         instructions:
           tool.instructions !== undefined && tool.instructions.trim().length > 0
             ? tool.instructions
@@ -1369,10 +1515,15 @@ function createFakePluginHostInternal(
 
   // --- server ---
   const loopbackBaseUrl = options.loopbackBaseUrl ?? "http://127.0.0.1:38886";
+  const dataDir = options.dataDir ?? "/tmp/bb-fake-data-dir";
   const server: PluginServerApi = {
     get loopbackBaseUrl(): string {
       assertLive();
       return loopbackBaseUrl;
+    },
+    get experimental_dataDir(): string {
+      assertLive();
+      return dataDir;
     },
   };
 
@@ -1488,7 +1639,103 @@ function createFakePluginHostInternal(
 
   const sharedPortDeclarations: FakePluginHarness["sharedPortDeclarations"] =
     [];
+  const hostRpcCalls: ExperimentalFakeHostRpcCall[] = [];
+  const hostWorkerExitSubscriptions: FakeHostWorkerExitSubscription[] = [];
+  const hostSignalSubscriptions: FakeHostSignalSubscription[] = [];
   const hosts: PluginHosts = {
+    experimental_client({ contract, experimental_signals }) {
+      return {
+        async call(method, input, callOptions) {
+          assertLive();
+          const methodContract = contract[method];
+          if (methodContract === undefined) {
+            throw new Error(`unknown host rpc method "${String(method)}"`);
+          }
+          if (
+            typeof callOptions !== "object" ||
+            callOptions === null ||
+            typeof callOptions.hostId !== "string" ||
+            callOptions.hostId.length === 0
+          ) {
+            throw new Error(
+              `host rpc method "${String(method)}" requires a host id`,
+            );
+          }
+          if (callOptions.signal?.aborted) {
+            throw Object.assign(new Error("Host plugin call was cancelled"), {
+              name: "AbortError",
+            });
+          }
+          const validatedInput = normalizeRpcJsonResult(
+            await validateRpcValue(methodContract.input, input, "input"),
+          );
+          const call: ExperimentalFakeHostRpcCall = {
+            method: String(method),
+            input: validatedInput,
+            hostId: callOptions.hostId,
+            ...(callOptions.signal === undefined
+              ? {}
+              : { signal: callOptions.signal }),
+          };
+          hostRpcCalls.push(call);
+          if (options.experimental_callHostRpc === undefined) {
+            throw new Error(
+              `fake plugin host has no experimental_callHostRpc stub for "${String(method)}"`,
+            );
+          }
+          const rawOutput = await options.experimental_callHostRpc(call);
+          const validatedOutput = await validateRpcValue(
+            methodContract.output,
+            rawOutput,
+            "output",
+          );
+          return normalizeRpcJsonResult(validatedOutput) as never;
+        },
+        experimental_onWorkerExit(handler) {
+          assertLive();
+          if (typeof handler !== "function") {
+            throw new Error("host worker exit subscription requires a handler");
+          }
+          hostWorkerExitSubscriptions.push(handler);
+          let subscribed = true;
+          return () => {
+            if (!subscribed) return;
+            subscribed = false;
+            const index = hostWorkerExitSubscriptions.indexOf(handler);
+            if (index >= 0) hostWorkerExitSubscriptions.splice(index, 1);
+          };
+        },
+        experimental_onSignal(signal, handler) {
+          assertLive();
+          const descriptor = experimental_signals?.[signal];
+          if (
+            typeof signal !== "string" ||
+            signal.length === 0 ||
+            typeof descriptor !== "object" ||
+            descriptor === null ||
+            !isStandardSchema(descriptor.payload)
+          ) {
+            throw new Error(`unknown host signal "${String(signal)}"`);
+          }
+          if (typeof handler !== "function") {
+            throw new Error("host signal subscription requires a handler");
+          }
+          const record: FakeHostSignalSubscription = {
+            signal,
+            payloadSchema: descriptor.payload,
+            handler,
+          };
+          hostSignalSubscriptions.push(record);
+          let subscribed = true;
+          return () => {
+            if (!subscribed) return;
+            subscribed = false;
+            const index = hostSignalSubscriptions.indexOf(record);
+            if (index >= 0) hostSignalSubscriptions.splice(index, 1);
+          };
+        },
+      };
+    },
     async ensureSharedPortTunnel(hostId) {
       assertLive();
       if (hostId.trim().length === 0) {
@@ -1546,6 +1793,12 @@ function createFakePluginHostInternal(
     },
   };
 
+  const providers: PluginProviders = {
+    register(declaration) {
+      return registerProviderDeclaration(declaration);
+    },
+  };
+
   const bb: BbPluginApi = {
     pluginId,
     log,
@@ -1557,11 +1810,13 @@ function createFakePluginHostInternal(
     background,
     cli,
     agents,
+    providers,
     ui,
     events,
     status,
     server,
     hosts,
+    experimental_aiServices,
     get sdk() {
       assertLive();
       return sdk;
@@ -1600,6 +1855,8 @@ function createFakePluginHostInternal(
     if (cleanupStorage) {
       rmSync(storageRoot, { recursive: true, force: true });
     }
+    hostWorkerExitSubscriptions.splice(0);
+    hostSignalSubscriptions.splice(0);
     invalidated = true;
   }
 
@@ -1618,6 +1875,7 @@ function createFakePluginHostInternal(
     realtimeSignals,
     needsConfigurationMessages,
     sharedPortDeclarations,
+    experimental_hostRpcCalls: hostRpcCalls,
     sdk: sdkHarness,
     registrations: {
       settingsDescriptors,
@@ -1648,12 +1906,43 @@ function createFakePluginHostInternal(
         };
       },
       mentionProviders,
+      providerRegistrations,
+      aiServiceRegistrations,
     },
     get pendingInteractions() {
       return [...pendingInteractions].map(([id, pending]) => ({
         id,
         ...pending.request,
       }));
+    },
+    async experimental_emitHostWorkerExit(hostId) {
+      assertLive();
+      if (hostId.trim().length === 0) {
+        throw new Error("host worker exit hostId must be non-empty");
+      }
+      for (const handler of [...hostWorkerExitSubscriptions]) {
+        await handler({ hostId });
+      }
+    },
+    async experimental_emitHostSignal(hostId, signal, payload) {
+      assertLive();
+      if (hostId.trim().length === 0) {
+        throw new Error("host signal hostId must be non-empty");
+      }
+      const subscriptions = hostSignalSubscriptions.filter(
+        (subscription) => subscription.signal === signal,
+      );
+      for (const subscription of subscriptions) {
+        const normalized = normalizeRpcJsonResult(
+          await validateRpcValue(subscription.payloadSchema, payload, "input"),
+        );
+        const parsed = await validateRpcValue(
+          subscription.payloadSchema,
+          normalized,
+          "input",
+        );
+        await subscription.handler({ hostId, payload: parsed });
+      }
     },
     submitInteraction(id, value) {
       const pending = pendingInteractions.get(id);
@@ -1779,11 +2068,7 @@ function createFakePluginHostInternal(
       const app = new Hono();
       app.on(route.method, route.path, async (context) => {
         try {
-          const response = await route.handler(context);
-          if (!(response instanceof Response)) {
-            throw new Error("http route handler must return a Response");
-          }
-          return response;
+          return adoptHttpRouteResponse(await route.handler(context));
         } catch (error) {
           const message = errorMessage(error);
           emitLog(

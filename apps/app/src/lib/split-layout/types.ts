@@ -12,6 +12,11 @@ export type PaneContent =
       pluginId: string;
       panelPath: string;
       subPath: string;
+    }
+  /** An installed plugin's Extensions detail page. */
+  | {
+      kind: "plugin-detail";
+      pluginId: string;
     };
 
 export interface PaneNode {

@@ -18,10 +18,8 @@ import {
   AutomationRunStatusIndicator,
 } from "bb-plugin-automations/detail-view";
 import { AUTOMATION_CREATE_TEMPLATES } from "bb-plugin-automations/overview-view";
-import {
-  pluginSourceQueryKey,
-  type PluginCatalogSearchEntry,
-} from "@/hooks/queries/plugin-catalog-queries";
+import type { PluginCatalogSearchEntry } from "@/hooks/queries/plugin-catalog-queries";
+import { pluginSourceQueryKey } from "@/hooks/queries/query-keys";
 import {
   EMPTY_PLUGIN_UPDATE_STATE,
   type PluginListItem,
@@ -38,14 +36,12 @@ import {
   PluginProvenancePill,
 } from "@/components/tools/PluginDetail";
 import {
-  BbLogo,
   ProviderLogo,
   SkillProvenanceTooltip,
 } from "@/components/tools/SkillsCollection";
-import {
-  SkillDetailView,
-  SkillOwnershipBadge,
-} from "@/components/tools/SkillDetailView";
+import { BbLogo } from "@/components/ui/bb-logo";
+import { ProvenancePill } from "@/components/tools/ProvenancePill";
+import { SkillDetailView } from "@/components/tools/SkillDetailView";
 
 /**
  * Every state each tool type's detail page can be in, rendered as the real
@@ -404,6 +400,7 @@ const PLUGIN: PluginListItem = {
   provenance: "direct",
   isOrphanedBuiltin: false,
   catalogEntryId: null,
+  publisherLabel: null,
   sourceDisplay: "npm · @bb-plugins/github",
   updateState: EMPTY_PLUGIN_UPDATE_STATE,
 };
@@ -560,13 +557,23 @@ const BUNDLED_PLUGIN: PluginListItem = {
 
 const UNINSTALLED_CATALOG_PLUGIN = {
   entryId: "github",
+  marketplace: "bb-community",
   pluginId: "github",
   displayName: "GitHub",
   description: "Browse GitHub issues and pull requests without leaving bb.",
   icon: "Github",
+  iconUrl: null,
+  iconTinted: false,
   category: "Developer tools",
   source: "builtin:github",
+  repositoryUrl: null,
+  marketplaceDisplayName: "BB Community",
+  publisherKey: "builtin",
+  publisherLabel: "BB Official",
+  official: true,
+  author: null,
   installed: false,
+  installs: null,
   compatible: true,
   incompatibleReason: null,
 } satisfies PluginCatalogSearchEntry;
@@ -689,8 +696,12 @@ function CatalogPlugin({
         open={installOpen}
         initial={{
           entryId: entry.entryId,
+          marketplace: "bb-community",
+          publisherLabel: "BB Community",
           displayName: entry.displayName,
           icon: entry.icon,
+          iconUrl: entry.iconUrl,
+          iconTinted: entry.iconTinted,
           source: entry.source,
         }}
         onOpenChange={setInstallOpen}
@@ -1099,10 +1110,10 @@ const CATALOG_PLUGIN = {
   id: "github-official",
   provenance: "catalog",
   catalogEntryId: "github",
+  publisherLabel: "BB Community",
 } satisfies PluginListItem;
 
 const pluginUninstallItems = [
-  { label: "Submit to marketplace", icon: "Github" as const, onSelect: noop },
   {
     label: "Uninstall",
     icon: "Trash2" as const,
@@ -1123,7 +1134,6 @@ const pluginCatalogItems = [
 const pluginLocalItems = [
   { label: "Edit", icon: "Edit" as const, onSelect: noop },
   { label: "Open source", icon: "ExternalLink" as const, onSelect: noop },
-  { label: "Submit to marketplace", icon: "Github" as const, onSelect: noop },
   {
     label: "Remove from bb",
     icon: "Trash2" as const,
@@ -1246,17 +1256,14 @@ export function ResourceControlStates() {
           <ControlRow
             state="Skill · BB Official"
             control={
-              <SkillOwnershipBadge
-                label="BB Official"
-                tooltip="Ships with bb"
-              />
+              <ProvenancePill label="BB Official" tooltip="Ships with bb" />
             }
             meaning="A skill that ships with bb."
           />
           <ControlRow
             state="Skill · Included"
             control={
-              <SkillOwnershipBadge
+              <ProvenancePill
                 label="Included"
                 tooltip={
                   <SkillProvenanceTooltip
@@ -1272,7 +1279,7 @@ export function ResourceControlStates() {
           <ControlRow
             state="Skill · Imported"
             control={
-              <SkillOwnershipBadge
+              <ProvenancePill
                 label="Imported"
                 tooltip={
                   <SkillProvenanceTooltip

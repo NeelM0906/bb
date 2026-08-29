@@ -3,6 +3,7 @@ import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import {
   buildPluginApp,
+  buildPluginHost,
   buildPluginServer,
   resolvePluginBuildToolchain,
 } from "@bb/plugin-build";
@@ -84,12 +85,27 @@ async function writeRuntimePackageJson(args: {
           ...packageJson.bb,
           server: "./dist/server.js",
           ...(packageJson.bb.app === undefined ? {} : { app: "./dist/app.js" }),
+          ...(packageJson.bb.host === undefined
+            ? {}
+            : { host: "./dist/host.js" }),
         },
       },
       null,
       2,
     )}\n`,
   );
+}
+
+/**
+ * Runs `<pluginRoot>/scripts/stage-assets.mjs` when a plugin has one. The
+ * script's side effects are its contract: it populates `dist/` with runtime
+ * files the bundlers cannot produce (the Monaco plugin copies Monaco's AMD
+ * build in this way).
+ */
+async function runStageAssets(sourceRoot: string): Promise<void> {
+  const scriptPath = path.join(sourceRoot, "scripts", "stage-assets.mjs");
+  if (!(await exists(scriptPath))) return;
+  await import(pathToFileURL(scriptPath).href);
 }
 
 async function copyBuiltinPlugin(args: {
@@ -113,6 +129,13 @@ async function copyBuiltinPlugin(args: {
     if (packageJson.bb.app !== undefined) {
       await buildPluginApp(args.sourceRoot, args.bbVersion, toolchain);
     }
+    if (packageJson.bb.host !== undefined) {
+      await buildPluginHost(args.sourceRoot, args.bbVersion, toolchain);
+    }
+    // A plugin that needs files on disk at runtime (rather than bundled into
+    // its server/app) stages them into `dist/` here, because `RUNTIME_DIRS`
+    // below is all that ships. Optional: most plugins have no such script.
+    await runStageAssets(args.sourceRoot);
   }
 
   const targetDir = path.join(args.targetRoot, args.name);
@@ -133,11 +156,24 @@ async function copyBuiltinPlugin(args: {
       await readFile(path.join(args.sourceRoot, "package.json"), "utf8"),
     ),
   );
+  // Every asset the manifest declares ships; an asset a plugin names only in
+  // code (a `./icons/x.svg` provider icon in a declaration) is invisible
+  // here and is absent from the packaged plugin. A builtin provider declares
+  // its logos under `bb.branding.experimental_icons` and references them by
+  // namespaced glyph for that reason.
   const logo = packageJson.bb.branding.logo;
   const compactIcon = isPluginOwnedIconPath(packageJson.bb.branding.icon ?? "")
     ? packageJson.bb.branding.icon
     : undefined;
-  for (const asset of [compactIcon, logo?.light, logo?.dark]) {
+  const declaredIcons = Object.values(
+    packageJson.bb.branding.experimental_icons ?? {},
+  );
+  for (const asset of [
+    compactIcon,
+    logo?.light,
+    logo?.dark,
+    ...declaredIcons,
+  ]) {
     if (asset === undefined) continue;
     const sourcePath = path.resolve(args.sourceRoot, asset);
     const targetPath = path.resolve(targetDir, asset);

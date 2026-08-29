@@ -65,12 +65,12 @@ service-unavailable failure. Their defaults are `codex/gpt-5.6-luna` and
 Server-backed General settings
 
 Settings → General includes app-wide preferences stored server-side so every
-window and restart sees the same value. On macOS, the Caffeinate toggle asks the
-primary host daemon to run `/usr/bin/caffeinate -i -w <daemon-pid>`, preventing
-system idle sleep while bb is running; turning it off stops that process. It
-only blocks idle sleep: closing a laptop lid or choosing Sleep manually still
-sleeps the Mac. This setting is only shown when the connected primary host
-daemon reports macOS.
+window and restart sees the same value. Keep Awake is instead owned by its
+builtin plugin: use its autosaving page under Extensions → Plugins or run
+`bb keep-awake enable` or `bb keep-awake disable`. Choose every host with `bb
+keep-awake hosts all`, or name individual host ids after `bb keep-awake hosts`.
+On macOS it prevents system idle sleep while bb is running; closing the lid or
+choosing Sleep still sleeps the Mac.
 
 Settings → Keyboard also includes `showKeyboardHints`, which defaults to true.
 Turn it off to hide the delayed shortcut badges shown while holding Command or
@@ -84,32 +84,50 @@ understand; development builds always show these diagnostic rows.
 Settings → General also includes `steerActiveThreadOnEnter`, which defaults to
 false. Outside an open typeahead menu, enabling it makes Enter steer a running
 thread and Command+Enter queue a follow-up; when disabled, those actions are
-reversed. Shift+Enter inserts a newline, and unmodified Enter inserts a newline
-in zen mode. On coarse-pointer touch devices, the software-keyboard Return path
-inserts a newline. iPadOS WebKit preserves these Enter shortcuts for a connected
-Magic Keyboard.
+reversed. Shift+Enter inserts a newline. On coarse-pointer touch devices, the
+software-keyboard Return path inserts a newline. iPadOS WebKit preserves these
+Enter shortcuts for a connected Magic Keyboard.
+
+Settings → General also includes `streamerMode`, which defaults to false. Turn
+it on to hide every `customModels` entry from `~/.bb/config.json` in all model
+lists (pickers, `bb provider models`, and the SDK) during a screen share. The
+entries stay in the config file.
 
   bb settings show
-  bb settings general <key> <true|false>
-  bb settings replay-onboarding
+  bb settings ai-services
+  bb settings general <key> <value>
   bb settings experiment <key> <value>
   bb settings usage [--machine <id-or-name>]
   bb settings version [--force]
   bb settings reload
 
-`bb settings replay-onboarding` enables the `newOnboarding` experiment and
-clears `onboardingCompletedAt`. The first-run setup guide then shows again on
-the next app load. The same button lives in Settings → General → Setup guide
-while the experiment is on.
+`bb settings ai-services` shows the helper-inference and voice-transcription
+settings (`BB_INFERENCE`, `BB_INFERENCE_FALLBACK`, `BB_TRANSCRIPTION`, set with
+`bb-app config`) and the plugin-registered AI services they may name as
+`<service>/<model>`.
 
-The `newOnboarding` experiment exposes the first-run agent and project setup
-guide.
+`bb settings general` accepts any key from `generalSettings` in
+`bb settings show`. Boolean preferences take `true`, `false`, `on`, or `off`,
+and `null` clears a preference that can be unset.
+
+The default-off `changelogPreview` experiment shows the latest release notes
+as a compact, dismissible card on Settings → Updates.
 The default-on `editMessages` experiment enables editing eligible, accepted
 root user messages in Codex, Claude Code, and Pi threads, including failed or
 incomplete turns; turn it off to hide the editor. Opening the editor is
 client-local; submitting stops and settles a running thread, then replaces the
 selected turn and all later conversation history while retaining workspace side
 effects. Grouped multi-message requests are not yet editable.
+
+The default-off `providerSessionReaping` experiment extends idle release to
+every restorable provider. BB releases those sessions after 30 idle minutes.
+The daemon applies a changed value within five minutes. Active turns, commands,
+agents, workflows, and monitors keep their sessions loaded. BB releases idle
+Codex sessions with the experiment off as well.
+
+The default-off `timelineWindowing` experiment mounts only nearby rows in long
+timelines and large expanded timeline details. Enable it with
+`bb settings experiment timelineWindowing true`.
 
 Thread timeline windows are bounded by event count as well as user-message
 count (`BB_FF_TIMELINE_WINDOW_EVENT_BUDGET`, default 1500), so a long thread
