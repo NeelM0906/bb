@@ -21,10 +21,7 @@ const FANOUT_PROVIDERS: ReadonlyArray<string> = [
   "fake-beta",
 ];
 const THREADS_PER_PROVIDER = 2;
-// Same-source managed worktrees serialize through the git worktree metadata
-// lock. Fifteen concurrent adds exceeded GitHub-hosted CI; two per provider
-// still fans out across fake/fake-alpha/fake-beta.
-const FRESH_FANOUT_TIMEOUT_MS = scaleTimeoutMs(60_000);
+const FRESH_FANOUT_TIMEOUT_MS = scaleTimeoutMs(30_000);
 
 describe.sequential(
   "fake provider fresh-environment fanout integration",
@@ -124,8 +121,18 @@ describe.sequential(
       "starts two fresh managed-worktree threads per provider",
       () =>
         withHarness(async (harness) => {
+          const sourceRepo = await createTestGitRepo({
+            repoDir: path.join(path.dirname(harness.repoDir), "fanout-project"),
+            files: [
+              {
+                relativePath: "README.md",
+                content: "fanout project\n",
+              },
+            ],
+          });
           const project = await createProjectFixture(harness, {
             name: "Fresh Environment Fanout",
+            path: sourceRepo,
           });
           const requests = FANOUT_PROVIDERS.flatMap((providerId) =>
             Array.from({ length: THREADS_PER_PROVIDER }, (_, index) => ({
