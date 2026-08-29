@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { defaultResolvedCodeTheme } from "@bb/domain";
 import type { PluginCodeThemeState } from "@get-bb/plugin-sdk";
 import { afterEach, describe, expect, it } from "vitest";
@@ -23,6 +23,7 @@ function renderProbe() {
 }
 
 afterEach(() => {
+  cleanup();
   applyResolvedCodeTheme(defaultResolvedCodeTheme);
 });
 

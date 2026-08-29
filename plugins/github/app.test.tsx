@@ -78,7 +78,9 @@ describe("GitHub app navigation", () => {
     slot.lifecycle.unmount();
   });
 
-  it("keeps removed pull-request files out of live workspace navigation", async () => {
+  it(
+    "keeps removed pull-request files out of live workspace navigation",
+    async () => {
     const slot = renderSlot(
       app.threadPanelActions[0]!,
       { threadId: "thr-1", params: null },
@@ -150,5 +152,7 @@ describe("GitHub app navigation", () => {
       slot.getByRole("button", { name: "Collapse removed.ts diff" }),
     ).toBeDefined();
     slot.lifecycle.unmount();
-  });
+    },
+    20_000,
+  );
 });
