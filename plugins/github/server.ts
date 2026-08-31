@@ -752,6 +752,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   let repoCache: (RepoDiscoveryResult & { fetchedAt: number }) | null = null;
+  let invalidExtraRepos: string[] = [];
   let lastInvalidExtraReposKey: string | null = null;
 
   async function listProjectOriginRepos(): Promise<RepoDiscoveryResult> {
@@ -829,6 +830,7 @@ export default async function plugin(bb: BbPluginApi) {
         bb.log.warn(describeInvalidRepoEntries("extraRepos", parsedExtra.invalid));
       }
     }
+    invalidExtraRepos = parsedExtra.invalid;
     const previouslyAutoTracked =
       (await bb.storage.kv.get<string[]>("auto-tracked-repos")) ?? [];
     const projectDiscovery = await listProjectOriginRepos();
@@ -1932,11 +1934,18 @@ export default async function plugin(bb: BbPluginApi) {
         if (sub === "repos") {
           const repos = await discoverRepos(true);
           const warning =
-            ignoredExtraRepos.length > 0
-              ? { stderr: `${describeIgnoredExtraRepos(ignoredExtraRepos)}\n` }
+            invalidExtraRepos.length > 0
+              ? {
+                  stderr: `${describeInvalidRepoEntries("extraRepos", invalidExtraRepos)}\n`,
+                }
               : {};
           if (repos.length === 0) {
-            return { exitCode: 0, stdout: "No tracked repos. Share owner/repo values via extraRepos, or enable Follow BB project remotes for origins you can write to." };
+            return {
+              exitCode: 0,
+              stdout:
+                "No tracked repos. Share owner/repo values via extraRepos, or enable Follow BB project remotes for origins you can write to.",
+              ...warning,
+            };
           }
           return {
             exitCode: 0,
