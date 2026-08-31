@@ -52,7 +52,6 @@ const STANDARD_AGENT_INSTRUCTIONS = renderTemplate(
 const UPDATE_ENVIRONMENT_DIRECTORY_INSTRUCTIONS =
   "If the user asks you to move this thread to another checkout, worktree, or directory, make sure the target directory exists, then call `update_environment_directory` with its absolute path. After it succeeds, stop work in the current turn; future turns will run in the updated environment.";
 
-/** Cap on each plugin's contributeInstructions output (per resolution). */
 const PLUGIN_INSTRUCTION_CONTRIBUTION_MAX_CHARS = 4096;
 
 export interface ThreadRuntimeCommandEnvironment {
@@ -107,18 +106,10 @@ function requireWorkspacePath(
 
 interface DynamicToolContribution {
   tool: DynamicTool;
-  /** Usage snippet appended to the thread instructions; null for none. */
   instructions: string | null;
-  /** Contributing plugin id; null for built-in tools. */
   pluginId: string | null;
 }
 
-/**
- * The session's dynamic tool set: built-ins first, then native plugin tools
- * (bb.agents.registerTool), resolved live at thread.start/turn.submit — so
- * tool-set changes apply on the next session start, never mid-session.
- * Conditionally selected plugin tools follow configure() like any thread.
- */
 function resolveDynamicTools(
   pluginTools: ReturnType<typeof listPluginAgentTools>,
 ): DynamicToolContribution[] {
@@ -139,9 +130,6 @@ function resolveDynamicTools(
 export function resolvePermissionEscalation(
   args: ResolvePermissionEscalationArgs,
 ): PermissionEscalation {
-  // System turns (parent notifications, recovery) must not prompt. A
-  // user-started turn asks even on a delegated child so a sandbox-blocked
-  // action can surface on the parent instead of failing in silence.
   if (args.initiator !== "user") {
     return "deny";
   }
@@ -231,9 +219,6 @@ export async function resolveThreadRuntimeCommandConfig(
         id: args.thread.providerId,
         model: args.model,
         capabilities: {
-          // Absent registration (a provider whose plugin is disabled
-          // mid-thread) reads as "no native affordance", which is the safe
-          // answer: the plugin contributes its own.
           supportsNativeUserQuestion:
             deps.providerRegistry.get(args.thread.providerId)?.info.capabilities
               .supportsNativeUserQuestion ?? false,
@@ -262,9 +247,6 @@ export async function resolveThreadRuntimeCommandConfig(
     (contribution) => contribution.tool,
   );
   const instructionSections = [STANDARD_AGENT_INSTRUCTIONS];
-  // Per-tool instructions: each dynamic tool carries its own snippet (the
-  // built-in update_environment_directory guidance is one of them; plugin
-  // tools are description-only unless they registered a snippet).
   for (const contribution of dynamicToolContributions) {
     if (!contribution.instructions) continue;
     if (contribution.pluginId === null) {
@@ -276,8 +258,6 @@ export async function resolveThreadRuntimeCommandConfig(
       );
     }
   }
-  // Legacy plugin-level contributeInstructions providers (after per-tool
-  // snippets, before configure dynamic instructions).
   for (const contribution of listPluginInstructionContributions()) {
     let text: string | null;
     try {
@@ -305,10 +285,6 @@ export async function resolveThreadRuntimeCommandConfig(
       text,
     );
   }
-  // Conditional dynamic instructions follow the legacy/static plugin-level
-  // providers on every thread, including side chats. Each configure output
-  // was already validated and capped by the plugin service;
-  // user/data-dir/workspace instructions still follow.
   for (const contribution of conditionalConfiguration.dynamicInstructions) {
     instructionSections.push(
       `The following dynamic instructions come from the BB plugin "${contribution.pluginId}":`,

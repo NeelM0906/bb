@@ -8,6 +8,7 @@ import {
   githubRpcContract,
   isAuthoritativeMissingOrigin,
   nextAutoTrackedRepos,
+  parseRepoListWithInvalid,
   parsePaginatedGhApi,
   parseRepoList,
   projectReposForTracking,
@@ -133,6 +134,30 @@ describe("GitHub RPC contract", () => {
     expect(() => parsePaginatedGhApi(JSON.stringify([{ id: 1 }]))).toThrow(
       "malformed page",
     );
+  });
+
+  it("separates usable extraRepos entries from ones it cannot honor", () => {
+    expect(parseRepoListWithInvalid("get-bb/bb, nonsense")).toEqual({
+      repos: ["get-bb/bb"],
+      invalid: ["nonsense"],
+    });
+    expect(parseRepoListWithInvalid("SOME-ORG/*")).toEqual({
+      repos: [],
+      invalid: ["SOME-ORG/*"],
+    });
+    expect(parseRepoListWithInvalid("")).toEqual({ repos: [], invalid: [] });
+    expect(parseRepoListWithInvalid("  ,, \n ")).toEqual({
+      repos: [],
+      invalid: [],
+    });
+    expect(parseRepoListWithInvalid(" acme/one\nacme/two , acme/one ")).toEqual({
+      repos: ["acme/one", "acme/two"],
+      invalid: [],
+    });
+    expect(parseRepoListWithInvalid("bad/repo/shape acme").invalid).toEqual([
+      "bad/repo/shape",
+      "acme",
+    ]);
   });
 
   it("rejects CLI arguments that would otherwise broaden a repository query", () => {

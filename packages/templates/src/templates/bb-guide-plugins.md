@@ -71,7 +71,7 @@ Commands must run from a BB project thread. Workflows has six plugin
 settings, configurable with `bb plugin config workflows set <key> <value>`:
 `maxActiveRuns` (default 4, range 1–32), `maxConcurrentAgents` (8, 1–64),
 `maxAgentCalls` (100, 1–1000), `totalRunTimeoutMs` (86400000, 60000–604800000),
-`retentionDays` (30, 1–3650), and `maxNotificationBytes` (16384,
+`retentionDays` (7, 1–3650), and `maxNotificationBytes` (16384,
 1024–262144). `maxActiveRuns` applies live; the other five are snapshotted for
 each new run. Settings changes do not require a plugin reload.
 
@@ -122,6 +122,9 @@ a manifest-backed local workspace:
 Pull preserves vault-relative paths and writes `.bb-docs-state.json`; edit the
 ordinary files and leave that state file untouched. Push uses pulled SHA-256
 versions as compare-and-swap guards. Concurrent changes stop with exit 3.
+Status exits 0 when no changes exist and exits 4 when changes exist. Exit 4 is
+a successful result. Review its output, then run push separately. Do not
+connect status and push with `&&`.
 Local file and empty-directory deletions are warnings unless `--delete` is
 explicit; a pulled folder root is retained, so pull its parent or the whole
 vault to remove that folder. Use `--workspace-host <id>` when a standalone

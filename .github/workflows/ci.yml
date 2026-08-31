@@ -141,7 +141,7 @@ jobs:
           cache-prefix: test-${{ matrix.shard }}
 
       - name: Test
-        run: pnpm exec turbo run test ${{ matrix.filter }} --cache-dir=.turbo/cache --output-logs=new-only ${{ matrix.args }}
+        run: pnpm exec turbo run test ${{ matrix.filter }} --cache-dir=.turbo/cache --output-logs=new-only --concurrency=4 ${{ matrix.args }}
 
   # The macOS legs run without the Turbo cache. Restoring and saving a ~2 GB
   # cache over GitHub's service is slow and blows past the repository quota.
@@ -150,7 +150,7 @@ jobs:
   package-smoke:
     name: Package Smoke (${{ matrix.os }}, Node ${{ matrix.node-version }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     strategy:
       fail-fast: false
@@ -177,6 +177,20 @@ jobs:
 
       - name: Smoke bb-app tarball
         run: pnpm exec turbo run smoke:tarball --filter=bb-app --cache-dir=.turbo/cache --output-logs=new-only
+
+      - name: Install AppImage FUSE runtime
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libfuse2t64
+
+      - name: Package Linux AppImage
+        if: ${{ runner.os == 'Linux' }}
+        run: pnpm exec turbo run desktop:build:linux --filter=@bb/desktop --cache-dir=.turbo/cache --output-logs=new-only
+
+      - name: Smoke Linux AppImage mount lifecycle
+        if: ${{ runner.os == 'Linux' }}
+        run: xvfb-run -a pnpm exec turbo run smoke:appimage-lifecycle --filter=@bb/desktop --force --cache-dir=.turbo/cache --output-logs=new-only
 
   node-compat-smoke:
     name: Node Compatibility Smoke (${{ matrix.os }}, Node ${{ matrix.node-version }})

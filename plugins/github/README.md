@@ -36,7 +36,9 @@ Tracking is opt-in. The plugin never follows an `upstream` remote.
 
 - **Shared repositories** (`extraRepos`): comma-separated `owner/repo` list
   you explicitly grant. These are tracked even if you only have public-read
-  access.
+  access. Entries that are not `owner/repo` — a `owner/*` wildcard, a bare
+  owner, a typo — are not tracked; the plugin log warns once per distinct
+  set. Wildcards are not supported.
 - **BB project remotes** (`trackProjectRemotes`, on by default): each
   project's GitHub `origin` remote, and only when GitHub granted you more
   than public-read access (`TRIAGE` / `WRITE` / `MAINTAIN` / `ADMIN`). A

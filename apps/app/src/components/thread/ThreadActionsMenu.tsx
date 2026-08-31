@@ -22,15 +22,12 @@ import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { CompactLongPressMenu } from "@/components/ui/compact-long-press-menu";
 import { isThreadRead } from "@bb/client-core";
+import { copyToClipboardWithToast } from "@/lib/clipboard";
+import { getThreadRoutePath } from "@/lib/route-paths";
 import { useThreadActions } from "./ThreadActionsProvider";
 
 interface ThreadActionsMenuBaseProps {
   thread: Thread;
-  /**
-   * When provided, adds a leading "Open in split" entry (the split feature's
-   * second entry point, alongside cmd-click). Omitted where splits don't apply
-   * (e.g. compact viewports), so the item only appears when meaningful.
-   */
   onOpenInSplit?: () => void;
 }
 
@@ -43,10 +40,6 @@ export interface ThreadActionsMenuResponsiveAction {
 interface ThreadActionsMenuProps extends ThreadActionsMenuBaseProps {
   onOpenChange?: (open: boolean) => void;
   triggerClassName?: string;
-  /**
-   * Contextual toolbar actions that move into this menu when a split header is
-   * too narrow to show them inline.
-   */
   responsiveActions?: readonly ThreadActionsMenuResponsiveAction[];
 }
 
@@ -144,6 +137,10 @@ function ThreadActionsMenuItems({
   const isRead = isThreadRead(thread);
   const isArchived = thread.archivedAt != null;
   const isPinned = thread.pinnedAt !== null;
+  const threadUrl = new URL(
+    getThreadRoutePath({ projectId: thread.projectId, threadId: thread.id }),
+    window.location.origin,
+  ).toString();
 
   return (
     <>
@@ -182,7 +179,18 @@ function ThreadActionsMenuItems({
           ) : null}
         </>
       ) : null}
-      {/* Quick status toggles. */}
+      <ThreadActionMenuItem
+        surface={surface}
+        icon="Copy"
+        onSelect={() => {
+          void copyToClipboardWithToast(threadUrl, {
+            successMessage: "Thread link copied",
+            errorMessage: "Failed to copy thread link",
+          });
+        }}
+      >
+        Copy thread link
+      </ThreadActionMenuItem>
       <ThreadActionMenuItem
         surface={surface}
         icon={isRead ? "Mail" : "MailOpen"}
@@ -242,11 +250,6 @@ function ThreadActionsMenuItems({
   );
 }
 
-/**
- * One-click archive (or unarchive) button for hover-revealed row actions. It
- * runs the same lifecycle as the menu's Archive entry, so undo, navigation,
- * and child cascade behave identically.
- */
 export function ThreadArchiveQuickAction({
   thread,
   className,
@@ -329,13 +332,6 @@ export function ThreadActionsMenu({
   );
 }
 
-/**
- * Row-level actions menu: a right-click context menu on wide viewports, and on
- * compact viewports a touch long-press (or right-click) that opens the same
- * items in the persistent responsive drawer. The compact path deliberately
- * avoids the modal Radix `ContextMenu` (aria-hidden on the app root, scroll
- * lock, document-wide pointer-events flip) on phones.
- */
 export function ThreadActionsContextMenu(props: ThreadActionsContextMenuProps) {
   const isCompactViewport = useIsCompactViewport();
   if (isCompactViewport) {

@@ -46,9 +46,11 @@
         "$TURBO_ROOT$/packages/plugin-sdk/bundled-types/**",
         "$TURBO_ROOT$/packages/plugin-sdk/package.json",
         // wireframes.test.ts asserts fixture fidelity against the real app
-        // source, and maintenance-skill.test.ts reads the shipped skill, so
-        // both are inputs — otherwise edits to them cache-hit a stale pass.
+        // source, and maintenance-skill.test.ts reads the repository skill plus
+        // Plugin Guide source; all are inputs to prevent stale cache hits.
         "$TURBO_ROOT$/apps/app/src/views/thread-detail/ThreadDetailView.tsx",
+        "$TURBO_ROOT$/.agents/skills/plugin-guide-maintenance/**",
+        "$TURBO_ROOT$/.bb/skills/plugin-guide-maintenance/**",
         "$TURBO_ROOT$/plugins/plugin-api-docs/**",
         "$TURBO_ROOT$/vitest.shared.ts"
       ]
@@ -188,6 +190,13 @@
       "cache": false,
       "outputs": [],
       "passThroughEnv": ["*"]
+    },
+    "@bb/desktop#smoke:appimage-lifecycle": {
+      "cache": false,
+      "outputs": [],
+      "passThroughEnv": [
+        "*"
+      ]
     },
     "@bb/desktop#dev": {
       "dependsOn": ["bb-app#build"],
@@ -392,7 +401,11 @@
         "@get-bb/plugin-sdk#build:types",
         "topo"
       ],
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/vitest.shared.ts"]
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/apps/server/src/services/skills/builtin-skills/bb-cli/**",
+        "$TURBO_ROOT$/vitest.shared.ts"
+      ]
     },
     // Integration tests typecheck without the `source` condition, so
     // @get-bb/plugin-sdk (reached through apps/server sources) resolves to the
@@ -458,6 +471,7 @@
       ],
       "inputs": [
         "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/plugins/*/skills/**",
         "$TURBO_ROOT$/tests/scripted-echo-provider/host.ts",
         "$TURBO_ROOT$/tests/scripted-echo-provider/src/**",
         "$TURBO_ROOT$/examples/plugins/echo-provider/*.ts",

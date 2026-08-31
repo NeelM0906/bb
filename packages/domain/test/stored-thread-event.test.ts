@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   parseStoredThreadEvent,
   parseThreadEventRow,
 } from "../src/stored-thread-event.js";
 import { threadScope, turnScope } from "../src/thread-event-scope.js";
+import { systemThreadInterruptedEventDataSchema } from "../src/thread-events.js";
 
 describe("parseStoredThreadEvent", () => {
   it("rejects assistant deltas without an itemId", () => {
@@ -34,10 +36,6 @@ describe("parseStoredThreadEvent", () => {
   });
 
   it("defaults missing senderThreadId on pre-existing client/turn/requested rows", () => {
-    // senderThreadId was added after threads were already being persisted, so
-    // the stored variant defaults it to null at read time. initiator was
-    // always written explicitly, so it does not need a default — passing it
-    // here matches what every pre-change writer was already doing.
     const event = parseStoredThreadEvent({
       type: "client/turn/requested",
       threadId: "thread-1",
@@ -120,5 +118,25 @@ describe("parseStoredThreadEvent", () => {
       scope: turnScope("turn-from-scope"),
     });
     expect(event).not.toHaveProperty("turnId");
+  });
+
+  it("keeps host connection loss compatible with legacy interruption readers", () => {
+    const data = {
+      reason: "host-daemon-restarted",
+      cause: "host-connection-lost",
+    } as const;
+
+    expect(systemThreadInterruptedEventDataSchema.parse(data)).toEqual(data);
+
+    const legacySchema = z.object({
+      reason: z.enum([
+        "manual-stop",
+        "host-daemon-restarted",
+        "provider-turn-idle",
+      ]),
+    });
+    expect(legacySchema.parse(data)).toEqual({
+      reason: "host-daemon-restarted",
+    });
   });
 });

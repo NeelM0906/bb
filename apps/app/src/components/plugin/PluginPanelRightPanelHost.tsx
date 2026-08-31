@@ -278,6 +278,7 @@ export function PluginPanelRightPanelHost({
     closeTab,
     openTab,
     orderedSecondaryFileTabs,
+    reopenClosedTab,
     reorderTab,
     updateBrowserTab,
   } = useThreadFileTabs({
@@ -485,6 +486,11 @@ export function PluginPanelRightPanelHost({
   useAppCommandHandler("panel.newTab", () => {
     if (!isFocused || panel === null) return false;
     openNewTab();
+    return true;
+  });
+  useAppCommandHandler("panel.reopenClosedTab", () => {
+    if (!isFocused || panel === null || !reopenClosedTab()) return false;
+    revealPanel();
     return true;
   });
 
@@ -838,12 +844,6 @@ export function PluginPanelRightPanelHost({
             return [
               {
                 ...shared,
-                // PluginPanelTabContent owns the complete body frame for every
-                // plugin tab: padded actions provide their own padded scroll
-                // container, while flush actions and file openers provide their
-                // own full-bleed layout. Letting the file-preview shell frame a
-                // padded action adds a second scroll container and an extra
-                // bottom gutter.
                 contentFillsRegion: true,
                 label: tab.title,
                 leadingVisual: (
