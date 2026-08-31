@@ -53,9 +53,12 @@ env:
 jobs:
   ios:
     name: iOS simulator flows
+    # Forks skip the nightly: the Blacksmith macOS runner only exists
+    # upstream, so a scheduled run in a fork queues until it is cancelled.
     if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'mobile-e2e')
+      (github.event_name != 'schedule' || github.repository == 'get-bb/bb') &&
+      (github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'mobile-e2e'))
     runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 90
 
