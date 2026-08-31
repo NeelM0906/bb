@@ -387,7 +387,7 @@ interface ResolveHostFilePreviewLinkRootPathArgs {
 }
 
 function buildHostConnectionNotice(
-  thread: ThreadWithRuntime,
+  thread: ThreadResponse,
   hostName: string | null,
 ): HostConnectionNotice | null {
   if (thread.admission !== null) {
