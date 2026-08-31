@@ -753,6 +753,12 @@ function settleThreadCommandFailure(
   if (!thread || thread.deletedAt !== null) {
     return emptyCommandResultSideEffects();
   }
+  if (
+    args.command.type === "turn.submit" &&
+    args.report.errorCode === "command_timeout"
+  ) {
+    return emptyCommandResultSideEffects();
+  }
   if (hasTerminalClientTurnRequestEvent(args.deps, args.command)) {
     return emptyCommandResultSideEffects();
   }

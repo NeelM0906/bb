@@ -588,9 +588,10 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
   });
 
   patch(routes.updateSource, async (context, payload) => {
-    requirePublicStandardProject(deps.db, context.req.param("id"));
+    const projectId = context.req.param("id");
+    const project = requirePublicStandardProject(deps.db, projectId);
     const existing = requireProjectSource(deps, {
-      projectId: context.req.param("id"),
+      projectId,
       sourceId: context.req.param("sourceId"),
     });
     if (existing.type === "local_path") {
@@ -614,6 +615,20 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
     );
     if (!source) {
       throw new ApiError(404, "invalid_request", "Project source not found");
+    }
+    if (project.gitRemoteUrl === null && source.type === "local_path") {
+      const gitRemoteUrl = await inspectProjectGitRemoteBestEffort(
+        deps,
+        source,
+      );
+      if (gitRemoteUrl !== null) {
+        setProjectGitRemoteUrlIfMissing(
+          deps.db,
+          deps.hub,
+          projectId,
+          gitRemoteUrl,
+        );
+      }
     }
     return context.json(source);
   });

@@ -3,10 +3,7 @@ import { publishCommentsChanged, type TasksApiStore } from "../api";
 import type { TaskThread, TaskThreadLiveStatus } from "../db";
 import { createSystemComment, publishThreadsChanged } from "../delegate";
 
-const TERMINAL_LIVE_STATUSES = new Set<TaskThreadLiveStatus>([
-  "completed",
-  "failed",
-]);
+const TERMINAL_LIVE_STATUSES = new Set<TaskThreadLiveStatus>(["completed"]);
 export const THREAD_STATUS_RECONCILE_INTERVAL_MS = 5 * 60_000;
 export const THREAD_STATUS_IDLE_INTERVAL_MS = 60_000;
 
