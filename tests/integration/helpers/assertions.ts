@@ -119,9 +119,10 @@ async function buildThreadStatusFailureMessage(
   api: PublicApiClient,
   context: ThreadStatusFailureContext,
 ): Promise<string> {
-  const [events, output] = await Promise.all([
+  const [events, output, thread] = await Promise.all([
     readThreadEvents(api, context.threadId),
     readThreadOutput(api, context.threadId).catch(() => null),
+    readThread(api, context.threadId).catch(() => null),
   ]);
   const recentEvents = events.slice(-12).map(describeThreadEvent).join(" | ");
   const lastError = [...events]
@@ -139,6 +140,7 @@ async function buildThreadStatusFailureMessage(
 
   return [
     `Thread ${context.threadId} entered ${context.currentStatus} while waiting for ${context.expectedStatus}`,
+    `admission=${JSON.stringify((thread as { admission?: unknown } | null)?.admission ?? null)}`,
     `events=${events.length}`,
     `recentEvents=[${recentEvents || "none"}]`,
     `lastError=${stringifyThreadEventData(lastError)}`,
