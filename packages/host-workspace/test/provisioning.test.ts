@@ -27,7 +27,11 @@ import { withGitRefMutationLock } from "../src/git-ref-mutation-lock.js";
 const tempDirs: string[] = [];
 
 async function makeTempDir(prefix: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  // realpath: on macOS tmpdir() is a symlink (/tmp -> /private/tmp) and
+  // scripts observe the resolved path (e.g. $PWD in teardown hooks).
+  const dir = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), prefix)),
+  );
   tempDirs.push(dir);
   return dir;
 }
