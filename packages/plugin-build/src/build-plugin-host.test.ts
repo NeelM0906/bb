@@ -4,6 +4,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   utimes,
   writeFile,
@@ -324,7 +325,11 @@ describe("plugin host build", () => {
     });
 
     it("names the unbuilt SDK dist when the package is installed without it", async () => {
-      const dir = await mkdtemp(join(tmpdir(), "bb-host-unbuilt-sdk-test-"));
+      // realpath: on macOS tmpdir() is a symlink (/tmp -> /private/tmp) and
+      // the build error reports the resolved path.
+      const dir = await realpath(
+        await mkdtemp(join(tmpdir(), "bb-host-unbuilt-sdk-test-")),
+      );
       tempDirs.push(dir);
       await writeFixture(dir);
       const sdkDir = join(dir, "node_modules", "@get-bb", "plugin-sdk");
