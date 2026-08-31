@@ -1069,7 +1069,7 @@ describe("createAgentRuntime process lifecycle", () => {
         options: fullRuntimeOptions,
       });
       await runtime.runTurn({
-        clientRequestId: "creq_2222222260",
+        clientRequestId: "creq_222222226c",
         threadId: "t1",
         input: [promptTextInput({ text: "bg_task" })],
         options: fullRuntimeOptions,
