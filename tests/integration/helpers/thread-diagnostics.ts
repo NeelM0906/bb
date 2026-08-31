@@ -36,5 +36,15 @@ export function describeThreadEvent(event: ThreadEventRow): string {
     const detail = event.data.detail ? ` ${event.data.detail}` : "";
     return `${event.seq}:${event.type}:${event.data.message}${detail}`;
   }
+  if (event.type === "system/thread-provisioning") {
+    const entries = event.data.entries
+      .slice(-4)
+      .map(
+        (entry) =>
+          `${entry.key}${entry.status === undefined ? "" : `=${entry.status}`}`,
+      )
+      .join(",");
+    return `${event.seq}:${event.type}:${event.data.status}:[${entries}]`;
+  }
   return `${event.seq}:${event.type}`;
 }
