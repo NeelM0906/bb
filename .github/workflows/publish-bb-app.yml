@@ -370,6 +370,9 @@ jobs:
   # error. That is expected and does not affect the bb-app jobs. See
   # docs/bb-release-process.md#publishing-the-plugin-sdk.
   publish-plugin-sdk:
+    # Forks may validate a manual dry run, but must never publish the upstream
+    # npm package or execute the scheduled nightly release.
+    if: ${{ github.repository == 'get-bb/bb' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == true) }}
     name: Publish @get-bb/plugin-sdk
     runs-on: ubuntu-latest
     timeout-minutes: 30
