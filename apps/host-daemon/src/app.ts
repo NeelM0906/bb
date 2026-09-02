@@ -98,7 +98,6 @@ interface IdleProviderSessionReaperRuntimeManager {
 interface StartIdleProviderSessionReaperArgs {
   logger: HostDaemonLogger;
   nowMs: () => number;
-  resolveProviderSessionReapingEnabled: () => Promise<boolean>;
   runtimeManager: IdleProviderSessionReaperRuntimeManager;
   setIntervalFn: IdleProviderSessionReaperIntervalFn;
 }
@@ -163,22 +162,11 @@ export function startIdleProviderSessionReaper(
       return;
     }
     running = true;
-    void args
-      .resolveProviderSessionReapingEnabled()
-      .catch((error) => {
-        args.logger.warn(
-          { ...runtimeErrorLogFields(error) },
-          "Failed to read idle provider session experiment policy",
-        );
-        return false;
+    void args.runtimeManager
+      .reapIdleProviderSessions({
+        idleForMs: IDLE_PROVIDER_SESSION_REAP_AFTER_MS,
+        nowMs: args.nowMs(),
       })
-      .then((providerSessionReapingEnabled) =>
-        args.runtimeManager.reapIdleProviderSessions({
-          idleForMs: IDLE_PROVIDER_SESSION_REAP_AFTER_MS,
-          nowMs: args.nowMs(),
-          providerSessionReapingEnabled,
-        }),
-      )
       .then((result) => {
         if (result.reapedSessions.length === 0) {
           return;
@@ -695,12 +683,9 @@ export async function createHostDaemonApp(
       throw error;
     }
   };
-  const resolveProviderSessionReapingEnabled = async () =>
-    (await serverClient.getRuntimePolicy()).providerSessionReaping;
   const idleProviderSessionReaper = startIdleProviderSessionReaper({
     logger: options.logger,
     nowMs: Date.now,
-    resolveProviderSessionReapingEnabled,
     runtimeManager,
     setIntervalFn: (callback, intervalMs) => {
       const timer = setInterval(callback, intervalMs);
@@ -719,20 +704,8 @@ export async function createHostDaemonApp(
     limit: options.hostAdmissionLimit ?? DEFAULT_HOST_ADMISSION_LIMIT,
     listProviderProcessDiagnostics: () =>
       runtimeManager.listProviderProcessDiagnostics(),
-    reapIdleProviderSessions: async (args) => {
-      const providerSessionReapingEnabled =
-        await resolveProviderSessionReapingEnabled().catch((error) => {
-          options.logger.warn(
-            { ...runtimeErrorLogFields(error) },
-            "Failed to read idle provider session experiment policy",
-          );
-          return false;
-        });
-      return runtimeManager.reapIdleProviderSessions({
-        ...args,
-        providerSessionReapingEnabled,
-      });
-    },
+    reapIdleProviderSessions: (args) =>
+      runtimeManager.reapIdleProviderSessions(args),
     nowMs,
   });
   let sendTerminalMessage: TerminalManagerOptions["sendMessage"] = (message) =>

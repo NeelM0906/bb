@@ -1356,7 +1356,7 @@ function stageExistingProtectUnmanagedWorkspaceColumn(
 
   const migration = requireExpectedAppliedMigration(
     readExpectedAppliedMigrations(migrationsFolder),
-    "0110_unknown_phantom_reporter",
+    "0113_workspace_safety",
   );
   if (readAppliedMigrationCreatedAts(db).has(migration.createdAt)) {
     return false;

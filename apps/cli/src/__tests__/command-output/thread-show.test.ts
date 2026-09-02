@@ -27,6 +27,7 @@ describe("bb thread show command output", () => {
       activeBackgroundAgentCount: 0,
       admission: null,
       canSpawnChild: true,
+      queuedMessageCount: 0,
       runtime: {
         displayStatus: thread.status,
         hostReconnectGraceExpiresAt: null,

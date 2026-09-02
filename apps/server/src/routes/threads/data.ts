@@ -43,6 +43,8 @@ import {
 import { requireThreadStoragePath } from "../../services/threads/thread-storage.js";
 import { toThreadQueuedMessage } from "../../services/threads/thread-queued-messages.js";
 import {
+  buildThreadConversationOutlineProjectionKey,
+  loadThreadConversationOutline,
   THREAD_TIMELINE_DEFAULT_SEGMENT_LIMIT,
   THREAD_TIMELINE_SEGMENT_LIMIT_MAX,
 } from "../../services/threads/timeline.js";
@@ -393,12 +395,17 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
       deps.db,
       { threadId: thread.id },
     );
+    const providerDisplayName = resolveThreadProviderDisplayName(
+      deps,
+      thread.providerId,
+    );
     const cacheKey = JSON.stringify([
       thread.id,
-      outlineSequence,
-      thread.status,
-      thread.title,
-      thread.titleFallback,
+      buildThreadConversationOutlineProjectionKey(
+        thread,
+        outlineSequence,
+        providerDisplayName,
+      ),
     ]);
     const cached = conversationOutlineCache.get(cacheKey);
     if (cached !== undefined) {
@@ -406,23 +413,11 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
       conversationOutlineCache.set(cacheKey, cached);
       return context.json({ items: cached, maxSeq });
     }
-    const snapshot = await deps.dbReadWorker.timelineSnapshot(
-      {
-        kind: "conversationOutline",
-        providerDisplayName: resolveThreadProviderDisplayName(
-          deps,
-          thread.providerId,
-        ),
-        threadId: thread.id,
-      },
-      { signal: context.req.raw.signal },
-    );
-    if (snapshot.kind !== "conversationOutline") {
-      throw new Error(
-        "Database read worker returned a non-conversation-outline snapshot",
-      );
-    }
-    const response = snapshot.response;
+    const response = loadThreadConversationOutline(deps.db, thread, {
+      maxSeq,
+      outlineSequence,
+      ...(providerDisplayName === undefined ? {} : { providerDisplayName }),
+    });
     conversationOutlineCache.set(cacheKey, response.items);
 
     while (

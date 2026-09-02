@@ -492,6 +492,15 @@ describe("public thread fork route", () => {
       if (firstTurn.command.type !== "turn.submit") {
         throw new Error("Expected turn.submit");
       }
+      const lastSequence =
+        listEvents(harness.db, { threadId: fork.id }).at(-1)?.sequence ?? 0;
+      seedTurnStarted(harness.deps, {
+        environmentId: fork.environmentId,
+        providerThreadId: "provider-started-seeded-fork",
+        sequence: lastSequence + 1,
+        threadId: fork.id,
+        turnId: "turn-started-seeded-fork",
+      });
       const rapidInput = textInput("Rapid follow-up");
       const rapidResponse = await harness.app.request(
         `/api/v1/threads/${fork.id}/send`,
@@ -513,15 +522,6 @@ describe("public thread fork route", () => {
           command.type === "turn.submit" && command.threadId === fork.id,
       );
       expect(rapidTurn.command).toMatchObject({ input: rapidInput });
-      const lastSequence =
-        listEvents(harness.db, { threadId: fork.id }).at(-1)?.sequence ?? 0;
-      seedTurnStarted(harness.deps, {
-        environmentId: fork.environmentId,
-        providerThreadId: "provider-started-seeded-fork",
-        sequence: lastSequence + 1,
-        threadId: fork.id,
-        turnId: "turn-started-seeded-fork",
-      });
       await reportQueuedCommandError(harness, firstTurn, {
         errorCode: "provider_error",
         errorMessage: "Provider turn failed after starting",
@@ -641,6 +641,10 @@ describe("public thread fork route", () => {
       ).toBe("updated");
 
       await sendQueuedMessage(harness.deps, {
+        claimPolicy: {
+          kind: "automatic",
+          isGroupEligible: () => true,
+        },
         threadId: fork.id,
         queuedMessageId: first.id,
         mode: "auto",

@@ -654,6 +654,15 @@ export default async function plugin(bb: BbPluginApi) {
       label: "Shared repositories",
       description:
         'Comma-separated "owner/repo" list you explicitly want to follow. These are tracked even without write access.',
+      experimental_schema: z.string().superRefine((value, context) => {
+        const { invalid } = parseRepoListWithInvalid(value);
+        if (invalid.length > 0) {
+          context.addIssue({
+            code: "custom",
+            message: `Use "owner/repo" for every entry. Invalid: ${invalid.join(", ")}`,
+          });
+        }
+      }),
       default: "",
     },
     ignoredRepos: {

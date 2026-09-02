@@ -47,15 +47,6 @@ export type HostDaemonLoadedEnvironment = z.infer<
   typeof hostDaemonLoadedEnvironmentSchema
 >;
 
-export const hostDaemonRuntimePolicySchema = z
-  .object({
-    providerSessionReaping: z.boolean(),
-  })
-  .strict();
-export type HostDaemonRuntimePolicy = z.infer<
-  typeof hostDaemonRuntimePolicySchema
->;
-
 const hostDaemonWatchSetWorkspaceTargetSchema = z
   .object({
     environmentId: z.string().min(1),
@@ -799,9 +790,6 @@ export const hostDaemonSkillTreeSchema = z
 export type HostDaemonSkillTree = z.infer<typeof hostDaemonSkillTreeSchema>;
 
 export type HostDaemonInternalSchema = {
-  "/runtime-policy": {
-    $get: Endpoint<Record<never, never>, HostDaemonRuntimePolicy, 200>;
-  };
   "/skills/tree/:hash": {
     $get: Endpoint<Record<never, never>, HostDaemonSkillTree, 200>;
   };

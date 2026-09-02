@@ -1742,6 +1742,11 @@ async function startOwnedRuntime(
   ]);
 
   if (raceResult.kind === "process-exited") {
+    createDesktopLogger().info(
+      `[desktop] bb-app exited before the server was ready with ${formatExitResult(
+        raceResult.exit,
+      )}\n${bbProcess.logs.text()}`,
+    );
     await loadStartupError({
       details: `bb-app exited before the server was ready with ${formatExitResult(
         raceResult.exit,

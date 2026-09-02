@@ -8,7 +8,10 @@ import {
 } from "@bb/host-daemon-contract";
 import { ApiError } from "../errors.js";
 import { verifyAuthenticatedDaemon } from "../internal/auth.js";
-import type { AppDeps } from "../types.js";
+import type {
+  AppDeps,
+  LoggedPendingInteractionWorkSessionDeps,
+} from "../types.js";
 import { runtimeErrorLogFields } from "../services/lib/error-log-fields.js";
 import { recoverDurableWorkAdmissions } from "../services/hosts/live-command.js";
 import { reconcileHostWorkAdmissions } from "../services/threads/work-admission.js";
@@ -21,6 +24,7 @@ import {
   notifyDaemonEnvironmentChange,
   recordDaemonEnvironmentMetadataChange,
 } from "../internal/environment-changes.js";
+import { requestQueuedMessageDispatch } from "../services/threads/queued-message-dispatch.js";
 import { runEventLoopWorkSync } from "../services/system/event-loop-work.js";
 import { decodeSocketPayload } from "./decode-payload.js";
 import type { PluginService } from "../services/plugins/plugin-service.js";
@@ -73,23 +77,8 @@ export async function validateDaemonWebSocket(
 }
 
 export function onDaemonSocketOpen(
-  deps: Pick<
-    AppDeps,
-    | "aiServices"
-    | "config"
-    | "db"
-    | "hub"
-    | "lifecycleDedupers"
-    | "logger"
-    | "machineAuth"
-    | "pendingInteractions"
-    | "pluginHostArtifacts"
-    | "providerRegistry"
-    | "sharedPorts"
-    | "skillTreeRegistry"
-    | "telemetry"
-    | "terminalSessions"
-  >,
+  deps: LoggedPendingInteractionWorkSessionDeps &
+    Pick<AppDeps, "hub" | "logger" | "sharedPorts" | "terminalSessions">,
   args: { hostId: string; sessionId: string; socket: DaemonSocket },
 ): void {
   deps.logger.info(
@@ -113,6 +102,14 @@ export function onDaemonSocketOpen(
         "Failed to reconcile host work admissions after daemon connection",
       );
     });
+  // A dispatch that arrived while this machine was away parked its row on a
+  // `host-offline` wait with no schedule, so no sweep can see it — the
+  // machine coming back is that wait's release signal, and this socket
+  // opening is where core hears it.
+  requestQueuedMessageDispatch(deps, {
+    hostId: args.hostId,
+    kind: "host-connected",
+  });
 }
 
 export function onDaemonSocketMessage(
