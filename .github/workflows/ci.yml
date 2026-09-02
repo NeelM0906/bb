@@ -193,6 +193,20 @@ jobs:
         if: ${{ runner.os == 'Linux' }}
         run: pnpm exec turbo run desktop:build:linux --filter=@bb/desktop --cache-dir=.turbo/cache --output-logs=new-only
 
+      # Ubuntu 24.04 restricts unprivileged user namespaces, and GitHub-hosted
+      # runners keep that default. The AppImage toolset's AppRun reacts by
+      # launching the payload with --no-sandbox, which also reaches the
+      # desktop's nested runtime relaunch; that process runs as Node
+      # (ELECTRON_RUN_AS_NODE), rejects the flag ("bad option: --no-sandbox",
+      # exit 9), and the lifecycle smoke reports "The owned runtime exited
+      # before bb became ready". Upstream's Blacksmith runners do not restrict
+      # user namespaces, so lift the restriction here to match them.
+      - name: Allow unprivileged user namespaces for the AppImage sandbox
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sysctl kernel.apparmor_restrict_unprivileged_userns || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Smoke Linux AppImage mount lifecycle
         if: ${{ runner.os == 'Linux' }}
         run: xvfb-run -a pnpm exec turbo run smoke:appimage-lifecycle --filter=@bb/desktop --force --cache-dir=.turbo/cache --output-logs=new-only
