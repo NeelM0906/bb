@@ -95,6 +95,13 @@ export function onDaemonSocketOpen(
   void reconcileHostWorkAdmissions(deps, { hostId: args.hostId })
     .then(() => {
       recoverDurableWorkAdmissions(deps, { hostId: args.hostId });
+      if (deps.hub.getDaemonSessionIdForHost(args.hostId) !== args.sessionId) {
+        return;
+      }
+      requestQueuedMessageDispatch(deps, {
+        hostId: args.hostId,
+        kind: "host-connected",
+      });
     })
     .catch((error: unknown) => {
       deps.logger.warn(
@@ -102,14 +109,6 @@ export function onDaemonSocketOpen(
         "Failed to reconcile host work admissions after daemon connection",
       );
     });
-  // A dispatch that arrived while this machine was away parked its row on a
-  // `host-offline` wait with no schedule, so no sweep can see it — the
-  // machine coming back is that wait's release signal, and this socket
-  // opening is where core hears it.
-  requestQueuedMessageDispatch(deps, {
-    hostId: args.hostId,
-    kind: "host-connected",
-  });
 }
 
 export function onDaemonSocketMessage(

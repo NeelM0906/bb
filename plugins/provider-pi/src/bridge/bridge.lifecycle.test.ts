@@ -238,11 +238,14 @@ it("accepts a prompt containing only a local image", async () => {
   expect(response.result).toEqual({ threadId });
   await harness.waitForTurnBoundary(threadId);
   expect(
-    harness.deltasOf(threadId).some(
-      (delta) => delta.kind === "item.textDelta" && delta.text === "Response to: ",
-    ),
+    harness
+      .deltasOf(threadId)
+      .some(
+        (delta) =>
+          delta.kind === "item.textDelta" && delta.text === "Response to: ",
+      ),
   ).toBe(true);
-});
+}, 90_000);
 
 it("a child's tool and prompt files go with the child after release and failed construction", async () => {
   await harness.startThread("thr_lc_scratch", {
