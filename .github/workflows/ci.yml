@@ -57,7 +57,12 @@ jobs:
       # A published version whose packed files or consumer-facing manifest
       # fields changed is a hard failure; an unreachable registry or a failed
       # local pack (exit 2) is infrastructure, not a finding.
+      # Upstream-only: the guard protects npm consumers of @get-bb/plugin-sdk,
+      # which only get-bb/bb publishes. A fork's SDK content always drifts from
+      # the published tarball at any version upstream has used, so the guard
+      # would fail there forever without protecting anyone.
       - name: Check plugin SDK npm version guard
+        if: ${{ github.repository == 'get-bb/bb' }}
         run: |
           # +e so the exit code can be inspected: GitHub's default shell runs
           # with -e, which would abort the step before the exit-2 check.
