@@ -101,15 +101,13 @@ export function onDaemonSocketOpen(
         { err: error, hostId: args.hostId },
         "Failed to reconcile host work admissions after daemon connection",
       );
+    })
+    .finally(() => {
+      requestQueuedMessageDispatch(deps, {
+        hostId: args.hostId,
+        kind: "host-connected",
+      });
     });
-  // A dispatch that arrived while this machine was away parked its row on a
-  // `host-offline` wait with no schedule, so no sweep can see it — the
-  // machine coming back is that wait's release signal, and this socket
-  // opening is where core hears it.
-  requestQueuedMessageDispatch(deps, {
-    hostId: args.hostId,
-    kind: "host-connected",
-  });
 }
 
 export function onDaemonSocketMessage(

@@ -25,6 +25,7 @@
 - If the server needs host-local data, the daemon should return raw data and the server should assemble product behavior.
 - Do not move responsibility across the server/daemon boundary unless the current change requires it.
 - **Always increment `HOST_DAEMON_PROTOCOL_VERSION` when a change can alter anything sent between the server and host daemon.** This includes adding, removing, renaming, or changing the type, requiredness, default, or meaning of fields in session payloads, WebSocket messages, host RPC commands, or host RPC results. A shared TypeScript build passing is not evidence of wire compatibility: enrolled machines can still be running an older daemon. The version mismatch is what triggers their automatic update; without a bump, an old daemon may connect successfully and then enter an `invalid-message` reconnect loop. If compatibility with the previously shipped daemon has not been deliberately preserved and tested, bump the version.
+- This fork's admission RPCs (`host.admission.reserve/release/reconcile` and the fail-closed `thread.start` / `turn.submit` checks) change the wire relative to get-bb/bb, so `HOST_DAEMON_PROTOCOL_VERSION` must stay ahead of upstream's number. After every upstream merge, take upstream's value and bump it once more so enrolled fork daemons update.
 
 ## CLI, Guide, And Skill
 

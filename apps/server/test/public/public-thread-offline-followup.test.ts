@@ -5,13 +5,16 @@ import { describe, expect, it } from "vitest";
 import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
 import {
   registerTestHostRpcCapture,
+  reportQueuedCommandSuccess,
   waitForQueuedCommand,
 } from "../helpers/commands.js";
 import { readJson } from "../helpers/json.js";
+import { textInput } from "../helpers/prompt-input.js";
 import {
   seedEnvironment,
   seedHost,
   seedProjectWithSource,
+  seedQueuedMessage,
   seedSession,
   seedThread,
   seedThreadRuntimeState,
@@ -124,6 +127,80 @@ describe("offline host follow-ups", () => {
       expect(listEvents(harness.db, { threadId: thread.id })).toHaveLength(
         eventCountBeforeSend + 1,
       );
+    });
+  });
+
+  it("holds the host-connected drain until admission reconciliation settles", async () => {
+    await withTestHarness(async (harness) => {
+      const host = seedHost(harness.deps, {
+        id: "host-offline-followup-reconcile",
+        name: "M6",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/offline-followup-reconcile",
+        workspaceProvisionType: "unmanaged",
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        status: "idle",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId: "provider-offline-followup-reconcile",
+      });
+      const input = textInput("Continue once M6 reconciles");
+      seedQueuedMessage(harness.deps, {
+        content: input,
+        threadId: thread.id,
+        waitingOn: { kind: "host-offline", hostName: "M6" },
+      });
+
+      const reconnectSession = seedSession(harness.deps, host.id);
+      const reconnectSocket = registerTestHostRpcCapture(harness.deps, {
+        deferAdmissionReconcile: true,
+        hostId: host.id,
+        sessionId: reconnectSession.id,
+      });
+      onDaemonSocketOpen(harness.deps, {
+        hostId: host.id,
+        sessionId: reconnectSession.id,
+        socket: reconnectSocket,
+      });
+
+      const reconcile = await waitForQueuedCommand(
+        harness,
+        ({ command }) => command.type === "host.admission.reconcile",
+      );
+      const isFollowUpDispatch = ({ command }: { command: { type: string } }) =>
+        command.type === "turn.submit" &&
+        "threadId" in command &&
+        command.threadId === thread.id;
+      await expect(
+        waitForQueuedCommand(harness, isFollowUpDispatch, 300),
+      ).rejects.toThrow();
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toHaveLength(1);
+
+      await reportQueuedCommandSuccess(harness, reconcile, {
+        reservations: [],
+      });
+
+      const dispatched = await waitForQueuedCommand(
+        harness,
+        isFollowUpDispatch,
+      );
+      expect(dispatched.command).toMatchObject({
+        threadId: thread.id,
+        input,
+        target: { mode: "start" },
+      });
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
     });
   });
 });

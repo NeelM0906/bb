@@ -140,6 +140,7 @@ const testAdmissionsByHost = new Map<
 
 interface RegisterTestHostRpcCaptureArgs {
   canonicalPathByInput?: Readonly<Record<string, string>>;
+  deferAdmissionReconcile?: boolean;
   deferAdmissionReserveForThreadIds?: ReadonlySet<string>;
   deferProjectInspectForPaths?: ReadonlySet<string>;
   hostId: string;
@@ -487,7 +488,10 @@ export function registerTestHostRpcCapture(
         });
         return;
       }
-      if (command.type === "host.admission.reconcile") {
+      if (
+        command.type === "host.admission.reconcile" &&
+        !args.deferAdmissionReconcile
+      ) {
         const reservations = testAdmissionsByHost.get(args.hostId);
         deps.hub.recordHostOnlineRpcResponse({
           message: hostDaemonOnlineRpcResponseMessageSchema.parse({
