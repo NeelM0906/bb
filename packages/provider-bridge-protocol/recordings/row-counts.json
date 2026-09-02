@@ -1,13 +1,13 @@
 {
   "acp-cursor/approval-allow": {
     "events": 31,
-    "rows": 2,
+    "rows": 3,
     "unhandled": 0,
     "grammarDrops": 0
   },
   "acp-cursor/approval-deny": {
     "events": 29,
-    "rows": 2,
+    "rows": 3,
     "unhandled": 0,
     "grammarDrops": 0
   },
@@ -31,7 +31,7 @@
   },
   "acp-cursor/steer": {
     "events": 68,
-    "rows": 2,
+    "rows": 7,
     "unhandled": 0,
     "grammarDrops": 0
   },
@@ -43,25 +43,25 @@
   },
   "acp-cursor/subagent": {
     "events": 50,
-    "rows": 2,
+    "rows": 3,
     "unhandled": 0,
     "grammarDrops": 0
   },
   "acp-cursor/turn-tools": {
     "events": 98,
-    "rows": 2,
+    "rows": 5,
     "unhandled": 0,
     "grammarDrops": 0
   },
   "acp-cursor/user-question": {
     "events": 26,
-    "rows": 2,
+    "rows": 3,
     "unhandled": 0,
     "grammarDrops": 0
   },
   "acp-cursor/web-search": {
     "events": 51,
-    "rows": 2,
+    "rows": 3,
     "unhandled": 0,
     "grammarDrops": 0
   },
@@ -85,7 +85,7 @@
   },
   "claude-code/compaction": {
     "events": 59,
-    "rows": 3,
+    "rows": 16,
     "unhandled": 2,
     "grammarDrops": 0
   },
@@ -103,7 +103,7 @@
   },
   "claude-code/plan-mode": {
     "events": 41,
-    "rows": 2,
+    "rows": 4,
     "unhandled": 0,
     "grammarDrops": 0
   },
@@ -115,7 +115,7 @@
   },
   "claude-code/steer": {
     "events": 59,
-    "rows": 3,
+    "rows": 16,
     "unhandled": 2,
     "grammarDrops": 0
   },
@@ -151,13 +151,13 @@
   },
   "codex/approval-allow": {
     "events": 27,
-    "rows": 2,
+    "rows": 3,
     "unhandled": 0,
     "grammarDrops": 0
   },
   "codex/approval-deny": {
     "events": 31,
-    "rows": 2,
+    "rows": 3,
     "unhandled": 0,
     "grammarDrops": 0
   },
@@ -175,7 +175,7 @@
   },
   "codex/compaction": {
     "events": 87,
-    "rows": 3,
+    "rows": 14,
     "unhandled": 0,
     "grammarDrops": 0
   },
@@ -217,7 +217,7 @@
   },
   "codex/steer": {
     "events": 87,
-    "rows": 3,
+    "rows": 14,
     "unhandled": 0,
     "grammarDrops": 0
   },
@@ -235,7 +235,7 @@
   },
   "codex/turn-tools": {
     "events": 48,
-    "rows": 2,
+    "rows": 3,
     "unhandled": 0,
     "grammarDrops": 0
   },
@@ -253,7 +253,7 @@
   },
   "pi/compaction": {
     "events": 38,
-    "rows": 3,
+    "rows": 4,
     "unhandled": 2,
     "grammarDrops": 0
   },
@@ -277,7 +277,7 @@
   },
   "pi/steer": {
     "events": 38,
-    "rows": 3,
+    "rows": 4,
     "unhandled": 2,
     "grammarDrops": 0
   },
@@ -289,7 +289,7 @@
   },
   "pi/subagent": {
     "events": 39,
-    "rows": 2,
+    "rows": 3,
     "unhandled": 0,
     "grammarDrops": 0
   },

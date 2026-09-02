@@ -40,8 +40,6 @@ import type { ThreadEventWithMeta } from "../src/build-event-projection.js";
 export interface RenderTimelineFixtureArgs {
   events: ThreadEventRow[];
   includeNestedRows?: boolean;
-  // `threadName` defaults to "" so existing fixtures need not supply it; pass a
-  // name to exercise operation rows that describe relationships to other threads.
   projectionOptions: Omit<BuildEventProjectionOptions, "threadName"> & {
     threadName?: string;
   };
@@ -285,6 +283,7 @@ interface SystemOperationArgs extends EventFactoryRowOptions {
 }
 
 interface SystemThreadInterruptedArgs extends EventFactoryRowOptions {
+  cause?: "host-connection-lost";
   reason?: SystemThreadInterruptedReason;
 }
 
@@ -926,6 +925,7 @@ export function createTimelineEventFactory(
         type: "system/thread/interrupted",
         data: {
           reason: args.reason ?? "manual-stop",
+          ...(args.cause ? { cause: args.cause } : {}),
         },
       };
     },

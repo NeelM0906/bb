@@ -50,12 +50,6 @@ interface RuntimeProviderProcessLineArgs {
 
 interface RuntimeProviderProcessManagerArgs {
   additionalWorkspaceWriteRoots: readonly string[];
-  /**
-   * Builds the adapter for a provider process. Defaults to the bridge
-   * registry (`createProviderForId`); the process-lifecycle tests substitute
-   * an adapter whose process spec points at a raw script, to exercise spawn,
-   * stderr and exit mechanics below the protocol.
-   */
   createAdapter?: (
     providerId: string,
     options: CreateBridgeAdapterOptions,
@@ -63,11 +57,6 @@ interface RuntimeProviderProcessManagerArgs {
   bridgeBundleDir: string | undefined;
   bridgeNodeEnv?: Record<string, string>;
   bridgeNodeExecutablePath?: string;
-  /**
-   * Snapshots a thread's turn/provider state for the process-exit
-   * notification. Invoked before `onProviderThreadDetached` clears the
-   * state, so exit consumers still see what the dead process was running.
-   */
   captureThreadExitState: (
     threadId: string,
   ) => AgentRuntimeProcessExitThreadState;
@@ -188,10 +177,7 @@ export class RuntimeProviderProcessManager {
     }
 
     const startPromise = (async () => {
-      const adapter = this.getAdapter(
-        args.providerId,
-        args.bridgeLaunch,
-      );
+      const adapter = this.getAdapter(args.providerId, args.bridgeLaunch);
       const providerProcess = this.spawnProvider({
         adapter,
         processKey: args.processKey,
@@ -224,8 +210,6 @@ export class RuntimeProviderProcessManager {
           }
         }
 
-        // One generic root shape for every provider; the bridge maps it to
-        // its own layout.
         if (this.args.skillRoots.length > 0) {
           const skillRootsCmd = adapter.buildCommandPlan({
             type: "skills/configure",
@@ -266,14 +250,6 @@ export class RuntimeProviderProcessManager {
     await this.retireStaleBridgeProcesses(args);
   }
 
-  /**
-   * A plugin update changes the bridge artifact hash, which is part of the
-   * process key, so the new artifact spawns a fresh process beside the old
-   * one. Threads keep their process until they are released, but a process
-   * that owns no thread (model listing, maintenance) has nothing left to
-   * retire it — it would leak one node process per superseded artifact until
-   * daemon shutdown. Retire those here.
-   */
   private async retireStaleBridgeProcesses(
     args: EnsureRuntimeProviderArgs,
   ): Promise<void> {
@@ -292,13 +268,6 @@ export class RuntimeProviderProcessManager {
     }
   }
 
-  /**
-   * The other half of {@link retireStaleBridgeProcesses}: a superseded process
-   * that still owned a thread survived that sweep, and the sweep only runs
-   * when a process is ensured. Releasing its last thread is the moment it
-   * becomes retirable, so the release path calls this — otherwise a plugin
-   * updated mid-session leaks its old bridge process until daemon shutdown.
-   */
   async retireSupersededBridgeProcessIfIdle(
     providerProcess: RuntimeProviderProcess,
   ): Promise<void> {
@@ -429,16 +398,11 @@ export class RuntimeProviderProcessManager {
       ...this.args.env,
       ...processConfig.env,
     };
-    // Record mode: the daemon forwards one root directory; each bridge
-    // process records under its provider's subdirectory so the layout is
-    // `<root>/<providerId>/<threadId>/<direction>.ndjson`.
     const recordRoot = env[PROVIDER_BRIDGE_RECORD_DIR_ENV];
     if (recordRoot !== undefined && recordRoot !== "") {
       env[PROVIDER_BRIDGE_RECORD_DIR_ENV] = join(recordRoot, args.providerId);
     }
 
-    // Lead a process group so shutdown can also reap grandchildren the
-    // provider CLI starts (background dev servers, MCP servers, ...).
     const child = spawnPortablePipedProcess({
       command: processConfig.command,
       args: processConfig.args,
@@ -466,10 +430,6 @@ export class RuntimeProviderProcessManager {
       stderrTail: Buffer.alloc(0),
     };
 
-    // Bounded rather than `readline`: a bridge is plugin-delivered code, and
-    // one runaway or never-terminated line on its stdout would otherwise grow
-    // a buffer inside the daemon until the whole host process dies. The stderr
-    // tail beside it has always been bounded this way.
     readBoundedLines({
       input: child.stdout,
       onLine: (line) => {
@@ -600,8 +560,6 @@ export class RuntimeProviderProcessManager {
       return;
     }
 
-    // Leader first: the bridge handles SIGTERM by closing its CLI sessions
-    // gracefully. Group SIGTERM/SIGKILL only on escalation.
     await stopProcessGroupLeaderFirst({
       child: args.providerProcess.child,
       timeoutMs: args.timeoutMs ?? 5000,
@@ -643,16 +601,13 @@ export class RuntimeProviderProcessManager {
       args.providerProcess,
     );
     this.processes.delete(args.providerProcess.processKey);
-    // The bridge led a process group, and its children (one provider CLI
-    // per thread, MCP servers, background dev servers) share it. A bridge
-    // that died on its own never ran its shutdown path, so nothing has told
-    // those children to stop: sweep the group, leader gone or not.
     if (!expected) {
-      killProcessGroup({ child: args.providerProcess.child, signal: "SIGTERM" });
+      killProcessGroup({
+        child: args.providerProcess.child,
+        signal: "SIGTERM",
+      });
     }
     const threadIds = [...args.providerProcess.identity.threadIds];
-    // Snapshot per-thread state before detaching clears it; the exit
-    // notification below is the last place this state is observable.
     const threads = threadIds.map((threadId) =>
       this.args.captureThreadExitState(threadId),
     );
@@ -690,11 +645,6 @@ export class RuntimeProviderProcessManager {
   }
 }
 
-/**
- * Whether a child process has terminated, covering both normal exits
- * (`exitCode`) and signal terminations (`signalCode`). Node reports a
- * signal-killed child with a null `exitCode` and a set `signalCode`.
- */
 export function hasChildProcessExited(child: ChildProcess): boolean {
   return child.exitCode !== null || child.signalCode !== null;
 }
@@ -784,7 +734,6 @@ function consumeProviderStderrChunk(args: {
 function consumeExpectedProviderProcessShutdown(
   providerProcess: RuntimeProviderProcess,
 ): boolean {
-  // One process exit consumes all outstanding explicit shutdown requests.
   const expected = providerProcess.expectedShutdownExpectations > 0;
   providerProcess.expectedShutdownExpectations = 0;
   return expected;

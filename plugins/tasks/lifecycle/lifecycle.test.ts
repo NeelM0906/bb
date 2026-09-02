@@ -125,6 +125,36 @@ describe("task thread lifecycle", () => {
     await fixture.harness.dispose();
   });
 
+  it("restores activity after a failed turn", async () => {
+    const fixture = trackedThreadFixture("working", "active");
+    await registerLifecycle(fixture.bb, fixture.store);
+
+    await fixture.harness.emitThreadEvent("thread.failed", {
+      thread: makeThreadResponse({
+        id: "thr_worker",
+        title: "Lifecycle worker",
+        status: "error",
+      }),
+      error: "provider exited",
+    });
+    expect(
+      fixture.store.tasks.getTaskThread(fixture.taskThreadId)?.liveStatus,
+    ).toBe("failed");
+
+    await fixture.harness.emitThreadEvent("thread.active", {
+      thread: makeThreadResponse({
+        id: "thr_worker",
+        title: "Lifecycle worker",
+        status: "active",
+      }),
+    });
+    expect(
+      fixture.store.tasks.getTaskThread(fixture.taskThreadId)?.liveStatus,
+    ).toBe("working");
+
+    await fixture.harness.dispose();
+  });
+
   it("reconciles a stale non-terminal row on load", async () => {
     const fixture = trackedThreadFixture("starting", "idle");
 

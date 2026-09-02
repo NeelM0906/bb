@@ -15,17 +15,23 @@ import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { SidebarUpdatesBadge } from "./SidebarUpdatesBadge";
 
 const useUpdateInventoryMock = vi.hoisted(() => vi.fn());
+const providerCliInstallRunnerState = vi.hoisted(() => ({
+  runningJobKey: null as string | null,
+}));
 
 vi.mock("@/hooks/useUpdateInventory", () => ({
   useUpdateInventory: useUpdateInventoryMock,
 }));
 
-// The marks come from the provider roster: each registered provider's
-// declared logo, served by the host.
+vi.mock("@/components/provider-cli/provider-cli-install", () => ({
+  useProviderCliInstallRunner: () => ({
+    runningJobKey: providerCliInstallRunnerState.runningJobKey,
+  }),
+}));
+
 vi.mock("@/lib/sdk", async () => {
-  const { makeProviderInfo: provider } = await import(
-    "@/test/provider-info-fixture"
-  );
+  const { makeProviderInfo: provider } =
+    await import("@/test/provider-info-fixture");
   return {
     sdk: {
       providers: {
@@ -44,6 +50,7 @@ vi.mock("@/lib/ws", () => ({
 
 afterEach(() => {
   cleanup();
+  providerCliInstallRunnerState.runningJobKey = null;
   useUpdateInventoryMock.mockReset();
 });
 
@@ -146,13 +153,16 @@ function renderBadge(inventory: Partial<UpdateInventory>) {
     ...inventory,
   });
   const { wrapper } = createQueryClientTestHarness();
-  return render(
+  return render(<BadgeHarness />, { wrapper });
+}
+
+function BadgeHarness() {
+  return (
     <MemoryRouter>
       <TooltipProvider>
         <SidebarUpdatesBadge />
       </TooltipProvider>
-    </MemoryRouter>,
-    { wrapper },
+    </MemoryRouter>
   );
 }
 
@@ -189,6 +199,27 @@ describe("SidebarUpdatesBadge", () => {
         .getByTestId("sidebar-updates-badge-providers")
         .getAttribute("aria-label"),
     ).toBe("Claude Code update available");
+  });
+
+  it("shows loading while a provider update runs and restores the download icon when it settles", () => {
+    providerCliInstallRunnerState.runningJobKey = "host-1:claude-code";
+    const result = renderBadge({
+      machines: [
+        machine({ issues: [providerIssue("claude-code", "Claude Code")] }),
+      ],
+    });
+
+    const providerChip = screen.getByTestId("sidebar-updates-badge-providers");
+    const loadingIcon = providerChip.querySelector('[data-icon="Loading"]');
+    expect(loadingIcon).toBeTruthy();
+    expect(loadingIcon?.classList.contains("animate-spin")).toBe(true);
+    expect(providerChip.querySelector('[data-icon="Download"]')).toBeNull();
+
+    providerCliInstallRunnerState.runningJobKey = null;
+    result.rerender(<BadgeHarness />);
+
+    expect(providerChip.querySelector('[data-icon="Loading"]')).toBeNull();
+    expect(providerChip.querySelector('[data-icon="Download"]')).toBeTruthy();
   });
 
   it("renders no provider chip when a CLI is not installed", () => {
@@ -237,17 +268,14 @@ describe("SidebarUpdatesBadge", () => {
     });
 
     const providerChip = screen.getByTestId("sidebar-updates-badge-providers");
-    // The first host-reported provider order is retained while duplicates
-    // from later machines collapse into one mark.
     expect(providerChip.getAttribute("aria-label")).toBe(
       "Claude Code and Codex updates available",
     );
-    // One served logo per stale provider, drawn as a currentColor mask once
-    // the roster has loaded; the bb chip keeps its own inline mark.
     await waitFor(() =>
       expect(
-        providerChip.querySelectorAll("[data-provider-icon] [data-provider-logo]")
-          .length,
+        providerChip.querySelectorAll(
+          "[data-provider-icon] [data-provider-logo]",
+        ).length,
       ).toBe(2),
     );
     expect(
@@ -255,6 +283,11 @@ describe("SidebarUpdatesBadge", () => {
         node.getAttribute("data-provider-icon"),
       ),
     ).toEqual(["claude-code", "codex"]);
+    expect(
+      [...providerChip.querySelectorAll("[data-provider-icon]")].every((node) =>
+        node.classList.contains("flex"),
+      ),
+    ).toBe(true);
     expect(screen.getByTestId("sidebar-updates-badge-bb")).toBeTruthy();
   });
 });

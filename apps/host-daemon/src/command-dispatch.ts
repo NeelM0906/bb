@@ -21,8 +21,8 @@ import {
   provisionEnvironment,
 } from "./command-handlers/environment.js";
 import {
+  inspectHostGitSource,
   listHostBranchOptions,
-  listHostBranches,
 } from "./command-handlers/host-branches.js";
 import {
   installGlobalSkills,
@@ -352,8 +352,6 @@ const commandHandlers: CommandHandlerMap = {
     }
   },
   "thread.stop": async (command, options) => {
-    // Release before the target runtime lookup. A moved thread often has no
-    // runtime in its new environment yet, and the old owner must still stop.
     const released =
       await options.runtimeManager.releaseThreadFromOtherEnvironments({
         activeTurn: "interrupt",
@@ -364,7 +362,6 @@ const commandHandlers: CommandHandlerMap = {
       command.environmentId,
     );
     if (!entry) {
-      // No loaded runtime means the idempotent stop already reached its goal.
       await options.eventSink.flush();
       return {
         providerCheckpointId: released.providerCheckpointId,
@@ -372,18 +369,6 @@ const commandHandlers: CommandHandlerMap = {
     }
     let providerCheckpointId = released.providerCheckpointId;
     if (entry.runtime.hasThread(command.threadId)) {
-      // Stop can be dispatched while the start/submit RPC is still in flight
-      // and the turn/started event has not been observed yet. Wait for the
-      // runtime to learn the active turn (event-driven, resolves null on
-      // timeout or when the thread goes idle) so the provider stop carries
-      // the right turn id. A release does not wait: the server already
-      // settled the thread as idle, so waiting only burns the full timeout on
-      // every runtime it unloads.
-      //
-      // A release can still lose a race with a turn that started after the
-      // server read the thread. Stopping then would end accepted work and
-      // leave the server holding an active thread with no runtime, so a
-      // release skips a busy runtime instead. A later idle release unloads it.
       if (command.intent === "release") {
         if (entry.runtime.getActiveTurnId(command.threadId) !== null) {
           await options.eventSink.flush();
@@ -400,8 +385,6 @@ const commandHandlers: CommandHandlerMap = {
       providerCheckpointId =
         result.providerCheckpointId ?? providerCheckpointId;
     }
-    // Stop completion finalizes server-side thread state. Flush provider
-    // events first so buffered lifecycle events cannot arrive after that.
     await options.eventSink.flush();
     return { providerCheckpointId };
   },
@@ -414,8 +397,6 @@ const commandHandlers: CommandHandlerMap = {
     return result;
   },
   "thread.plan.cancel": async (command, options) => {
-    // A moved thread keeps its turn in the environment it left, and the new
-    // environment may hold no runtime yet. Cancel where the turn runs.
     const owners = options.runtimeManager.listThreadOwnerEntries(
       command.threadId,
     );
@@ -444,8 +425,6 @@ const commandHandlers: CommandHandlerMap = {
     if (!entry) {
       return {};
     }
-    // Rename does not move the provider session, so it must not stop a turn
-    // that still runs in the environment the thread left.
     await entry.runtime.renameThread({
       threadId: command.threadId,
       title: command.title,
@@ -463,8 +442,6 @@ const commandHandlers: CommandHandlerMap = {
       command.bridgeLaunch,
       options,
     );
-    // Archive works on stored provider state, not on the live session, so it
-    // must not stop a turn in the environment the thread left.
     await entry.runtime.archiveThread({
       threadId: command.threadId,
       providerId: command.providerId,
@@ -504,6 +481,8 @@ const commandHandlers: CommandHandlerMap = {
     }),
   "environment.provision.cancel": cancelEnvironmentProvision,
   "environment.destroy": async (command, options) => {
+    const transcript: HostDaemonCommandResult<"environment.destroy">["transcript"] =
+      [];
     const resolution = await resolveWorkspaceForCommand({
       dataDir: options.dataDir,
       environmentId: command.environmentId,
@@ -511,9 +490,8 @@ const commandHandlers: CommandHandlerMap = {
       workspaceContext: command.workspaceContext,
     });
     if (!resolution.ok) {
-      // Treat already-missing workspaces as successful destroy (idempotent retry).
       if (resolution.failure.code === "path_not_found") {
-        return {};
+        return { transcript };
       }
       throw new ExpectedCommandDispatchError(
         resolution.failure.code,
@@ -524,8 +502,11 @@ const commandHandlers: CommandHandlerMap = {
       environmentId: command.environmentId,
       reason: "environment-destroyed",
     });
-    await options.runtimeManager.destroyEnvironment(command.environmentId);
-    return {};
+    await options.runtimeManager.destroyEnvironment(command.environmentId, {
+      timeoutMs: command.teardownTimeoutMs,
+      onProgress: (entry) => transcript.push(entry),
+    });
+    return { transcript };
   },
   "workspace.commit": async (command, options) => {
     const entry = await requireResolvedWorkspaceForCommand({
@@ -635,8 +616,8 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
   "host.install_global_skills": installGlobalSkills,
   "host.global_skills_status": async (command) =>
     readGlobalSkillsStatus(command, {}),
+  "host.inspect_git_source": inspectHostGitSource,
   "host.list_branch_options": listHostBranchOptions,
-  "host.list_branches": listHostBranches,
   "host.file_metadata": readHostFileMetadata,
   "host.read_file": readHostFile,
   "host.read_file_relative": readHostRelativeFile,
@@ -822,9 +803,6 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
       runtimeManager: options.runtimeManager,
       workspaceContext: command.workspaceContext,
     });
-    // A non-git workspace genuinely has no PR; every other resolution failure
-    // means the lookup cannot run, which must stay distinguishable from
-    // "checked and found nothing".
     if (!resolution.ok) {
       return resolution.failure.code === "not_git_repo"
         ? { outcome: "absent" }

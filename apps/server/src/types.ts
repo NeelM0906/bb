@@ -33,14 +33,7 @@ export interface ServerRuntimeConfig {
   inferenceFallbackModel: string;
   inferenceModel: string;
   isDevelopment: boolean;
-  /**
-   * Grace window (ms) after the last live thread in a managed environment is
-   * archived before its worktree is destroyed, during which an accidental
-   * archive can be undone losslessly. Defaults to
-   * {@link MANAGED_ENVIRONMENT_RETIRE_GRACE_MS}; set to 0 to destroy immediately.
-   */
   managedEnvironmentRetireGraceMs: number;
-  /** Manifest URL of the reserved `bb-community` plugin marketplace. */
   marketplaceUrl: string;
   openAiApiKey: string;
   serverPort: number;
@@ -48,11 +41,6 @@ export interface ServerRuntimeConfig {
   transcriptionModel: string;
   appUrl?: string;
   devAppPort?: number;
-  /**
-   * Per-spawn identity from the bb-app launcher, echoed on /health so the
-   * launcher can tell this server from another one that owns the same port.
-   * Absent when the server was not started by the launcher.
-   */
   launchId?: string;
 }
 
@@ -67,7 +55,6 @@ export interface AppDeps {
   pendingInteractions: PendingInteractionLifecycle;
   providerRegistry: ProviderRegistryService;
   pluginHostArtifacts: PluginHostArtifactRegistry;
-  /** Plugin-resolved native roots per (plugin, provider, host, cwd). */
   providerNativeRoots: ProviderNativeRootsCache;
   aiServices: AiServiceRegistry;
   skillTreeRegistry: SkillTreeRegistry;

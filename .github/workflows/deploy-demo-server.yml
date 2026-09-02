@@ -36,6 +36,9 @@ concurrency:
 
 jobs:
   deploy:
+    # Upstream-only: the fork has neither the Cloudflare credentials nor the
+    # Blacksmith runner, so a push to the fork's main must not deploy.
+    if: ${{ github.repository == 'get-bb/bb' }}
     name: Deploy demo server to Cloudflare Workers
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15

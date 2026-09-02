@@ -4,6 +4,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   utimes,
   writeFile,
@@ -30,8 +31,6 @@ describe("plugin host build", () => {
   });
 
   it("builds a self-contained Node artifact with identity and digest metadata", async () => {
-    // Keep the fixture outside the workspace so this proves the build does
-    // not accidentally resolve the SDK from BB's own node_modules tree.
     const dir = await mkdtemp(join(tmpdir(), "bb-host-build-test-"));
     tempDirs.push(dir);
     await mkdir(join(dir, "dist"), { recursive: true });
@@ -57,8 +56,6 @@ describe("plugin host build", () => {
     await writeFile(
       join(dir, "host.ts"),
       [
-        // The type specifier must not trip the fallback's import check: esbuild
-        // erases it, and the stub only has to serve the runtime name.
         'import { experimental_defineHostEntry, type ExperimentalHostEntry } from "@get-bb/plugin-sdk/host";',
         'import { defineRpcContract } from "@get-bb/plugin-sdk";',
         'const schema = { "~standard": { validate(value: unknown) { return { value }; } } };',
@@ -236,11 +233,6 @@ describe("plugin host build", () => {
   });
 
   it("bundles the published bridge surface without stubbing it", async () => {
-    // `@get-bb/plugin-sdk/provider-bridge` is real published code — schemas and pure
-    // helpers, nothing daemon-pinned — so it is deliberately NOT in the
-    // runtime-stub table: a bridge plugin depends on the SDK and the build
-    // inlines its published, self-contained bundle. The plugin's own sources
-    // still cannot reach a private package (the test above).
     const dir = await mkdtemp(join(process.cwd(), ".host-build-bridge-test-"));
     tempDirs.push(dir);
     await writeFile(
@@ -269,7 +261,7 @@ describe("plugin host build", () => {
         "export const experimental_providerBridge = experimental_defineProviderBridge({",
         "  handleLine(line) {",
         "    threadStartParamsSchema.safeParse(JSON.parse(line));",
-        "    process.stdout.write(JSON.stringify(threadDeltaSchema.parse({ kind: \"turn.open\" })));",
+        '    process.stdout.write(JSON.stringify(threadDeltaSchema.parse({ kind: "turn.open" })));',
         "  },",
         "});",
         "export default {};",
@@ -281,19 +273,10 @@ describe("plugin host build", () => {
       await testToolchain(),
     );
     const bundle = await readFile(result.jsPath, "utf8");
-    // Self-contained: the private packages behind the surface are inlined, so
-    // an installed plugin never needs them on disk.
     expect(bundle).not.toMatch(/from\s*"@bb\//u);
     expect(bundle).toContain("experimental_apiVersion");
   });
 
-  /**
-   * The `/host` fallback stub serves `experimental_defineHostEntry` only.
-   * Without the real SDK, a host entry that imports a published host contract
-   * used to fail with esbuild's "No matching export in
-   * bb-host-sdk-fallback:@get-bb/plugin-sdk/host", which points the author at
-   * the import instead of the missing dependency.
-   */
   describe("host contract imports without a usable SDK", () => {
     const manifest = {
       name: "bb-plugin-host-contract-fixture",
@@ -330,7 +313,6 @@ describe("plugin host build", () => {
     }
 
     it("names the missing SDK dependency when the plugin has no node_modules", async () => {
-      // Outside the workspace, so nothing above the fixture resolves the SDK.
       const dir = await mkdtemp(join(tmpdir(), "bb-host-no-sdk-test-"));
       tempDirs.push(dir);
       await writeFixture(dir);
@@ -343,7 +325,11 @@ describe("plugin host build", () => {
     });
 
     it("names the unbuilt SDK dist when the package is installed without it", async () => {
-      const dir = await mkdtemp(join(tmpdir(), "bb-host-unbuilt-sdk-test-"));
+      // realpath: on macOS tmpdir() is a symlink (/tmp -> /private/tmp) and
+      // the build error reports the resolved path.
+      const dir = await realpath(
+        await mkdtemp(join(tmpdir(), "bb-host-unbuilt-sdk-test-")),
+      );
       tempDirs.push(dir);
       await writeFixture(dir);
       const sdkDir = join(dir, "node_modules", "@get-bb", "plugin-sdk");

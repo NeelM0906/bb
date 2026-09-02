@@ -467,9 +467,6 @@ describe("getEnvironmentWorkspaceStateInvalidationQueryKeys", () => {
       ["environmentDiffFiles", "env-1"],
       ["environmentFilePreview", "env-1"],
     ]);
-    // The patch cache is observer-less; invalidation is a no-op for it, so it
-    // must be evicted (removeEnvironmentDiffPatchQueries) rather than appearing
-    // in any invalidate-key list.
     expect(queryKeys).not.toContainEqual(
       environmentDiffPatchQueryKeyPrefix("env-1"),
     );
@@ -498,10 +495,6 @@ describe("getCachedEnvironmentRefWorkspaceStateInvalidationQueryKeys", () => {
         environmentId: "env-1",
       });
 
-    // Only the merge-base-scoped work status for env-1, plus the observer-backed
-    // diff TOC cache (invalidated by prefix — a moved merge base affects every
-    // ref-derived diff target). The observer-less patch cache is absent: it is
-    // evicted separately via removeEnvironmentDiffPatchQueries.
     expect(queryKeys).toHaveLength(2);
     expect(queryKeys).toContainEqual(
       environmentWorkStatusQueryKey("env-1", "main"),
@@ -561,8 +554,6 @@ describe("optimisticallyInsertThread", () => {
     });
     queryClient.setQueryData(forkListKey, []);
 
-    // A hidden thread (a side chat, say) must not contaminate the parent's
-    // fork-filtered list.
     optimisticallyInsertThread(
       queryClient,
       makeThreadWithRuntime({
@@ -576,7 +567,6 @@ describe("optimisticallyInsertThread", () => {
       [],
     );
 
-    // A fork of the same parent does belong in the fork list.
     optimisticallyInsertThread(
       queryClient,
       makeThreadWithRuntime({

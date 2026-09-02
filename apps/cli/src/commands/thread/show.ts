@@ -53,9 +53,7 @@ interface ThreadLogCommandOptions {
 }
 
 const THREAD_LOG_DEFAULT_EVENT_LIMIT = 100;
-/** Page size for `--json --all`; bounds each response, not the total. */
 const THREAD_LOG_ALL_EVENTS_PAGE_SIZE = 1000;
-/** Server-side `segmentLimit` maximum (THREAD_TIMELINE_SEGMENT_LIMIT_MAX). */
 const THREAD_LOG_TIMELINE_SEGMENT_LIMIT_MAX = 100;
 
 interface ThreadOutputCommandOptions {
@@ -650,15 +648,9 @@ function parseThreadLogLimit<TDefault extends number | null>(
 
 interface ThreadLogEventsPage {
   rows: ThreadEventRow[];
-  /** True when at least one more event follows the last row. */
   hasMore: boolean;
 }
 
-/**
- * `/events` lists ascending by sequence and applies LIMIT, so a capped page is
- * the oldest events. Over-read by one row to know whether the page was cut
- * instead of guessing from a full page.
- */
 async function listThreadLogEventsPage(
   sdk: BbSdk,
   args: { threadId: string; limit: number; afterSeq: string | undefined },

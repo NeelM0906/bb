@@ -80,12 +80,6 @@ export type ExistingThreadExecutionInputSources = z.infer<
   typeof existingThreadExecutionInputSourcesSchema
 >;
 
-// "started on behalf of another thread/agent": the thread-start turn is
-// attributed to {initiator} and rendered as "Message from {senderThreadId}".
-// null ⇒ a normal user-initiated start. A non-null value also flags the
-// thread-start turn as seed-without-run (the started agent waits for the user's
-// first message), mirroring the `client/turn/requested` event whose
-// `senderThreadId` is non-null only for agent/system starts.
 export const startedOnBehalfOfInitiatorSchema = z.enum(["agent", "system"]);
 
 export const startedOnBehalfOfSchema = z.object({
@@ -99,22 +93,9 @@ export const createThreadRequestSchema = z
     projectId: z.string().min(1),
     providerId: z.string().min(1).optional(),
     origin: threadCreateOriginSchema,
-    /**
-     * Id of the plugin that spawned this thread. Present exactly when
-     * origin is "plugin" (enforced below); persisted for attribution.
-     */
     originPluginId: z.string().min(1).optional(),
-    /**
-     * Hidden threads stay out of sidebar organization and attention surfaces.
-     * Omitted, a child inherits parentThreadId's visibility and a root is
-     * visible; side chats stay hidden.
-     */
     visibility: threadVisibilitySchema.optional(),
     title: z.string().min(1).optional(),
-    // A source-derived side-chat preload may establish the cloned provider
-    // session without a first prompt. Normal starts and forks require at least
-    // one input entry, enforced by the refinement below rather than a blanket
-    // `.min(1)`.
     input: z.array(promptInputSchema),
     model: z.string().min(1).optional(),
     serviceTier: serviceTierSchema.optional(),
@@ -168,15 +149,8 @@ const agentOnlyPromptInputSchema = promptInputSchema.and(
 export const forkThreadRequestSchema = z
   .object({
     sourceThreadId: z.string().min(1),
-    /**
-     * Anchor the fork on the completed source turn containing this sequence:
-     * the cloned provider session and the inherited timeline both end with
-     * that turn (a user message row anchors before its own turn). Absent
-     * forks the session tip and inherits every completed turn.
-     */
     sourceSeqEnd: z.number().int().nonnegative().optional(),
     input: z.array(promptInputSchema).min(1).optional(),
-    /** Context persisted on the fork start but hidden from user-facing output. */
     agentContextSeed: z.array(agentOnlyPromptInputSchema).min(1).optional(),
     title: z.string().min(1).optional(),
     permissionMode: permissionModeInputSchema.optional(),
@@ -215,14 +189,6 @@ export const sendMessageRequestSchema = z.object({
 });
 export type SendMessageRequest = z.infer<typeof sendMessageRequestSchema>;
 
-/**
- * How a `send` request was taken:
- * - `sent`: dispatched now (a new turn or a steer into the active turn).
- * - `queued`: placed in the thread queue; it sends when the thread is next idle.
- * - `deferred`: the thread awaits user interaction, which a prompt cannot
- *   interrupt. The server holds the message and delivers it in the requested
- *   mode as soon as the interaction settles.
- */
 export const sendMessageDeliverySchema = z.enum(["sent", "queued", "deferred"]);
 export type SendMessageDelivery = z.infer<typeof sendMessageDeliverySchema>;
 
@@ -236,7 +202,6 @@ export const editMessageRequestSchema = sendMessageRequestSchema
   .omit({ mode: true })
   .extend({
     operationId: z.string().min(1),
-    /** Omission targets the latest editable message with no staleness guard. */
     expectedRequestSequence: z.number().int().nonnegative().optional(),
   })
   .strict();
@@ -352,13 +317,8 @@ export type ThreadSearchHighlightRange = z.infer<
 export const threadSearchMatchSchema = z
   .object({
     sourceKind: threadSearchSourceKindSchema,
-    // Title matches carry the whole title. Message matches carry a bounded
-    // snippet around the first hit (an ellipsis marks each cut side), and the
-    // highlight ranges are offsets into that snippet.
     text: z.string(),
     highlightRanges: z.array(threadSearchHighlightRangeSchema),
-    // Event sequence of the message this match came from, so the UI can deep-link
-    // to it in the conversation. Null for title/title_fallback matches.
     sourceSeq: z.number().int().nonnegative().nullable(),
   })
   .strict();
@@ -490,9 +450,6 @@ export const updateThreadRequestSchema = z
     title: z.string().min(1).nullable(),
     sectionId: z.string().min(1).nullable(),
     parentThreadId: z.string().min(1).nullable(),
-    // Sticky thread-level execution overrides applied on the next turn. `null`
-    // clears the override; an omitted field is left unchanged. Settable
-    // together or independently.
     model: z.string().min(1).nullable(),
     reasoningLevel: reasoningLevelSchema.nullable(),
     visibility: threadVisibilitySchema,
@@ -518,15 +475,9 @@ export type ReorderPinnedThreadRequest = z.infer<
   typeof reorderPinnedThreadRequestSchema
 >;
 
-/** Which root a secondary-panel file path is relative to. */
 export const panelFileSourceSchema = z.enum(["workspace", "thread-storage"]);
 export type PanelFileSource = z.infer<typeof panelFileSourceSchema>;
 
-/**
- * Requested placement for a thread opened in the app's split layout. Edge
- * placements add panes through the eighth pane; at the cap they replace the
- * focused pane. `replace` always replaces the focused pane.
- */
 export const threadOpenSplitSchema = z.enum([
   "right",
   "down",
@@ -536,7 +487,6 @@ export const threadOpenSplitSchema = z.enum([
 ]);
 export type ThreadOpenSplit = z.infer<typeof threadOpenSplitSchema>;
 
-/** Optional secondary-panel file to open with a thread. */
 export const threadOpenFileSchema = z
   .object({
     source: panelFileSourceSchema,
@@ -552,12 +502,6 @@ const threadOpenFileLenientSchema = z.object({
   lineNumber: z.number().int().positive().nullable(),
 });
 
-/**
- * Ephemeral server→client WebSocket message asking connected clients to open a
- * thread in the current split layout and, optionally, a file in that thread's
- * secondary panel. Broadcast to every client; nothing is persisted. Strict
- * schema guards the server's outgoing boundary.
- */
 export const threadOpenSignalSchema = z
   .object({
     type: z.literal("thread-open"),
@@ -569,10 +513,6 @@ export const threadOpenSignalSchema = z
   .strict();
 export type ThreadOpenSignal = z.infer<typeof threadOpenSignalSchema>;
 
-/**
- * Lenient counterpart for INBOUND parsing on clients (the web app), tolerant of
- * a newer server. Output stays assignable to {@link ThreadOpenSignal}.
- */
 export const threadOpenSignalLenientSchema = z.object({
   type: z.literal("thread-open"),
   projectId: z.string(),
@@ -581,24 +521,19 @@ export const threadOpenSignalLenientSchema = z.object({
   file: threadOpenFileLenientSchema.nullable(),
 });
 
-/** Request body for POST /threads/:id/open (threadId comes from the path). */
 export const threadOpenRequestSchema = z
   .object({
-    // Omission preserves ordinary thread/file-open behavior, while an explicit
-    // placement lets callers choose how the pane should open.
     split: threadOpenSplitSchema.optional(),
     file: threadOpenFileSchema.nullable(),
   })
   .strict();
 export type ThreadOpenRequest = z.infer<typeof threadOpenRequestSchema>;
 
-/** Response for POST /threads/:id/open: how many connected clients received it. */
 export const threadOpenResponseSchema = z.object({
   delivered: z.number().int().nonnegative(),
 });
 export type ThreadOpenResponse = z.infer<typeof threadOpenResponseSchema>;
 
-/** Presentation action for one thread pane in each connected app window. */
 export const threadPaneActionSchema = z.enum([
   "maximize",
   "restore",
@@ -608,7 +543,6 @@ export const threadPaneActionSchema = z.enum([
 ]);
 export type ThreadPaneAction = z.infer<typeof threadPaneActionSchema>;
 
-/** Request body for POST /threads/:id/pane-action. */
 export const threadPaneActionRequestSchema = z
   .object({ action: threadPaneActionSchema })
   .strict();
@@ -616,7 +550,6 @@ export type ThreadPaneActionRequest = z.infer<
   typeof threadPaneActionRequestSchema
 >;
 
-/** Ephemeral server→client request to change an already-open thread pane. */
 export const threadPaneActionSignalSchema = z
   .object({
     type: z.literal("thread-pane-action"),
@@ -629,7 +562,6 @@ export type ThreadPaneActionSignal = z.infer<
   typeof threadPaneActionSignalSchema
 >;
 
-/** Lenient inbound parser for clients connected to a newer server. */
 export const threadPaneActionSignalLenientSchema = z.object({
   type: z.literal("thread-pane-action"),
   projectId: z.string(),
@@ -637,7 +569,6 @@ export const threadPaneActionSignalLenientSchema = z.object({
   action: threadPaneActionSchema,
 });
 
-/** Number of connected app clients that received the pane action. */
 export const threadPaneActionResponseSchema = z.object({
   delivered: z.number().int().nonnegative(),
 });
@@ -658,17 +589,11 @@ export const threadListQuerySchema = z.object({
   parentThreadId: z.string().min(1).optional(),
   sourceThreadId: z.string().min(1).optional(),
   archived: z.enum(["true", "false"]).optional(),
-  /** Restrict to threads filed directly under this section. */
   sectionId: z.string().min(1).optional(),
-  /** Restrict to loose threads — those not filed under any section. */
   unsectioned: z.enum(["true", "false"]).optional(),
-  /** Filter by parent thread presence: "true" means child threads; "false" means root threads. */
   hasParent: z.enum(["true", "false"]).optional(),
-  /** Restrict to threads spawned with this origin. */
   originKind: threadOriginKindSchema.optional(),
-  /** Restrict to threads spawned by this plugin. */
   originPluginId: z.string().min(1).optional(),
-  /** Include hidden threads; omitted/false keeps the default visible-only list. */
   includeHidden: z.enum(["true", "false"]).optional(),
   limit: z.string().regex(/^\d+$/).optional(),
   offset: z.string().regex(/^\d+$/).optional(),
@@ -703,32 +628,11 @@ export const timelinePageMetadataSchema = z
 
 export const threadTimelineQuerySchema = z
   .object({
-    /**
-     * When `"true"`, completed turns carry their child rows inline and every
-     * command/tool row carries its full inline output (bounded by the 32 K
-     * inline cap). The default window collapses completed turns and replaces
-     * the running turn's large outputs with a head+tail preview marked by
-     * `outputPreview`; read those whole via `timelineTurnSummaryDetails`.
-     */
     includeNestedRows: z.enum(["true", "false"]),
     segmentLimit: z.string().regex(/^\d+$/),
     beforeAnchorSeq: z.string().regex(/^[1-9]\d*$/),
     beforeAnchorId: z.string().min(1),
-    /**
-     * When `"true"`, the response omits row generation and returns
-     * `rows: []` with the tail-only fields (`activeThinking`,
-     * `activeWorkflows`, `pendingTodos`, `contextWindowUsage`) populated
-     * normally. Used by the CLI to read tail state without paying for the full
-     * row payload on every `bb status` invocation. Implies `latest` page
-     * semantics.
-     */
     summaryOnly: z.enum(["true", "false"]),
-    /**
-     * The `maxSeq` the client last received for this window. When provided and
-     * the server can still reconstruct what the client holds, the response is a
-     * `delta` (changed rows only) instead of the full `rows`; otherwise the
-     * server returns the full window and the client replaces.
-     */
     afterSequence: z.string().regex(/^\d+$/),
   })
   .partial()
@@ -826,7 +730,6 @@ export type ThreadHostFileContentQuery = z.infer<
 >;
 
 export const threadFilesRawQuerySchema = z.object({
-  /** Absolute filesystem path of an HTML file on the thread's host. */
   path: z.string().min(1),
 });
 export type ThreadFilesRawQuery = z.infer<typeof threadFilesRawQuerySchema>;
@@ -848,7 +751,6 @@ export const threadTimelineResponseSchema = z.object({
   rows: z.array(timelineRowSchema),
   activePromptMode: threadTimelineActivePromptModeSchema.nullable(),
   activeThinking: activeThinkingSchema.nullable(),
-  /** Running workflows, most recently started first. */
   activeWorkflows: z.array(timelineWorkflowWorkRowSchema),
   activeBackgroundCommands: z.array(timelineWorkflowWorkRowSchema),
   pendingTodos: threadTimelinePendingTodosSchema.nullable(),
@@ -856,25 +758,13 @@ export const threadTimelineResponseSchema = z.object({
   modelFallback: threadTimelineModelFallbackSchema.nullable(),
   contextWindowUsage: threadContextWindowUsageSchema.optional(),
   timelinePage: timelinePageMetadataSchema,
-  /** Thread high-water event sequence this window reflects; bumps on append. */
   maxSeq: z.number().int().nonnegative(),
-  /**
-   * Present only when the request supplied a usable `afterSequence`: the
-   * changed rows + ordering to apply to the client's previous window. When
-   * present, `rows` is empty and the client merges via `applyTimelineDelta`.
-   */
   delta: timelineDeltaSchema.optional(),
 });
 export type ThreadTimelineResponse = z.infer<
   typeof threadTimelineResponseSchema
 >;
 
-/**
- * Lightweight attachment counts for a conversation-outline item. The full
- * {@link timelineConversationAttachmentsSchema} carries image URLs and file
- * paths the outline never renders, so the outline ships only the counts the
- * minimap needs to label an attachment-only message.
- */
 export const threadConversationOutlineAttachmentSummarySchema = z
   .object({
     imageCount: z.number().int().nonnegative(),
@@ -885,14 +775,6 @@ export type ThreadConversationOutlineAttachmentSummary = z.infer<
   typeof threadConversationOutlineAttachmentSummarySchema
 >;
 
-/**
- * A single conversation message in the thread's full table-of-contents
- * outline. `id` matches the corresponding timeline row id (both are projected
- * by the same builder), so the minimap can scroll-spy and jump to a row once
- * it is paginated into the loaded window. `preview` is already whitespace-
- * normalized and length-clamped server-side to keep the payload small for
- * very long threads.
- */
 export const threadConversationOutlineItemSchema = z
   .object({
     id: z.string().min(1),
@@ -909,7 +791,6 @@ export type ThreadConversationOutlineItem = z.infer<
 export const threadConversationOutlineResponseSchema = z
   .object({
     items: z.array(threadConversationOutlineItemSchema),
-    /** Thread high-water event sequence this outline reflects. */
     maxSeq: z.number().int().nonnegative(),
   })
   .strict();
@@ -919,13 +800,6 @@ export type ThreadConversationOutlineResponse = z.infer<
 
 export const threadStorageFileListResponseSchema =
   workspaceFileListResponseSchema.extend({
-    /**
-     * Absolute on-host path to the thread's storage directory. Useful for
-     * clients that need to construct a full path for filesystem operations
-     * (e.g. opening a storage file in the user's editor). The path is on
-     * the thread's host machine, so it is only usable when that host is the
-     * user's local machine.
-     */
     storageRootPath: z.string(),
   });
 export type ThreadStorageFileListResponse = z.infer<
@@ -934,13 +808,6 @@ export type ThreadStorageFileListResponse = z.infer<
 
 export const threadStoragePathListResponseSchema =
   workspacePathListResponseSchema.extend({
-    /**
-     * Absolute on-host path to the thread's storage directory. Useful for
-     * clients that need to construct a full path for filesystem operations
-     * (e.g. opening a storage file in the user's editor). The path is on
-     * the thread's host machine, so it is only usable when that host is the
-     * user's local machine.
-     */
     storageRootPath: z.string(),
   });
 export type ThreadStoragePathListResponse = z.infer<

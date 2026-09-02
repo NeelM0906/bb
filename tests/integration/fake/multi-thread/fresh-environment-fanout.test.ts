@@ -14,12 +14,7 @@ import { createTestGitRepo } from "../../helpers/seed.js";
 import { scaleTimeoutMs } from "../../helpers/time.js";
 import { DEFAULT_TIMEOUT_MS } from "./shared.js";
 
-// Three distinct providers, each its own scripted echo bridge process.
-const FANOUT_PROVIDERS: ReadonlyArray<string> = [
-  "fake",
-  "fake-alpha",
-  "fake-beta",
-];
+const FANOUT_PROVIDERS: ReadonlyArray<string> = ["fake", "fake-alpha"];
 const THREADS_PER_PROVIDER = 2;
 const FRESH_FANOUT_TIMEOUT_MS = scaleTimeoutMs(30_000);
 

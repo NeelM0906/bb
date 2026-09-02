@@ -51,7 +51,10 @@ import {
   DropdownMenuTrigger,
 } from "@bb/shared-ui/dropdown-menu";
 import { Icon } from "@bb/shared-ui/icon";
-import { PromptStackCard } from "@/components/promptbox/banner/PromptStackCard";
+import {
+  PROMPT_STACK_EDGE_CARET_BUTTON_WIDTH_CLASS,
+  PromptStackCard,
+} from "@/components/promptbox/banner/PromptStackCard";
 import { useScrollOverflowState } from "@/components/thread/timeline/useScrollOverflowState";
 import { OverflowFade } from "@/components/ui/overflow-fade";
 import { InlineMessageEditorFrame } from "@/components/promptbox/InlineMessageEditorFrame";
@@ -85,7 +88,6 @@ import {
   type QueuedEditorTypeaheadLayout,
 } from "@/components/promptbox/queued-editor-typeahead-layout";
 
-/** Which in-flight action the processing message is running, for its label. */
 export type QueuedMessageProcessingAction = "send" | "edit" | "delete";
 
 export interface QueuedMessageGroupBoundaryRequest {
@@ -174,9 +176,6 @@ export function getInlineEditorSurfaceMaxHeight({
   surfaceHeight: number;
   viewportHeight: number;
 }): number {
-  // Measure everything that is not the queue — the real composer, prompt
-  // stack gaps, footer padding, and safe-area chrome — so edit mode adapts to
-  // the composer's occupied height instead of guessing at a bottom offset.
   const occupiedHeightOutsideQueue = Math.max(
     0,
     containerHeight - surfaceHeight,
@@ -443,9 +442,6 @@ export const queuedMessageCollisionDetection: CollisionDetection = (args) => {
     return closestCenter(args);
   }
 
-  // Use the raw pointer position for the group boundary. The handle itself is
-  // snapped by a modifier, so deriving collisions from its transformed rect
-  // would create a feedback loop that can trap it on its current boundary.
   const collisions: Collision[] = [];
   for (const droppableContainer of args.droppableContainers) {
     if (String(droppableContainer.id) === GROUP_DIVIDER_ID) continue;
@@ -621,9 +617,6 @@ const QueuedMessageRow = memo(function QueuedMessageRow({
     disabled: dragDisabled,
   });
   const rowStyle = {
-    // Translate only. `CSS.Transform.toString` would also emit the scaleX/scaleY
-    // dnd-kit derives for these variable-height rows, visibly squishing the
-    // dragged message.
     transform: CSS.Translate.toString(transform),
     transition,
   };
@@ -652,7 +645,7 @@ const QueuedMessageRow = memo(function QueuedMessageRow({
             !dragDisabled && "cursor-grab active:cursor-grabbing",
           )}
           disabled={dragDisabled}
-          aria-label={`Reorder queued message ${index + 1}`}
+          aria-label={`Reorder follow-up ${index + 1}`}
           {...attributes}
           {...listeners}
         >
@@ -723,7 +716,7 @@ const QueuedMessageRow = memo(function QueuedMessageRow({
                       )}
                       disabled={actionDisabled || sendDisabled}
                       onClick={() => onSendImmediately(queuedMessage.id)}
-                      aria-label={`Send queued message ${index + 1} now`}
+                      aria-label={`Send follow-up ${index + 1} now`}
                     >
                       <Icon name="Sent" className="size-4" aria-hidden />
                     </Button>
@@ -747,7 +740,7 @@ const QueuedMessageRow = memo(function QueuedMessageRow({
                           queuedMessageIndex: index,
                         })
                       }
-                      aria-label={`Edit queued message ${index + 1}`}
+                      aria-label={`Edit follow-up ${index + 1}`}
                     >
                       <Icon name="Edit" className="size-4" aria-hidden />
                     </Button>
@@ -766,7 +759,7 @@ const QueuedMessageRow = memo(function QueuedMessageRow({
                       )}
                       disabled={actionDisabled}
                       onClick={() => onDelete(queuedMessage.id)}
-                      aria-label={`Delete queued message ${index + 1}`}
+                      aria-label={`Delete follow-up ${index + 1}`}
                     >
                       <Icon name="Trash2" className="size-4" aria-hidden />
                     </Button>
@@ -791,7 +784,7 @@ const QueuedMessageRow = memo(function QueuedMessageRow({
                     compact ? "size-7" : "size-8",
                   )}
                   disabled={actionDisabled}
-                  aria-label={`Queued message ${index + 1} actions`}
+                  aria-label={`Follow-up ${index + 1} actions`}
                 >
                   <Icon name="MoreHorizontal" className="size-4" aria-hidden />
                 </Button>
@@ -915,8 +908,8 @@ function QueuedMessageInlineEditorSlot({
     >
       <OverflowFade placement="above" tone="surface-raised" className="z-10" />
       <InlineMessageEditorFrame
-        cancelLabel="Stop editing queued message"
-        label={`Editing queued message ${editor.queuedMessageIndex + 1}`}
+        cancelLabel="Stop editing follow-up"
+        label={`Editing follow-up ${editor.queuedMessageIndex + 1}`}
         onCancel={editor.onDismiss}
       >
         <QueuedEditorTypeaheadLayoutContext.Provider value={setTypeaheadLayout}>
@@ -1095,9 +1088,6 @@ export function QueuedMessagesList({
     setInlineEditorDesiredHeight((currentHeight) =>
       currentHeight === desiredHeight ? currentHeight : desiredHeight,
     );
-    // The surface height is animated. ResizeObserver calls this throughout the
-    // transition, so re-align the neighborhood as usable space appears instead
-    // of leaving the editor pinned to the top based on the first, short frame.
     scrollInlineEditorNeighborhoodIntoView();
   }, [
     getScrollElement,
@@ -1138,13 +1128,6 @@ export function QueuedMessagesList({
     };
   }, [getScrollElement, inlineEditorActive, measureInlineEditorMaxHeight]);
 
-  // Render from a local order so a drag can reorder synchronously in the drop
-  // event (no snap-back). The prop is re-adopted only when the queue's
-  // persisted order or grouping changes — not when an unrelated query
-  // notification merely replays the same order we already applied.
-  // (React Query defers its notification past dnd-kit's drop, so re-adopting on
-  // every prop change would momentarily re-render a dropped row in its old
-  // slot.)
   const [orderedMessages, setOrderedMessages] = useState(queuedMessages);
   const orderKey = queuedMessages
     .map(
@@ -1209,9 +1192,6 @@ export function QueuedMessagesList({
       });
       if (!dragResult) return;
 
-      // Apply the new order locally and synchronously so the dropped row
-      // settles into place in the same render flush as the drop; the mutation
-      // syncs the server in the background.
       setOrderedMessages(dragResult.orderedMessages);
 
       if (dragResult.kind === "divider") {
@@ -1223,8 +1203,6 @@ export function QueuedMessagesList({
     },
     [combinedIds, onReorder, onSetGroupBoundary, orderedMessages],
   );
-  // Keep a dragged row inside both the visible viewport and the rendered list:
-  // short queues should not gain scrollable overflow below the final row.
   const restrictToListBounds = useCallback<Modifier>(
     ({ draggingNodeRect, transform }) => {
       return clampQueuedMessageDragTransform({
@@ -1479,10 +1457,10 @@ export function QueuedMessagesList({
   const caretWillCollapse =
     mode === "workspace" || (mode === "drawer" && queueFitsDrawer);
   const caretLabel = caretWillCollapse
-    ? "Collapse queued messages"
+    ? "Collapse follow-ups"
     : mode === "collapsed" && queueFitsDrawer
-      ? "Show queued messages"
-      : "Expand queued messages";
+      ? "Show follow-ups"
+      : "Expand follow-ups";
   const handleCaretClick = () => {
     if (caretWillCollapse) {
       collapseDrawer();
@@ -1496,7 +1474,7 @@ export function QueuedMessagesList({
   return (
     <PromptStackCard
       rootRef={surfaceRef}
-      ariaLabel="Queued messages"
+      ariaLabel="Follow-ups"
       style={{ height: surfaceHeight }}
       className={cn(
         "relative z-10 flex min-h-0 flex-col overflow-hidden bg-surface-raised-solid shadow-lift",
@@ -1515,7 +1493,9 @@ export function QueuedMessagesList({
         data-queued-messages-mode={mode}
       >
         <div className="flex min-w-16 items-baseline gap-1.5 pl-1">
-          <span className="text-xs font-medium text-foreground">Queued</span>
+          <span className="text-xs font-normal text-subtle-foreground">
+            Follow-ups
+          </span>
           <span className="text-2xs text-subtle-foreground">
             {queuedMessages.length}
           </span>
@@ -1528,8 +1508,8 @@ export function QueuedMessagesList({
           )}
           aria-label={
             mode === "workspace"
-              ? "Drag down to dock the queue"
-              : "Drag up to open the queue workspace"
+              ? "Drag down to dock follow-ups"
+              : "Drag up to open the follow-up workspace"
           }
           onPointerDown={handleSurfacePointerDown}
           onPointerMove={handleSurfacePointerMove}
@@ -1547,7 +1527,10 @@ export function QueuedMessagesList({
                   type="button"
                   size="icon"
                   variant="ghost"
-                  className="size-6 text-muted-foreground hover:bg-surface-recessed"
+                  className={cn(
+                    "h-6 text-muted-foreground hover:bg-surface-recessed",
+                    PROMPT_STACK_EDGE_CARET_BUTTON_WIDTH_CLASS,
+                  )}
                   onClick={handleCaretClick}
                   aria-label={caretLabel}
                   aria-expanded={mode !== "collapsed"}

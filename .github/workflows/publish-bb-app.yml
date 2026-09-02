@@ -370,6 +370,9 @@ jobs:
   # error. That is expected and does not affect the bb-app jobs. See
   # docs/bb-release-process.md#publishing-the-plugin-sdk.
   publish-plugin-sdk:
+    # Forks may validate a manual dry run, but must never publish the upstream
+    # npm package or execute the scheduled nightly release.
+    if: ${{ github.repository == 'get-bb/bb' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == true) }}
     name: Publish @get-bb/plugin-sdk
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -668,6 +671,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
 
+      - name: Install AppImage FUSE runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libfuse2
+
       - name: Apply the nightly version
         id: nightly_version
         env:
@@ -705,6 +713,11 @@ jobs:
         # The packaged app opens a real BrowserWindow, so the headless runner
         # needs a virtual display.
         run: xvfb-run -a pnpm exec turbo run smoke:packaged --filter=@bb/desktop --force --output-logs=new-only
+
+      - name: Smoke test nightly AppImage mount lifecycle
+        # Launches the generated AppImage itself, tears down only its GUI mount,
+        # and verifies the separately mounted owned runtime remains healthy.
+        run: xvfb-run -a pnpm exec turbo run smoke:appimage-lifecycle --filter=@bb/desktop --force --output-logs=new-only
 
       - name: Generate nightly desktop version feed
         run: pnpm --dir apps/desktop run desktop:version-feed

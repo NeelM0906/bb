@@ -194,8 +194,6 @@ function listStopRequestedEnvironmentProvisionThreads(
     .where(
       and(
         eq(threads.environmentId, environmentId),
-        // Explicit user stop intent only: the thread is `stopping`. Archived
-        // and deleted threads continue through their existing cleanup paths.
         eq(threads.status, "stopping"),
         isNull(threads.archivedAt),
         isNull(threads.deletedAt),
@@ -419,8 +417,6 @@ function restoreProvisioningEnvironmentAfterCancelledProvisioningOutcomeInTransa
   deps: EnvironmentProvisionTransactionDeps,
   args: RestoreProvisioningEnvironmentAfterCancelledProvisioningOutcomeArgs,
 ): boolean {
-  // Not lifecycle: routing — a destroyed environment reports "not handled" so
-  // the caller skips re-requesting cleanup for it.
   if (args.environment.status === "destroyed") {
     return false;
   }
@@ -554,9 +550,6 @@ function recordEnvironmentProvisioningFailureInTransaction(
       threadId: thread.id,
     });
     if (outcome.applied) {
-      // Bare on purpose: in-transaction producers cannot build `statusChange`
-      // metadata (see buildThreadStatusChangeMetadata); clients fall back to
-      // the throttled thread-list refetch.
       deps.hub.notifyThread(thread.id, ["status-changed"]);
     }
   }
@@ -606,13 +599,11 @@ export function settleEnvironmentProvisionCommandResult(
         ...resolveProvisionedEnvironmentBranchMetadata(args.command),
       },
     );
-    const provisionedOutcome = applyLoggedEnvironmentLifecycleEventInTransaction(
-      args.deps,
-      {
+    const provisionedOutcome =
+      applyLoggedEnvironmentLifecycleEventInTransaction(args.deps, {
         environmentId: args.command.environmentId,
         event: { type: "provision.succeeded" },
-      },
-    );
+      });
     if (provisionedOutcome.applied) {
       args.deps.hub.notifyEnvironment(
         args.command.environmentId,
@@ -854,9 +845,6 @@ function interruptUnrecoverableEnvironmentProvisioning(
   args: InterruptUnrecoverableEnvironmentProvisioningArgs,
 ): void {
   const environment = getEnvironment(deps.db, args.environmentId);
-  // Not lifecycle: flow gate — only an in-flight provisioning can be
-  // interrupted; the guard also prevents appending failure events to threads
-  // of settled environments.
   if (!environment || environment.status !== "provisioning") {
     return;
   }
@@ -949,10 +937,6 @@ export async function advanceEnvironmentProvisioning(
   }
 
   const environment = getEnvironment(deps.db, args.environmentId);
-  // Not lifecycle: dispatch routing — never issue a provision RPC for a
-  // destroyed record. The provision.requested transition (which observed
-  // reality still permits from "destroyed") is applied by the writer at the
-  // request call sites, not here.
   if (!environment || environment.status === "destroyed") {
     return;
   }

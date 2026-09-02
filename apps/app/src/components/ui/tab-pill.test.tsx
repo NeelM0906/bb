@@ -1,15 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TabPill } from "./tab-pill";
 
 afterEach(cleanup);
 
 describe("TabPill", () => {
-  // An icon-only tab has no visible text, so its whole accessible presence
-  // comes from `ariaLabel` plus the visually-hidden label. Losing either one
-  // leaves a button a screen reader announces as unlabelled.
   it("keeps an icon-only tab reachable by its accessible name", () => {
     render(
       <TabPill
@@ -45,5 +42,31 @@ describe("TabPill", () => {
         .getByRole("button", { name: "Browser" })
         .getAttribute("aria-pressed"),
     ).toBe("false");
+  });
+
+  it("closes a closable tab after a middle click", () => {
+    const onClose = vi.fn();
+    const onSelect = vi.fn();
+    render(
+      <TabPill
+        label="Browser"
+        title="Browser"
+        isActive={false}
+        onSelect={onSelect}
+        closeAction={{ onClose, closeLabel: "Close Browser" }}
+      />,
+    );
+
+    fireEvent(
+      screen.getByRole("button", { name: "Browser" }),
+      new MouseEvent("auxclick", {
+        bubbles: true,
+        button: 1,
+        cancelable: true,
+      }),
+    );
+
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(onSelect).not.toHaveBeenCalled();
   });
 });
