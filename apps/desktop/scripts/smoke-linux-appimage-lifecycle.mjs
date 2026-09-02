@@ -493,6 +493,40 @@ async function killIsolatedProcesses({ dataDir, userDataDir }) {
   }
 }
 
+const maxRuntimeLogTailCharacters = 6_000;
+
+// The owned runtime's stdout/stderr live only in the GUI's in-memory child
+// log, so a runtime that dies after publishing owned-runtime.json leaves the
+// smoke with updater noise and nothing else. Its bb-app launcher still writes
+// server and daemon logs under BB_DATA_DIR/logs; surface their tails so a CI
+// failure carries the runtime's own error.
+async function collectRuntimeLogs(dataDir) {
+  const logDir = join(dataDir, "logs");
+  let entries;
+  try {
+    entries = await readdir(logDir, { withFileTypes: true });
+  } catch {
+    return "";
+  }
+  const sections = [];
+  for (const entry of entries.sort((left, right) =>
+    left.name.localeCompare(right.name),
+  )) {
+    if (!entry.isFile()) {
+      continue;
+    }
+    try {
+      const content = await readFile(join(logDir, entry.name), "utf8");
+      sections.push(
+        `--- ${entry.name} (last ${String(maxRuntimeLogTailCharacters)} chars) ---\n${content.slice(-maxRuntimeLogTailCharacters).trim()}`,
+      );
+    } catch (error) {
+      sections.push(`--- ${entry.name} ---\n(unreadable: ${String(error)})`);
+    }
+  }
+  return sections.join("\n\n");
+}
+
 async function smokeLinuxAppImageLifecycle() {
   if (process.platform !== "linux") {
     throw new Error("The AppImage lifecycle smoke only runs on Linux.");
@@ -659,6 +693,17 @@ async function smokeLinuxAppImageLifecycle() {
       `AppImage lifecycle smoke passed: ${appImage}\n` +
         `GUI mount removed: ${guiMount}\n` +
         `Owned runtime remained healthy on: ${runtimeMount}`,
+    );
+  } catch (error) {
+    const runtimeLogs = await collectRuntimeLogs(dataDir);
+    if (runtimeLogs.length === 0) {
+      throw error;
+    }
+    const original =
+      error instanceof Error ? (error.stack ?? error.message) : String(error);
+    throw new Error(
+      `${original}\n\nruntime logs under ${join(dataDir, "logs")}:\n${runtimeLogs}`,
+      { cause: error },
     );
   } finally {
     if (runtime !== null) {
