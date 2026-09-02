@@ -737,17 +737,14 @@ describe("public thread data routes", () => {
         scope: threadScope(),
         data: { text: "Visible response" },
       });
-      const outlineSnapshot = vi.spyOn(
-        harness.deps.dbReadWorker,
-        "timelineSnapshot",
-      );
+      const prepareSpy = vi.spyOn(harness.db.$client, "prepare");
       const countFullOutlineQueries = () =>
-        outlineSnapshot.mock.calls.filter(([input]) => {
+        prepareSpy.mock.calls.filter(([source]) => {
           return (
-            input !== undefined &&
-            typeof input === "object" &&
-            "kind" in input &&
-            input.kind === "conversationOutline"
+            typeof source === "string" &&
+            source.includes('"created_at"') &&
+            source.includes('"data"') &&
+            source.includes("union all")
           );
         }).length;
 
@@ -2686,6 +2683,9 @@ describe("public thread data routes", () => {
       await expect(readJson(response)).resolves.toEqual({
         ok: true,
         delivery: "queued",
+        queuedMessageId: expect.any(String),
+        waitingOn: { kind: "thread-busy" },
+        sendAt: null,
       });
       const queuedRows = listQueuedThreadMessages(harness.db, thread.id);
       expect(queuedRows).toMatchObject([
@@ -2697,13 +2697,15 @@ describe("public thread data routes", () => {
       expect(JSON.parse(queuedRows[0]?.content ?? "null")).toEqual([
         { type: "text", text: "Queued active follow-up", mentions: [] },
       ]);
+      // Nothing was dispatched, and queueing writes no timeline event at all:
+      // the queue rows above the composer are the only narration of a wait.
       expect(
         harness.db
-          .select({ id: events.id })
+          .select({ type: events.type })
           .from(events)
           .where(eq(events.threadId, thread.id))
           .all(),
-      ).toHaveLength(0);
+      ).toEqual([]);
       expect(capture).not.toHaveBeenCalled();
     });
   });
@@ -2748,6 +2750,9 @@ describe("public thread data routes", () => {
       await expect(readJson(response)).resolves.toEqual({
         ok: true,
         delivery: "queued",
+        queuedMessageId: expect.any(String),
+        waitingOn: { kind: "thread-busy" },
+        sendAt: null,
       });
       expect(listQueuedThreadMessages(harness.db, thread.id)).toMatchObject([
         {
@@ -4086,18 +4091,18 @@ describe("public thread data routes", () => {
         },
       );
 
+      // "Send now" overrides plugin waits, not core ones: the workspace is
+      // still being prepared, so the row goes back on the queue waiting on that
+      // rather than being dispatched into a thread that cannot take it.
       expect(sendResponse.status).toBe(409);
       await expect(readJson(sendResponse)).resolves.toMatchObject({
-        code: "thread_not_writable",
-        details: {
-          reason: "still_starting",
-          threadStatus: "starting",
-        },
+        code: "queued_message_still_waiting",
       });
       expect(
         getQueuedThreadMessage(harness.db, createdQueuedMessage.id),
       ).toMatchObject({
         id: createdQueuedMessage.id,
+        waitingOn: JSON.stringify({ kind: "provisioning" }),
       });
       const requestedEvents = harness.db
         .select({ type: events.type })

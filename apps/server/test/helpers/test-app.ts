@@ -163,6 +163,7 @@ export async function createTestAppHarness(
         available: true,
         pluginId: extra.pluginId,
         declaration: validatePluginProviderDeclaration(extra.declaration),
+        iconHash: null,
         readSettings: () => ({}),
       }),
       pluginId: extra.pluginId,

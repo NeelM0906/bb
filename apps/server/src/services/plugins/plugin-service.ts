@@ -70,6 +70,7 @@ import {
   getLastThreadErrorMessage,
   getLastThreadOutput,
 } from "../threads/thread-data.js";
+import { buildTurnFailedEvent } from "../threads/turn-failed.js";
 import type { PluginBrandingAssetVariant } from "./app-bundle.js";
 import { readPluginThemeCodeTheme } from "../system/code-themes.js";
 import {
@@ -109,6 +110,7 @@ import {
   type InstallContext,
   type RegisterInstalledArgs,
 } from "./managed-plugin-artifacts.js";
+import type { PluginHookProvider } from "./plugin-hook-registry.js";
 import {
   createPluginRegistration,
   type PluginPathInstallOptions,
@@ -161,6 +163,12 @@ export function dispatchPluginSourceWatchChange(
 export interface PluginService {
   isBuiltin(id: string): boolean;
   events: PluginThreadEventEmitter;
+  /** The hook chain the dispatch pipeline consults; registered in createApp. */
+  hooks: PluginHookProvider;
+  /**
+   * Bind the in-process BB SDK to the running server. Call once the HTTP
+   * listener is up, before start(): bb.sdk throws until this runs.
+   */
   bindSdk(args: { baseUrl: string }): void;
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -212,6 +220,18 @@ export interface PluginService {
   ): Promise<PluginListEntry | undefined>;
   reload(id?: string): Promise<PluginReloadOutcome>;
   getApi(id: string): BbPluginApi | undefined;
+  /**
+   * Whether this plugin's runtime is live right now. Core uses it to decide
+   * whether a `plugin:<id>` owner still exists — a queue wait whose owner is
+   * gone is cleared as `orphaned` rather than stranding the user's turn.
+   */
+  isPluginLoaded(id: string): boolean;
+  /**
+   * On-disk asset backing GET /plugins/:id/assets/app.{js,css}: file path
+   * plus the current content hash (the route compares ?h against it for
+   * cache policy). Undefined when the plugin has no loadable bundle, or no
+   * CSS for kind "css".
+   */
   getAppAsset(
     id: string,
     kind: "js" | "css",
@@ -307,6 +327,13 @@ export interface PluginService {
 
 const DEFAULT_MENTION_SEARCH_TIMEOUT_MS = 2_000;
 const DEFAULT_MENTION_RESOLVE_TIMEOUT_MS = 10_000;
+/**
+ * Per-handler decision box. A hook handler is on the dispatch hot path and
+ * holds a server-wide lock while it runs, so it must decide in milliseconds;
+ * this is the outer bound past which the dispatch fails with the plugin named,
+ * not a budget to spend.
+ */
+const DEFAULT_PLUGIN_HOOK_TIMEOUT_MS = 10_000;
 const DEFAULT_STABILIZATION_WINDOW_MS = 30_000;
 const DEFAULT_ARTIFACT_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const SCHEDULE_SWEEP_BATCH_SIZE = 100;
@@ -795,6 +822,8 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     deps.mentionSearchTimeoutMs ?? DEFAULT_MENTION_SEARCH_TIMEOUT_MS;
   const mentionResolveTimeoutMs =
     deps.mentionResolveTimeoutMs ?? DEFAULT_MENTION_RESOLVE_TIMEOUT_MS;
+  const pluginHookTimeoutMs =
+    deps.pluginHookTimeoutMs ?? DEFAULT_PLUGIN_HOOK_TIMEOUT_MS;
   const stabilizationWindowMs =
     deps.stabilizationWindowMs ?? DEFAULT_STABILIZATION_WINDOW_MS;
   const artifactRetentionMs =
@@ -822,6 +851,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     checkPluginSdkRange,
     disposeAll,
     disposeOne,
+    buildQueuedMessageEventEmitter,
     emitThreadEvent,
     handlerStats,
     handleUncaughtException,
@@ -830,6 +860,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     identities,
     invokeWrapped,
     isBuiltinPluginId,
+    listPluginHooks,
     isPackagedBuiltinEntry,
     loadAll,
     loaded,
@@ -845,7 +876,12 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     withArtifactLock,
     withLifecycleLock,
     withPluginOperationLock,
-  } = createPluginRuntime({ deps, nextCronRunAt, settledWithin });
+  } = createPluginRuntime({
+    deps,
+    nextCronRunAt,
+    settingsChanged: notifyPluginsChanged,
+    settledWithin,
+  });
 
   let managedValidateInstallDir!: (
     args: RegisterInstalledArgs,
@@ -1244,6 +1280,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
             loadedPlugin?.handle
               .listProviderDeclarations()
               .map((declaration) => declaration.id) ?? [],
+          // Declared icons ride the identity like the compact icon, so a
+          // row referencing "<pluginId>/<name>" resolves while the plugin is
+          // disabled and stops resolving only once it is uninstalled.
           icons: Object.fromEntries(
             [
               ...((loadedPlugin !== undefined
@@ -1335,6 +1374,27 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
           thread: buildThreadDto(thread),
         }));
       },
+      emitMessageQueued: buildQueuedMessageEventEmitter("message.queued"),
+      emitMessageDispatched:
+        buildQueuedMessageEventEmitter("message.dispatched"),
+      emitTurnFailed(threadId) {
+        // Built lazily inside the emitter: with no listener the failure path
+        // pays one map lookup and never touches the database.
+        emitThreadEvent("turn.failed", () =>
+          buildTurnFailedEvent(deps.db, threadId),
+        );
+      },
+    },
+
+    hooks: {
+      listHooks: listPluginHooks,
+      invokeHook: async (pluginId, label, run) => {
+        const outcome = await invokeWrapped(pluginId, label, run);
+        return outcome.ok
+          ? { ok: true, value: outcome.value }
+          : { ok: false, error: outcome.error };
+      },
+      decisionTimeoutMs: pluginHookTimeoutMs,
     },
 
     bindSdk: bindRuntimeSdk,
@@ -1360,11 +1420,18 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
               candidate.sourceBuiltinName === bundled.name,
           );
           if (row === undefined) continue;
-          const manifest = await readPluginManifest(bundled.rootDir);
           const loop = createPluginDevLoop({
             pluginId: row.id,
-            hasApp: manifest.appEntry !== undefined,
-            hasHost: manifest.hostEntry !== undefined,
+            targets: async () => {
+              const manifest = await readPluginManifest(bundled.rootDir);
+              const hasApp = manifest.appEntry !== undefined;
+              const hasHost = manifest.hostEntry !== undefined;
+              // A dropped entry can no longer rebuild, so its last build
+              // problem would otherwise stick forever.
+              if (!hasApp) setDevBuildProblem(row.id, "frontend", null);
+              if (!hasHost) setDevBuildProblem(row.id, "host", null);
+              return { hasApp, hasHost };
+            },
             buildApp: async () => {
               try {
                 await buildPluginApp(
@@ -1546,6 +1613,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
             : deleteInstalledPlugin(deps.db, id)
           : false;
         if (removed && row) {
+          deps.onPluginUnregistered?.(id);
+          // The uninstalled tree is no longer reloadable, so stop the module
+          // resolve hook from scanning it on every later import.
           forgetMutableRoot(row.rootDir);
           deletePluginSchedules(deps.db, id);
           deleteAllPluginSettings(deps.db, id);
@@ -1595,6 +1665,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
             }
           });
         }
+        if (!enabled) {
+          deps.onPluginUnregistered?.(id);
+        }
         await syncCliSkill();
         notifyPluginsChanged();
         return list().find((p) => p.id === id);
@@ -1622,6 +1695,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
 
     getApi(id) {
       return loaded.get(id)?.handle.api;
+    },
+
+    isPluginLoaded(id) {
+      return loaded.has(id);
     },
 
     getAppAsset(id, kind) {

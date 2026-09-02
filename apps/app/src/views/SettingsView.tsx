@@ -6,6 +6,7 @@ import {
   defaultAppSettings,
   defaultAppTheme,
   defaultExperiments,
+  managedBranchPrefixSchema,
   type AppTheme,
   type FaviconColorPreference,
   type PluginThemeMeta,
@@ -16,6 +17,7 @@ import type {
 } from "@bb/host-daemon-contract";
 import { Button } from "@bb/shared-ui/button";
 import { Icon } from "@bb/shared-ui/icon";
+import { Input } from "@bb/shared-ui/input";
 import { Switch } from "@bb/shared-ui/switch";
 import { COARSE_POINTER_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import {
@@ -41,6 +43,7 @@ import { UsageLimitsSettingsSection } from "@/components/settings/UsageLimitsSet
 import { ProvidersSettingsSection } from "@/components/settings/ProvidersSettingsSection";
 import { CodeRendererSettings } from "@/components/settings/CodeRendererSettings";
 import { SidebarThreadListSetting } from "@/components/settings/SidebarThreadListSetting";
+import { SidebarNavigationSetting } from "@/components/settings/SidebarNavigationSetting";
 import { SplitDimmingSetting } from "@/components/settings/SplitDimmingSetting";
 import { useSettingsNavState } from "@/components/settings/settings-nav";
 import { PluginSettingsPage } from "@/components/plugin/PluginSettings";
@@ -144,7 +147,10 @@ interface AppearanceSettingsSectionProps {
 
 interface GeneralSettingsSectionProps {
   desktopBrowserAvailable: boolean;
+  managedBranchPrefix: string;
+  managedBranchPrefixDisabled: boolean;
   navigateToThreadAfterCreate: boolean;
+  onManagedBranchPrefixChange: (prefix: string) => Promise<void> | void;
   onNavigateToThreadAfterCreateChange: (enabled: boolean) => void;
   onOpenLinksInAppBrowserChange: (enabled: boolean) => void;
   onRewriteLocalhostLinksChange: (enabled: boolean) => void;
@@ -183,12 +189,10 @@ interface ExperimentsSettingsSectionProps {
   changelogPreviewEnabled: boolean;
   editMessagesEnabled: boolean;
   mobileAppEnabled: boolean;
-  providerSessionReapingEnabled: boolean;
   timelineWindowingEnabled: boolean;
   onChangelogPreviewEnabledChange: (enabled: boolean) => void;
   onEditMessagesEnabledChange: (enabled: boolean) => void;
   onMobileAppEnabledChange: (enabled: boolean) => void;
-  onProviderSessionReapingEnabledChange: (enabled: boolean) => void;
   onTimelineWindowingEnabledChange: (enabled: boolean) => void;
 }
 
@@ -547,6 +551,78 @@ const FOLLOW_UP_BEHAVIOR_OPTIONS = [
   },
 ] as const;
 const STREAMER_MODE_SETTING_LABEL = "Streamer mode";
+const MANAGED_BRANCH_PREFIX_SETTING_LABEL = "Worktree branch prefix";
+const MANAGED_BRANCH_PREFIX_EXAMPLE_SLUG = "fix-login-flow-thr_ab12cd34ef";
+
+interface ManagedBranchPrefixSettingProps {
+  disabled: boolean;
+  onChange: (prefix: string) => Promise<void> | void;
+  value: string;
+}
+
+function ManagedBranchPrefixSetting({
+  disabled,
+  onChange,
+  value,
+}: ManagedBranchPrefixSettingProps) {
+  const [draft, setDraft] = useState(value);
+  const [committedValue, setCommittedValue] = useState(value);
+  if (value !== committedValue) {
+    setCommittedValue(value);
+    setDraft(value);
+  }
+
+  const valid = managedBranchPrefixSchema.safeParse(draft).success;
+  const commit = () => {
+    if (!valid) {
+      setDraft(value);
+      return;
+    }
+    if (draft !== value) {
+      void Promise.resolve(onChange(draft)).catch(() => setDraft(value));
+    }
+  };
+
+  return (
+    <SettingsWithControl
+      label={MANAGED_BRANCH_PREFIX_SETTING_LABEL}
+      description={
+        valid ? (
+          `bb puts this in front of every branch it creates for a worktree, such as ${draft}${MANAGED_BRANCH_PREFIX_EXAMPLE_SLUG}. Leave it empty for no prefix.`
+        ) : (
+          <span className="text-destructive" role="alert">
+            This prefix cannot start a valid git branch name.
+          </span>
+        )
+      }
+      controlPlacement="below"
+    >
+      <Input
+        value={draft}
+        aria-label={MANAGED_BRANCH_PREFIX_SETTING_LABEL}
+        aria-invalid={!valid}
+        disabled={disabled}
+        placeholder="No prefix"
+        className={cn(
+          "h-8 font-mono text-xs",
+          !valid && "border-destructive focus-visible:ring-destructive",
+        )}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit();
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            setDraft(value);
+          }
+        }}
+      />
+    </SettingsWithControl>
+  );
+}
 
 export function AppearanceSettingsSection({
   appearance,
@@ -564,6 +640,7 @@ export function AppearanceSettingsSection({
     <SettingsSection title="Appearance">
       <div className="space-y-5">
         <SidebarThreadListSetting />
+        <SidebarNavigationSetting />
         <CodeRendererSettings />
         <SettingsWithControl label="Theme">
           <DropdownMenu>
@@ -704,7 +781,10 @@ export function AppearanceSettingsSection({
 
 export function GeneralSettingsSection({
   desktopBrowserAvailable,
+  managedBranchPrefix,
+  managedBranchPrefixDisabled,
   navigateToThreadAfterCreate,
+  onManagedBranchPrefixChange,
   onNavigateToThreadAfterCreateChange,
   onOpenLinksInAppBrowserChange,
   onRewriteLocalhostLinksChange,
@@ -817,6 +897,12 @@ export function GeneralSettingsSection({
           />
         </SettingsWithControl>
 
+        <ManagedBranchPrefixSetting
+          value={managedBranchPrefix}
+          disabled={managedBranchPrefixDisabled}
+          onChange={onManagedBranchPrefixChange}
+        />
+
         <SettingsWithControl
           label={STREAMER_MODE_SETTING_LABEL}
           description="Hide the custom models from config.json in every model picker, so a screen share does not show them."
@@ -858,20 +944,16 @@ export function DebugSettingsSection({
 const CHANGELOG_PREVIEW_EXPERIMENT_LABEL = "Changelog preview";
 const EDIT_MESSAGES_EXPERIMENT_LABEL = "Edit messages";
 const MOBILE_APP_EXPERIMENT_LABEL = "Mobile app";
-const PROVIDER_SESSION_REAPING_EXPERIMENT_LABEL =
-  "Idle provider session release";
 const TIMELINE_WINDOWING_EXPERIMENT_LABEL = "Timeline windowing";
 export function ExperimentsSettingsSection({
   changelogPreviewEnabled,
   disabled,
   editMessagesEnabled,
   mobileAppEnabled,
-  providerSessionReapingEnabled,
   timelineWindowingEnabled,
   onChangelogPreviewEnabledChange,
   onEditMessagesEnabledChange,
   onMobileAppEnabledChange,
-  onProviderSessionReapingEnabledChange,
   onTimelineWindowingEnabledChange,
 }: ExperimentsSettingsSectionProps) {
   return (
@@ -913,18 +995,6 @@ export function ExperimentsSettingsSection({
             disabled={disabled}
             onCheckedChange={onMobileAppEnabledChange}
             aria-label={MOBILE_APP_EXPERIMENT_LABEL}
-          />
-        </SettingsWithControl>
-
-        <SettingsWithControl
-          label={PROVIDER_SESSION_REAPING_EXPERIMENT_LABEL}
-          description="Release restorable provider sessions after 30 idle minutes. A change can take up to five minutes."
-        >
-          <Switch
-            checked={providerSessionReapingEnabled}
-            disabled={disabled}
-            onCheckedChange={onProviderSessionReapingEnabledChange}
-            aria-label={PROVIDER_SESSION_REAPING_EXPERIMENT_LABEL}
           />
         </SettingsWithControl>
 
@@ -1085,13 +1155,6 @@ export function SettingsView() {
             mobileApp: enabled,
           })
         }
-        providerSessionReapingEnabled={experiments.providerSessionReaping}
-        onProviderSessionReapingEnabledChange={(enabled) =>
-          updateExperimentsMutation.mutate({
-            ...experiments,
-            providerSessionReaping: enabled,
-          })
-        }
         timelineWindowingEnabled={experiments.timelineWindowing}
         onTimelineWindowingEnabledChange={(enabled) =>
           updateExperimentsMutation.mutate({
@@ -1112,6 +1175,17 @@ export function SettingsView() {
       <>
         <GeneralSettingsSection
           desktopBrowserAvailable={desktopBrowserAvailable}
+          managedBranchPrefix={generalSettings.managedBranchPrefix}
+          managedBranchPrefixDisabled={
+            systemConfigQuery.data === undefined ||
+            updateGeneralSettingsMutation.isPending
+          }
+          onManagedBranchPrefixChange={async (prefix) => {
+            await updateGeneralSettingsMutation.mutateAsync({
+              ...generalSettings,
+              managedBranchPrefix: prefix,
+            });
+          }}
           navigateToThreadAfterCreate={navigateToThreadAfterCreate}
           openLinksInAppBrowser={openLinksInAppBrowser}
           rewriteLocalhostLinks={rewriteLocalhostLinks}

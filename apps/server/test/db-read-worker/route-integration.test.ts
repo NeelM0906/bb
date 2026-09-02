@@ -1,9 +1,6 @@
 import { insertEvents } from "@bb/db";
 import { encodeClientTurnRequestIdNumber, threadScope } from "@bb/domain";
-import {
-  threadConversationOutlineResponseSchema,
-  threadTimelineResponseSchema,
-} from "@bb/server-contract";
+import { threadTimelineResponseSchema } from "@bb/server-contract";
 import { describe, expect, it, vi } from "vitest";
 import { readJson } from "../helpers/json.js";
 import { seedThread, seedThreadFixture } from "../helpers/seed.js";
@@ -19,7 +16,6 @@ describe("database read worker production routes", () => {
         "/api/v1/projects?include=threads",
         "/api/v1/sidebar-bootstrap",
         `/api/v1/threads/${thread.id}/timeline`,
-        `/api/v1/threads/${thread.id}/conversation-outline`,
         `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=turn-1&sourceSeqStart=0&sourceSeqEnd=0`,
       ];
 
@@ -172,7 +168,7 @@ describe("database read worker production routes", () => {
     });
   });
 
-  it("routes outline and turn-summary projection through the worker", async () => {
+  it("routes turn-summary projection through the worker", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedThreadFixture(harness);
       const workerCall = vi.spyOn(
@@ -180,19 +176,6 @@ describe("database read worker production routes", () => {
         "timelineSnapshot",
       );
 
-      const outlineResponse = await harness.app.request(
-        `/api/v1/threads/${thread.id}/conversation-outline`,
-      );
-      expect(outlineResponse.status).toBe(200);
-      threadConversationOutlineResponseSchema.parse(
-        await readJson(outlineResponse),
-      );
-      expect(workerCall).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: "conversationOutline" }),
-        expect.objectContaining({ signal: expect.any(AbortSignal) }),
-      );
-
-      workerCall.mockClear();
       const summaryResponse = await harness.app.request(
         `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=turn-1&sourceSeqStart=0&sourceSeqEnd=0`,
       );

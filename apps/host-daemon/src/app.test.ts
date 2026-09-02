@@ -693,7 +693,6 @@ describe("createHostDaemonApp", () => {
     const reaper = startIdleProviderSessionReaper({
       logger,
       nowMs: () => nowMs,
-      resolveProviderSessionReapingEnabled: async () => true,
       runtimeManager: {
         reapIdleProviderSessions,
       },
@@ -709,7 +708,6 @@ describe("createHostDaemonApp", () => {
     expect(reapIdleProviderSessions).toHaveBeenNthCalledWith(1, {
       idleForMs: 1_800_000,
       nowMs: 1_000,
-      providerSessionReapingEnabled: true,
     });
 
     nowMs = 2_000;
@@ -749,7 +747,6 @@ describe("createHostDaemonApp", () => {
     expect(reapIdleProviderSessions).toHaveBeenNthCalledWith(2, {
       idleForMs: 1_800_000,
       nowMs: 2_000,
-      providerSessionReapingEnabled: true,
     });
     expect(logger.warn).toHaveBeenCalledWith(
       {

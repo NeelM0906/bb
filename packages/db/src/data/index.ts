@@ -22,6 +22,12 @@ export type {
 } from "./projects.js";
 
 export {
+  getThreadConversationOutlineRecord,
+  upsertThreadConversationOutlineRecord,
+} from "./thread-conversation-outlines.js";
+export type { ThreadConversationOutlineRecord } from "./thread-conversation-outlines.js";
+
+export {
   createThreadSection,
   deleteThreadSection,
   getThreadSectionById,
@@ -34,9 +40,7 @@ export {
   listStoredProjectPromptHistoryRows,
   listStoredThreadPromptHistoryRows,
 } from "./prompt-history.js";
-export type {
-  StoredPromptHistoryEntryRow,
-} from "./prompt-history.js";
+export type { StoredPromptHistoryEntryRow } from "./prompt-history.js";
 
 export {
   getProjectExecutionDefaults,
@@ -55,11 +59,14 @@ export {
 export {
   createThread,
   countLiveThreadsInEnvironment,
+  countThreads,
   countNonDeletedAssignedChildThreads,
   getThread,
   getThreadExecutionOverride,
   hasActiveThreadAttention,
   setThreadExecutionOverride,
+  getThreadPendingStartContext,
+  setThreadPendingStartContext,
   hasLiveThreadAtHostPath,
   hasPendingThreadShutdownInEnvironment,
   hasRevivableArchivedThreadInEnvironment,
@@ -72,6 +79,7 @@ export {
   listThreadEnvironmentAssignmentsOnHost,
   listUnarchivedAssignedChildThreads,
   listUnarchivedHiddenSourceThreads,
+  listRunningThreads,
   listThreads,
   listThreadsWithPendingInteractionState,
   listThreadsWithPendingInteractionStateForProjects,
@@ -93,10 +101,15 @@ export {
 export type {
   ApplyThreadLifecycleEventArgs,
   ApplyThreadLifecycleEventOutcome,
+  CountThreadsGroupBy,
+  CountThreadsOptions,
+  CountThreadsResult,
   ReorderPinnedThreadResult,
+  RunningThreadRow,
   ThreadSearchHighlightRange,
   ThreadSearchMatch,
   ThreadSearchResult,
+  ThreadCountGroupRow,
   ThreadSearchResultGroup,
   ThreadWithPendingInteractionState,
   ThreadExecutionOverride,
@@ -219,9 +232,7 @@ export {
   recordObservedEnvironmentWorkspaceMetadata,
   updateEnvironmentMetadata,
 } from "./environments.js";
-export type {
-  CreateEnvironmentInput,
-} from "./environments.js";
+export type { CreateEnvironmentInput } from "./environments.js";
 
 export {
   upsertHost,
@@ -286,6 +297,9 @@ export {
   listStoredTurnStartedKeys,
   listStoredTurnStartedRowsByTurnIdsUpToSequence,
   getLatestThreadInterruptedReason,
+  getLatestStoredRateLimitsEventForProvider,
+  getLatestStoredThreadEventOfTypes,
+  getStoredTurnRequestEventByRequestId,
   listLatestThreadStateEventRowsByThreadIds,
   listLatestBackgroundTaskStateRowsByItemIds,
   listLatestOpenBackgroundTaskStateRowsForThread,
@@ -311,6 +325,7 @@ export type {
   InlineOutputCharLimit,
   ScopedItemRef,
   StoredEventRow,
+  StoredThreadEventDataRow,
   StandardTimelineSegmentAnchorRow,
   ThreadClientTurnRequestKey,
   StoredTurnRequestEventRow,
@@ -342,9 +357,7 @@ export {
   setPendingInteractionResolving,
   setPendingInteractionResolved,
 } from "./pending-interactions.js";
-export type {
-  PendingInteractionRow,
-} from "./pending-interactions.js";
+export type { PendingInteractionRow } from "./pending-interactions.js";
 
 export {
   openSession,
@@ -354,40 +367,40 @@ export {
   heartbeatSession,
   listLatestSessionsForHosts,
 } from "./sessions.js";
-export type {
-  HostDaemonSessionRow,
-} from "./sessions.js";
+export type { HostDaemonSessionRow } from "./sessions.js";
 
 export {
   claimQueuedThreadMessage,
   claimQueuedThreadMessageGroup,
   claimNextQueuedThreadMessageGroup,
+  clearQueuedThreadMessageWaitingOn,
   createQueuedThreadMessage,
   createQueuedThreadMessageInTransaction,
   deleteClaimedQueuedThreadMessageBatchInTransaction,
   deleteQueuedThreadMessage,
   getQueuedThreadMessage,
+  hasQueuedRetryOfTurnRequest,
   hasQueuedThreadMessages,
+  isOrdinaryTurnEndQueuedMessage,
+  isThreadQueueAutoSendPaused,
+  listDueScheduledQueuedThreadMessages,
   listIdleThreadsWithQueuedMessages,
+  listQueuedThreadMessageCountsByThreadIds,
+  listQueuedThreadMessagePluginWaitRefs,
   listQueuedThreadMessages,
+  listQueuedThreadMessagesForApi,
+  listQueuedThreadMessagesByWaitHolder,
+  listQueuedThreadMessagesWaitingOnKind,
+  listThreadIdsWithHostOfflineQueueWaits,
   releaseQueuedMessageClaim,
+  requeueClaimedQueuedThreadMessages,
+  setQueuedThreadMessageFailureReason,
+  setQueuedThreadMessageWaitingOn,
   releaseStaleQueuedMessageClaims,
   reorderQueuedThreadMessage,
   setQueuedThreadMessageGroupBoundary,
   updateQueuedThreadMessage,
 } from "./queued-thread-messages.js";
-export {
-  createDeferredThreadMessage,
-  deleteDeferredThreadMessage,
-  deleteDeferredThreadMessagesForThread,
-  listDeferredThreadMessages,
-  listThreadIdsWithDeliverableDeferredThreadMessages,
-  listThreadIdsWithUndeliverableDeferredThreadMessages,
-} from "./deferred-thread-messages.js";
-export type {
-  CreateDeferredThreadMessageInput,
-  DeferredThreadMessageRow,
-} from "./deferred-thread-messages.js";
 export {
   createWorkAdmission,
   getCurrentThreadWorkAdmission,
@@ -413,9 +426,18 @@ export type {
   WorkAdmissionRow,
 } from "./work-admissions.js";
 export type {
+  ClaimedQueuedThreadMessageRow,
+  ClearQueuedThreadMessageWaitingOnArgs,
+  ListQueuedThreadMessagesForApiArgs,
+  ListQueuedThreadMessagesWaitingOnKindArgs,
+  QueuedThreadMessageGroupClaimPolicy,
+  QueuedThreadMessageGroupEligibility,
+  QueuedThreadMessagePluginWaitRef,
   QueuedThreadMessageRow,
   ReorderQueuedThreadMessageResult,
+  SetQueuedThreadMessageGroupBoundaryArgs,
   SetQueuedThreadMessageGroupBoundaryResult,
+  SetQueuedThreadMessageWaitingOnArgs,
 } from "./queued-thread-messages.js";
 
 export {

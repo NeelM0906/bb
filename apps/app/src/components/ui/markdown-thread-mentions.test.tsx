@@ -89,6 +89,7 @@ function threadResponse(
     activeBackgroundAgentCount: 0,
     admission: null,
     canSpawnChild: true,
+    queuedMessageCount: 0,
     ...overrides,
   };
 }

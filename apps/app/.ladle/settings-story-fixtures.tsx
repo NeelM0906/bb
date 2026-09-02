@@ -242,7 +242,7 @@ function createSettingsStoryQueryClient() {
     hostProviderCliStatusQueryKey(HOST_IDS.remote),
     remoteProviderStatus,
   );
-  queryClient.setQueryData(pluginListQueryKey(true), { plugins: [] });
+  queryClient.setQueryData(pluginListQueryKey(true), []);
   return queryClient;
 }
 

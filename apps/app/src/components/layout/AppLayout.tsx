@@ -1,9 +1,12 @@
+import { type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import {
-  type MouseEvent as ReactMouseEvent,
-  type Ref,
-  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
 } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { atom, useAtom, useAtomValue, useStore } from "jotai";
 import { atomWithStorage } from "jotai/utils";
@@ -22,6 +25,7 @@ import {
 } from "@/components/thread/ThreadTitleMentions";
 import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
 import { CommandPalette } from "@/components/commands/CommandPalette";
+import { NotificationCenter } from "@/components/notifications/NotificationCenter";
 import {
   resolveAutomationBreadcrumbs,
   resolveToolsAreaHeaderMeta,
@@ -42,6 +46,11 @@ import {
 import { useRouteState } from "@/hooks/useRouteState";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { cn } from "@bb/shared-ui/lib/utils";
+import { APP_OVERLAY_LAYER } from "@/components/ui/app-overlay-layers";
+import {
+  getCompactSecondaryPanelPresentation,
+  subscribeCompactSecondaryPanelShelfShowing,
+} from "@/components/ui/secondary-panel-shelf-visibility";
 import { ProjectPathDialog } from "@/components/dialogs/ProjectPathDialog";
 import { ProjectActionsMenu } from "@/components/project/ProjectActionsMenu";
 import { ProjectActionsProvider } from "@/components/project/ProjectActionsProvider";
@@ -148,17 +157,13 @@ const sidebarOpenAtom = atomWithStorage<boolean>(
 );
 
 interface SidebarStateBridgeProps {
-  providerRef: Ref<HTMLDivElement>;
   children: ReactNode;
 }
 
 type SidebarResizeMouseEvent = ReactMouseEvent<HTMLDivElement>;
 type SidebarOpenChangeHandler = (open: boolean) => void;
 
-function SidebarStateBridge({
-  providerRef,
-  children,
-}: SidebarStateBridgeProps) {
+function SidebarStateBridge({ children }: SidebarStateBridgeProps) {
   const [open, setOpen] = useAtom(sidebarOpenAtom);
   const sidebarWidth = useAtomValue(sidebarWidthAtom);
   const sidebarLiveWidth = useAtomValue(sidebarLiveWidthAtom);
@@ -175,7 +180,6 @@ function SidebarStateBridge({
   });
   return (
     <SidebarProvider
-      ref={providerRef}
       width={`${sidebarLiveWidth ?? sidebarWidth}px`}
       data-testid="app-layout-root"
       open={open}
@@ -199,7 +203,16 @@ function SidebarTriggerOverlay({
   reserveMacosTrafficLights,
   usesDesktopChrome,
 }: SidebarTriggerOverlayProps) {
+  const isCompactViewport = useIsCompactViewport();
+  const compactSecondaryPanelPresentation = useSyncExternalStore(
+    subscribeCompactSecondaryPanelShelfShowing,
+    getCompactSecondaryPanelPresentation,
+    () => "closed",
+  );
   const shortcut = useAppCommandShortcut("sidebar.toggle");
+  if (isCompactViewport && compactSecondaryPanelPresentation !== "closed") {
+    return null;
+  }
   const triggerProps = {
     "aria-label": shortcut
       ? `Toggle sidebar (${shortcut.label})`
@@ -210,8 +223,9 @@ function SidebarTriggerOverlay({
     return (
       <div
         data-testid="app-desktop-sidebar-trigger"
+        style={{ zIndex: APP_OVERLAY_LAYER.sidebarTrigger }}
         className={cn(
-          "fixed top-0 z-50",
+          "fixed top-0",
           CHROME_ROW_CLASS,
           reserveMacosTrafficLights
             ? MACOS_TRAFFIC_LIGHT_RESERVE_OFFSET_CLASS
@@ -238,8 +252,9 @@ function SidebarTriggerOverlay({
   return (
     <div
       data-testid="app-sidebar-trigger-overlay"
+      style={{ zIndex: APP_OVERLAY_LAYER.sidebarTrigger }}
       className={cn(
-        "fixed top-[env(safe-area-inset-top)] left-[env(safe-area-inset-left)] z-50",
+        "fixed top-[env(safe-area-inset-top)] left-[env(safe-area-inset-left)]",
         CHROME_ROW_CLASS,
         BROWSER_SIDEBAR_TRIGGER_INSET_CLASS,
       )}
@@ -360,14 +375,12 @@ export function AppLayout({ children }: AppLayoutProps) {
   const isCompactViewport = useIsCompactViewport();
   const store = useStore();
   const contentShellRef = useRef<HTMLDivElement>(null);
-  const providerRef = useRef<HTMLDivElement>(null);
   const restoreIOSViewportOnKeyboardDismissal = useMemo(
     () => shouldRestoreIOSViewportOnKeyboardDismissal(navigator),
     [],
   );
   useMobileVisualViewportHeight(
     contentShellRef,
-    providerRef,
     isCompactViewport,
     restoreIOSViewportOnKeyboardDismissal,
   );
@@ -731,7 +744,7 @@ export function AppLayout({ children }: AppLayoutProps) {
     <ProjectActionsProvider>
       <ThreadTitleMentionResourcesProvider {...titleMentionResources}>
         <ThreadActionsProvider>
-          <SidebarStateBridge providerRef={providerRef}>
+          <SidebarStateBridge>
             <AppLayoutSidebar
               mode={
                 isGlobalSettingsView
@@ -786,6 +799,7 @@ export function AppLayout({ children }: AppLayoutProps) {
             threadId={threadId ?? null}
             projectId={projectId ?? null}
           />
+          <NotificationCenter />
           <ProjectPathDialog
             target={quickCreateProject.projectPathDialog.target}
             pending={quickCreateProject.isCreating}

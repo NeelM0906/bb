@@ -115,7 +115,6 @@ interface ReapIdleProviderSessionCandidate {
 interface FindReapableIdleProviderSessionArgs {
   idleForMs: number;
   nowMs: number;
-  providerSessionReapingEnabled: boolean;
   threadId: string;
 }
 
@@ -218,7 +217,6 @@ interface RequireProviderRequestPlanArgs {
   providerId: string;
 }
 
-const CODEX_PROVIDER_ID = "codex";
 const DEFAULT_THREAD_CREATION_REQUEST_TIMEOUT_MS = 2 * 60_000;
 const FAILED_CONSTRUCTION_RELEASE_TIMEOUT_MS = 5_000;
 const PROVIDER_SESSION_IDLE_REAP_AFTER_MS = 30 * 60 * 1000;
@@ -404,7 +402,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   async function releaseIdleProviderProcess(
     proc: ProviderProcess,
   ): Promise<void> {
-    await providerProcesses.retireSupersededBridgeProcessIfIdle(proc);
+    if (proc.identity.threadIds.size > 0) {
+      return;
+    }
+    await providerProcesses.shutdownProvider({
+      processKey: proc.processKey,
+      providerId: proc.providerId,
+    });
   }
 
   async function abandonFailedSessionConstruction(args: {
@@ -855,12 +859,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     }
 
     const runtimeConfig = threadRuntimeConfigs.get(args.threadId);
-    if (
-      !runtimeConfig ||
-      (args.providerSessionReapingEnabled
-        ? !runtimeConfig.sessionRestorable
-        : runtimeConfig.providerId !== CODEX_PROVIDER_ID)
-    ) {
+    if (!runtimeConfig?.sessionRestorable) {
       return null;
     }
 
@@ -2331,7 +2330,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     async reapIdleProviderSessions({
       idleForMs,
       nowMs,
-      providerSessionReapingEnabled,
       runThreadExclusive,
     }) {
       const reapedSessions: ReapedIdleProviderSession[] = [];
@@ -2340,7 +2338,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           const candidate = findReapableIdleProviderSession({
             idleForMs,
             nowMs,
-            providerSessionReapingEnabled,
             threadId,
           });
           if (!candidate) {
