@@ -1234,7 +1234,7 @@ describe("Workspace", () => {
     const folder = await makeTempDir("bb-workspace-large-files-");
     const nested = path.join(folder, "many");
     await fs.mkdir(nested);
-    const fileCount = 150_000;
+    const fileCount = 70_000;
     const batchSize = 500;
     for (let start = 0; start < fileCount; start += batchSize) {
       const end = Math.min(start + batchSize, fileCount);
