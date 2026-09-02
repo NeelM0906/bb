@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
 import {
   registerTestHostRpcCapture,
+  reportQueuedCommandError,
   reportQueuedCommandSuccess,
   waitForQueuedCommand,
 } from "../helpers/commands.js";
@@ -201,6 +202,72 @@ describe("offline host follow-ups", () => {
         target: { mode: "start" },
       });
       expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
+    });
+  });
+
+  it("keeps host-offline rows parked when admission reconciliation fails", async () => {
+    await withTestHarness(async (harness) => {
+      const host = seedHost(harness.deps, {
+        id: "host-offline-followup-reconcile-failure",
+        name: "M7",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/offline-followup-reconcile-failure",
+        workspaceProvisionType: "unmanaged",
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        status: "idle",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId: "provider-offline-followup-reconcile-failure",
+      });
+      seedQueuedMessage(harness.deps, {
+        content: textInput("Stay parked while M7 reconciles badly"),
+        threadId: thread.id,
+        waitingOn: { kind: "host-offline", hostName: "M7" },
+      });
+
+      const reconnectSession = seedSession(harness.deps, host.id);
+      const reconnectSocket = registerTestHostRpcCapture(harness.deps, {
+        deferAdmissionReconcile: true,
+        hostId: host.id,
+        sessionId: reconnectSession.id,
+      });
+      onDaemonSocketOpen(harness.deps, {
+        hostId: host.id,
+        sessionId: reconnectSession.id,
+        socket: reconnectSocket,
+      });
+
+      const reconcile = await waitForQueuedCommand(
+        harness,
+        ({ command }) => command.type === "host.admission.reconcile",
+      );
+      await reportQueuedCommandError(harness, reconcile, {
+        errorCode: "internal",
+        errorMessage: "admission ledger unavailable",
+      });
+
+      await expect(
+        waitForQueuedCommand(
+          harness,
+          ({ command }) =>
+            command.type === "turn.submit" &&
+            "threadId" in command &&
+            command.threadId === thread.id,
+          300,
+        ),
+      ).rejects.toThrow();
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toHaveLength(1);
     });
   });
 });

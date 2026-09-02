@@ -95,18 +95,19 @@ export function onDaemonSocketOpen(
   void reconcileHostWorkAdmissions(deps, { hostId: args.hostId })
     .then(() => {
       recoverDurableWorkAdmissions(deps, { hostId: args.hostId });
+      if (deps.hub.getDaemonSessionIdForHost(args.hostId) !== args.sessionId) {
+        return;
+      }
+      requestQueuedMessageDispatch(deps, {
+        hostId: args.hostId,
+        kind: "host-connected",
+      });
     })
     .catch((error: unknown) => {
       deps.logger.warn(
         { err: error, hostId: args.hostId },
         "Failed to reconcile host work admissions after daemon connection",
       );
-    })
-    .finally(() => {
-      requestQueuedMessageDispatch(deps, {
-        hostId: args.hostId,
-        kind: "host-connected",
-      });
     });
 }
 
