@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS `environment_path_canonicalizations` (
+CREATE TABLE `environment_path_canonicalizations` (
 	`environment_id` text PRIMARY KEY NOT NULL,
 	`canonical_path` text NOT NULL,
 	`path` text NOT NULL,
@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS `environment_path_canonicalizations` (
 	FOREIGN KEY (`environment_id`) REFERENCES `environments`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS `unmanaged_workspace_mutation_lease_events` (
+CREATE TABLE `unmanaged_workspace_mutation_lease_events` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`host_id` text NOT NULL,
 	`canonical_path` text NOT NULL,
@@ -19,9 +19,9 @@ CREATE TABLE IF NOT EXISTS `unmanaged_workspace_mutation_lease_events` (
 	`created_at` integer NOT NULL
 );
 --> statement-breakpoint
-CREATE INDEX IF NOT EXISTS `unmanaged_workspace_mutation_lease_events_workspace_idx` ON `unmanaged_workspace_mutation_lease_events` (`host_id`,`canonical_path`,`id`);--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS `unmanaged_workspace_mutation_lease_events_request_idx` ON `unmanaged_workspace_mutation_lease_events` (`request_id`);--> statement-breakpoint
-CREATE TABLE IF NOT EXISTS `unmanaged_workspace_mutation_leases` (
+CREATE INDEX `unmanaged_workspace_mutation_lease_events_workspace_idx` ON `unmanaged_workspace_mutation_lease_events` (`host_id`,`canonical_path`,`id`);--> statement-breakpoint
+CREATE INDEX `unmanaged_workspace_mutation_lease_events_request_idx` ON `unmanaged_workspace_mutation_lease_events` (`request_id`);--> statement-breakpoint
+CREATE TABLE `unmanaged_workspace_mutation_leases` (
 	`host_id` text NOT NULL,
 	`canonical_path` text NOT NULL,
 	`thread_id` text NOT NULL,
@@ -37,9 +37,9 @@ CREATE TABLE IF NOT EXISTS `unmanaged_workspace_mutation_leases` (
 	CONSTRAINT "unmanaged_workspace_mutation_leases_generation_check" CHECK("unmanaged_workspace_mutation_leases"."generation" > 0)
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS `unmanaged_workspace_mutation_leases_request_idx` ON `unmanaged_workspace_mutation_leases` (`request_id`);--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS `unmanaged_workspace_mutation_leases_thread_idx` ON `unmanaged_workspace_mutation_leases` (`thread_id`);--> statement-breakpoint
-CREATE TABLE IF NOT EXISTS `unmanaged_workspace_mutation_waiters` (
+CREATE UNIQUE INDEX `unmanaged_workspace_mutation_leases_request_idx` ON `unmanaged_workspace_mutation_leases` (`request_id`);--> statement-breakpoint
+CREATE INDEX `unmanaged_workspace_mutation_leases_thread_idx` ON `unmanaged_workspace_mutation_leases` (`thread_id`);--> statement-breakpoint
+CREATE TABLE `unmanaged_workspace_mutation_waiters` (
 	`sequence` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`request_id` text NOT NULL,
 	`host_id` text NOT NULL,
@@ -56,9 +56,9 @@ CREATE TABLE IF NOT EXISTS `unmanaged_workspace_mutation_waiters` (
 	FOREIGN KEY (`environment_id`) REFERENCES `environments`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS `unmanaged_workspace_mutation_waiters_request_idx` ON `unmanaged_workspace_mutation_waiters` (`request_id`);--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS `unmanaged_workspace_mutation_waiters_fifo_idx` ON `unmanaged_workspace_mutation_waiters` (`host_id`,`canonical_path`,`state`,`sequence`);--> statement-breakpoint
-CREATE TABLE IF NOT EXISTS `work_admissions` (
+CREATE UNIQUE INDEX `unmanaged_workspace_mutation_waiters_request_idx` ON `unmanaged_workspace_mutation_waiters` (`request_id`);--> statement-breakpoint
+CREATE INDEX `unmanaged_workspace_mutation_waiters_fifo_idx` ON `unmanaged_workspace_mutation_waiters` (`host_id`,`canonical_path`,`state`,`sequence`);--> statement-breakpoint
+CREATE TABLE `work_admissions` (
 	`id` text PRIMARY KEY NOT NULL,
 	`thread_id` text NOT NULL,
 	`host_id` text NOT NULL,
@@ -79,6 +79,6 @@ CREATE TABLE IF NOT EXISTS `work_admissions` (
       ))
 );
 --> statement-breakpoint
-CREATE INDEX IF NOT EXISTS `work_admissions_host_status_fifo_idx` ON `work_admissions` (`host_id`,`status`,`created_at`,`id`);--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS `work_admissions_thread_status_idx` ON `work_admissions` (`thread_id`,`status`,`created_at`);--> statement-breakpoint
+CREATE INDEX `work_admissions_host_status_fifo_idx` ON `work_admissions` (`host_id`,`status`,`created_at`,`id`);--> statement-breakpoint
+CREATE INDEX `work_admissions_thread_status_idx` ON `work_admissions` (`thread_id`,`status`,`created_at`);--> statement-breakpoint
 ALTER TABLE `projects` ADD `protect_unmanaged_workspace` integer DEFAULT false NOT NULL;
