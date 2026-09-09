@@ -26,7 +26,7 @@ export const BUILTIN_PLUGINS = [
   {
     name: "account-pool",
     pluginId: "account-pool",
-    defaultEnabled: false,
+    defaultEnabled: true,
   },
   {
     name: "ask-user-question",
@@ -101,7 +101,7 @@ export const BUILTIN_PLUGINS = [
   {
     name: "provider-usage",
     pluginId: "provider-usage",
-    defaultEnabled: false,
+    defaultEnabled: true,
   },
   {
     name: "provider-acp",
@@ -126,7 +126,7 @@ export const BUILTIN_PLUGINS = [
   {
     name: "push-notifications",
     pluginId: "push-notifications",
-    defaultEnabled: true,
+    defaultEnabled: false,
   },
   {
     name: "secrets",
