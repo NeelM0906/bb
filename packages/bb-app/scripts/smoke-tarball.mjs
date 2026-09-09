@@ -23,6 +23,7 @@ const HOST_PLUGIN_WORKER_TIMEOUT_MS = 60_000;
 // bundles that pass health checks can still fail to load (0.0.31 shipped with
 // every builtin unable to resolve @get-bb/plugin-sdk at import time).
 const EXPECTED_RUNNING_BUILTIN_PLUGINS = [
+  "account-pool",
   "automations",
   "concurrency-limit",
   // Providers whose bridge ships as a plugin artifact: if the plugin does not
@@ -30,7 +31,7 @@ const EXPECTED_RUNNING_BUILTIN_PLUGINS = [
   "provider-acp",
   "provider-claude-code",
   "provider-codex",
-  "push-notifications",
+  "provider-usage",
   "connect",
   "custom-instructions",
   "inline-vis",

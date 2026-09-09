@@ -1820,7 +1820,7 @@ export function finalizeStoppedThreadInTransaction(
       threadId: finalizedThread.id,
     });
     forgetActiveThreadProvisionContext(finalizedThread.id);
-    if (providerLaunchHasPendingWork(deps.db, finalizedThread.id)) return;
+    if (providerLaunchHasPendingWork(deps.db, finalizedThread.id)) return true;
     deleteThread(deps.db, deps.hub, finalizedThread.id);
     if (finalizedThread.environmentId !== null)
       refreshProviderRetirement(deps, finalizedThread.environmentId);

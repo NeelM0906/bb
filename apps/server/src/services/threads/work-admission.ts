@@ -176,7 +176,7 @@ async function ensureLegacyUnmanagedWorkspacePathsCanonical(
     !target ||
     target.hostId !== args.hostId ||
     target.path === null ||
-    target.workspaceProvisionType !== "unmanaged" ||
+    target.environmentProviderId !== "project-checkout" ||
     target.status === "destroyed"
   ) {
     return;

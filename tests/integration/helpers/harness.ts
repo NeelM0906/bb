@@ -399,6 +399,10 @@ async function startHarnessDaemon(
       hostId: identity.hostId,
       hostName: identity.hostName,
       hostType: "persistent",
+      // Integration tests fan out concurrent managed worktrees; keep the
+      // production default of 4 for real hosts, but do not serialize those
+      // fixtures through the admission limiter.
+      hostAdmissionLimit: 32,
       instanceId: randomUUID(),
       localApiConfig: null,
       logger: testLogger,

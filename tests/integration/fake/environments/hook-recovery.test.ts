@@ -219,7 +219,11 @@ it("restores a serialized database mid-setup and reconciles one daemon operation
           readFile(join(path, "started"), "utf8").catch(() => ""),
         )
         .toBe("started\n");
-      restored = createConnection(harness.db.$client.serialize());
+      // File-backed WAL snapshots cannot be reopened from serialize()
+      // buffers: PRAGMA synchronous then fails with SQLITE_CANTOPEN.
+      const snapshotPath = join(path, "restored.db");
+      await writeFile(snapshotPath, harness.db.$client.serialize());
+      restored = createConnection(snapshotPath);
       const deps = { ...harness.deps, db: restored };
       askProviderLaunch(deps, fixture.record, fixture.context, null);
       await expect.poll(() => ids.length).toBe(2);

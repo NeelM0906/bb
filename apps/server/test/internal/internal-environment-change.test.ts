@@ -42,7 +42,8 @@ describe("internal environment change websocket hints", () => {
         hostId: host.id,
         projectId: project.id,
         path: "/tmp/env-canonical-path-alias",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
         status: "ready",
       });
       recordEnvironmentCanonicalPath(
@@ -273,7 +274,8 @@ describe("internal environment change websocket hints", () => {
         hostId: host.id,
         projectId: project.id,
         path: "/tmp/env-metadata-alias",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
         status: "ready",
         isGitRepo: false,
       });

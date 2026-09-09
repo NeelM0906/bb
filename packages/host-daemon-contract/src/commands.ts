@@ -631,7 +631,7 @@ const pluginHostDisposeCommandSchema = z
   })
   .strict();
 
-// host.admission.* RPCs are fork-only vs upstream 170. Protocol is 172.
+// host.admission.* RPCs are fork-only vs upstream 195. Protocol is 196.
 export const hostAdmissionReasonSchema = z.enum([
   "interactive",
   "child",

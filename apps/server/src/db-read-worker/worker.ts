@@ -148,8 +148,8 @@ export function runDbReadWorker(): void {
             return {
               kind: "turnSummaryDetails",
               response: buildTimelineTurnSummaryDetails(db, thread, {
-                includeProviderUnhandledOperations:
-                  input.includeProviderUnhandledOperations,
+                includeDiagnosticOperations:
+                  input.includeDiagnosticOperations,
                 providerDisplayName: input.providerDisplayName,
                 sourceSeqEnd: input.sourceSeqEnd,
                 sourceSeqStart: input.sourceSeqStart,

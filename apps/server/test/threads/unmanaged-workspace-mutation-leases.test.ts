@@ -67,7 +67,8 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/canonical/invalid-recovery-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const holder = seedThread(harness.deps, {
         environmentId: environment.id,
@@ -148,7 +149,8 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/canonical/deleted-holder-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const holder = seedThread(harness.deps, {
         environmentId: environment.id,
@@ -216,7 +218,8 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/canonical/active-deleted-holder-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const holder = seedThread(harness.deps, {
         environmentId: environment.id,
@@ -331,7 +334,8 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/canonical/reconcile-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const holder = seedThread(harness.deps, {
         environmentId: environment.id,
@@ -404,7 +408,8 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/canonical/live-waiter-recovery-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const holder = seedThread(harness.deps, {
         environmentId: environment.id,
@@ -553,7 +558,8 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/legacy/missing-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const failed = seedThread(harness.deps, {
         environmentId: missingEnvironment.id,
@@ -667,14 +673,16 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/legacy/reconnect-repo-a",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const secondEnvironment = seedEnvironment(harness.deps, {
         hostId: host.id,
         path: "/legacy/reconnect-repo-b",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const first = seedThread(harness.deps, {
         environmentId: firstEnvironment.id,
@@ -793,7 +801,8 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/legacy/reconnect-reconcile-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const thread = seedThread(harness.deps, {
         environmentId: environment.id,
@@ -899,7 +908,8 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/legacy/reconnect-command-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const thread = seedThread(harness.deps, {
         environmentId: environment.id,
@@ -996,7 +1006,8 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/legacy/promoted-retarget-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const holder = seedThread(harness.deps, {
         environmentId: environment.id,
@@ -1171,7 +1182,8 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/legacy/reconnect-turn-command-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const thread = seedThread(harness.deps, {
         environmentId: environment.id,
@@ -1280,7 +1292,8 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/legacy/resident-turn-command-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const thread = seedThread(harness.deps, {
         environmentId: environment.id,
@@ -1397,7 +1410,8 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/canonical/shared-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const first = seedThread(harness.deps, {
         environmentId: environment.id,
@@ -1496,7 +1510,8 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/canonical/cancel-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const first = seedThread(harness.deps, {
         environmentId: environment.id,
@@ -1580,14 +1595,16 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/canonical/blocked-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const independentEnvironment = seedEnvironment(harness.deps, {
         hostId: host.id,
         path: "/canonical/independent-repo",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const holder = seedThread(harness.deps, {
         environmentId: blockedEnvironment.id,
@@ -1715,14 +1732,16 @@ describe("protected unmanaged workspace dispatch", () => {
         path: "/legacy/shared-alias-a",
         projectId: protectedProject.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const aliasEnvironment = seedEnvironment(harness.deps, {
         hostId: host.id,
         path: "/legacy/shared-alias-b",
         projectId: protectedProject.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       registerTestHostRpcCapture(harness, {
         canonicalPathByInput: {

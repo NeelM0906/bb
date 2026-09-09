@@ -186,7 +186,8 @@ describe("offline host follow-ups", () => {
         hostId: host.id,
         projectId: project.id,
         path: "/tmp/offline-followup-reconcile",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const thread = seedThread(harness.deps, {
         projectId: project.id,
@@ -260,7 +261,8 @@ describe("offline host follow-ups", () => {
         hostId: host.id,
         projectId: project.id,
         path: "/tmp/offline-followup-reconcile-failure",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const thread = seedThread(harness.deps, {
         projectId: project.id,

@@ -220,6 +220,10 @@ describe("builtin plugin reconciliation", () => {
       expect(BUILTIN_PLUGINS.map((plugin) => plugin.name)).not.toContain(name);
     }
     expect(OFFICIAL_PLUGINS.every((plugin) => !plugin.autoInstall)).toBe(true);
+    expect(
+      OFFICIAL_PLUGINS.find((plugin) => plugin.name === "browser-automation")
+        ?.defaultEnabled,
+    ).toBe(false);
   });
 
   it("gives every builtin plugin a deliberate settings icon", async () => {
@@ -530,6 +534,14 @@ describe("builtin plugin reconciliation", () => {
         status: "disabled",
       },
     ]);
+  });
+
+  it("ships Account Pooler enabled on a fresh database", () => {
+    const accountPool = BUILTIN_PLUGINS.find(
+      (builtin) => builtin.name === "account-pool",
+    );
+    expect(accountPool).toBeDefined();
+    expect(accountPool?.defaultEnabled).toBe(true);
   });
 
   it("ships Provider usage enabled on a fresh database", async () => {

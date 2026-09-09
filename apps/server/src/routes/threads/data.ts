@@ -350,7 +350,7 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
           threadId: thread.id,
           options: {
             eventBudget,
-            includeProviderUnhandledOperations: includeDiagnosticOperations,
+            includeDiagnosticOperations,
             includeNestedRows,
             maxInlineOutputChars: DEFAULT_MAX_INLINE_OUTPUT_CHARS,
             page,
@@ -457,7 +457,7 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
     const snapshot = await deps.dbReadWorker.timelineSnapshot(
       {
         kind: "turnSummaryDetails",
-        includeProviderUnhandledOperations: includeDiagnosticOperations,
+        includeDiagnosticOperations,
         providerDisplayName: resolveThreadProviderDisplayName(
           deps,
           thread.providerId,

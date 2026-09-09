@@ -37,7 +37,7 @@ const timelineBuildOptionsSchema = z
   .object({
     eventBudget: z.number().int().positive(),
     includeNestedRows: z.boolean().optional(),
-    includeProviderUnhandledOperations: z.boolean(),
+    includeDiagnosticOperations: z.boolean(),
     maxInlineOutputChars: z.number().int().nonnegative().nullable(),
     page: timelinePageSchema,
     providerDisplayName: z.string().optional(),
@@ -62,7 +62,7 @@ export const timelineSnapshotInputSchema = z.discriminatedUnion("kind", [
     .strict(),
   z
     .object({
-      includeProviderUnhandledOperations: z.boolean(),
+      includeDiagnosticOperations: z.boolean(),
       kind: z.literal("turnSummaryDetails"),
       providerDisplayName: z.string().optional(),
       sourceSeqEnd: z.number().int().nonnegative(),

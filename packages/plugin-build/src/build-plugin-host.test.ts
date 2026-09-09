@@ -5,7 +5,6 @@ import {
   readFile,
   realpath,
   readdir,
-  realpath,
   rm,
   utimes,
   writeFile,
