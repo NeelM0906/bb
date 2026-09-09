@@ -22,6 +22,7 @@ import {
   setPluginSlotRegistrations,
 } from "@/lib/plugin-slots";
 import { CommandPalette } from "./CommandPalette";
+import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
 
 const PALETTE_SHORTCUT = {
   key: "p",
@@ -258,7 +259,7 @@ describe("CommandPalette", () => {
     expect((searchField() as HTMLInputElement).value).toBe(">");
     const titles = optionTitles();
     expect(titles?.[0]).toContain("New thread");
-    expect(titles).toHaveLength(16);
+    expect(titles).toHaveLength(18);
   });
 
   it("filters as the user types and keeps the selection on a live row", async () => {
@@ -272,6 +273,17 @@ describe("CommandPalette", () => {
 
     await waitFor(() => expect(optionTitles()).toHaveLength(1));
     expect(selectedOption()?.textContent).toContain("Open terminal");
+  });
+
+  it("finds commands when the query starts with a space", async () => {
+    renderPalette();
+    openPalette();
+    await waitFor(() => expect(searchField()).toBeTruthy());
+
+    fireEvent.change(searchField(), { target: { value: "> new thread" } });
+
+    await waitFor(() => expect(optionTitles()).toHaveLength(1));
+    expect(selectedOption()?.textContent).toContain("New thread");
   });
 
   it("wraps at both ends of the list", async () => {
@@ -390,24 +402,20 @@ describe("CommandPalette", () => {
   });
 
   it("lists a plugin's commandPaletteAction and runs it", async () => {
-    setPluginSlotRegistrations("linear", {
-      homepageSections: [],
-      settingsSections: [],
-      navPanels: [],
-      threadPanelActions: [],
-      sidebarFooterActions: [],
-      fileOpeners: [],
-      messageDirectives: [],
-      commandPaletteActions: [
-        {
-          id: "open-issue",
-          title: "Linear: open issue",
-          run: () => {
-            testState.calls.push("plugin-ran");
+    setPluginSlotRegistrations(
+      "linear",
+      makePluginRegistrationSet({
+        commandPaletteActions: [
+          {
+            id: "open-issue",
+            title: "Linear: open issue",
+            run: () => {
+              testState.calls.push("plugin-ran");
+            },
           },
-        },
-      ],
-    });
+        ],
+      }),
+    );
     renderPalette();
     openPalette();
     await waitFor(() => expect(searchField()).toBeTruthy());
@@ -552,23 +560,23 @@ describe("CommandPalette", () => {
   });
 
   it("opens a plugin page from Cmd-K", async () => {
-    setPluginSlotRegistrations("automations", {
-      homepageSections: [],
-      settingsSections: [],
-      navPanels: [
-        {
-          id: "automations",
-          title: "Automations",
-          icon: "Calendar",
-          path: "automations",
-          component: () => null,
-        },
-      ],
-      threadPanelActions: [],
-      sidebarFooterActions: [],
-      fileOpeners: [],
-      messageDirectives: [],
-    });
+    setPluginSlotRegistrations(
+      "automations",
+      makePluginRegistrationSet({
+        navPanels: [
+          {
+            id: "automations",
+            title: "Automations",
+            icon: "Calendar",
+            path: "automations",
+            component: () => null,
+          },
+        ],
+        threadPanelActions: [],
+        sidebarFooterActions: [],
+        fileOpeners: [],
+      }),
+    );
     renderPalette();
     openThreadSearch();
     await waitFor(() => expect(searchField()).toBeTruthy());

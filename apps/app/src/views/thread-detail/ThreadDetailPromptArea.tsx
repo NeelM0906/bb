@@ -17,7 +17,6 @@ import {
 } from "@/components/promptbox/follow-up-placeholder";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import type {
-  EnvironmentStatus,
   PendingInteraction,
   PromptInput,
   ThreadQueuedMessage,
@@ -65,7 +64,6 @@ import {
   type QueuedMessageInlineEditor,
 } from "@/components/promptbox/banner/QueuedMessagesList";
 import { ThreadEnvironmentSummary } from "@/components/promptbox/ThreadEnvironmentSummary";
-import type { EnvironmentWorkspaceTypeLabel } from "@/lib/environment-workspace-display";
 import type { WorkspaceCheckoutDisplay } from "@/lib/workspace-checkout-display";
 import { useComposerTextEffects } from "@/lib/composer-text-effects";
 import { useLatestRef } from "@/hooks/useLatestRef";
@@ -150,15 +148,12 @@ interface ThreadDetailPromptAreaProps {
   contextWindowUsage?: ThreadTimelineResponse["contextWindowUsage"];
   environmentCheckout?: WorkspaceCheckoutDisplay;
   environmentCompactLabel?: string;
-  environmentGoneStatus: Extract<
-    EnvironmentStatus,
-    "destroying" | "destroyed"
-  > | null;
+  environmentGoneStatus: "destroyed" | null;
   environmentHostId?: string;
   environmentIcon?: IconName;
   environmentLabel?: string;
-  environmentTypeLabel?: EnvironmentWorkspaceTypeLabel;
-  onCreateNewThreadInWorktree?: () => void;
+  environmentTypeLabel?: string;
+  onCreateNewThreadInEnvironment?: () => void;
   onPullRequestDraft?: () => void;
   onPullRequestMerge?: (method: PullRequestMergeMethod) => void;
   onPullRequestReady?: () => void;
@@ -351,7 +346,7 @@ export function ThreadDetailPromptArea({
   environmentIcon,
   environmentLabel,
   environmentTypeLabel,
-  onCreateNewThreadInWorktree,
+  onCreateNewThreadInEnvironment,
   onPullRequestDraft,
   onPullRequestMerge,
   onPullRequestReady,
@@ -668,6 +663,9 @@ export function ThreadDetailPromptArea({
     resolveMentionLink,
   });
   const runtimeDisplayStatus = thread.runtime.displayStatus;
+  const shouldSteerWhenReady =
+    runtimeDisplayStatus === "provisioning" ||
+    runtimeDisplayStatus === "starting";
   const isStopRequested =
     thread.status === "stopping" ||
     (stopThread.isPending && stopThread.variables === thread.id);
@@ -949,6 +947,7 @@ export function ThreadDetailPromptArea({
         await sendQueuedMessageById({
           guard: "current-head",
           messageId: queuedMessageId,
+          mode: shortcutRequest.request.mode,
         });
       },
     );
@@ -965,14 +964,15 @@ export function ThreadDetailPromptArea({
     thread.id,
   ]);
 
-  const handleSendQueuedImmediately = useCallback(
+  const handleSendQueuedMessage = useCallback(
     (messageId: string) => {
       void sendQueuedMessageById({
         guard: "exists",
         messageId,
+        mode: shouldSteerWhenReady ? "steer" : "auto",
       });
     },
-    [sendQueuedMessageById],
+    [sendQueuedMessageById, shouldSteerWhenReady],
   );
 
   const bottomFocusEndKey = `${composerFocusRequestNonce}:${bottomPluginFocusNonce}`;
@@ -1234,7 +1234,7 @@ export function ThreadDetailPromptArea({
 
   const environmentSummary = useMemo(
     () =>
-      environmentLabel ? (
+      thread.environmentId !== null ? (
         <ThreadEnvironmentSummary
           projectName={projectName}
           environmentLabel={environmentLabel}
@@ -1242,7 +1242,7 @@ export function ThreadDetailPromptArea({
           environmentIcon={environmentIcon}
           environmentTypeLabel={environmentTypeLabel}
           environmentCheckout={environmentCheckout}
-          onCreateNewThreadInWorktree={onCreateNewThreadInWorktree}
+          onCreateNewThreadInEnvironment={onCreateNewThreadInEnvironment}
         />
       ) : null,
     [
@@ -1251,8 +1251,9 @@ export function ThreadDetailPromptArea({
       environmentIcon,
       environmentLabel,
       environmentTypeLabel,
-      onCreateNewThreadInWorktree,
+      onCreateNewThreadInEnvironment,
       projectName,
+      thread.environmentId,
     ],
   );
   const activePromptModeCard = useMemo(
@@ -1604,10 +1605,9 @@ export function ThreadDetailPromptArea({
             queuedMessages={queuedMessages}
             resolveMentionLink={resolveMentionLink}
             inlineEditor={queuedMessageEditor ?? undefined}
+            sendAction={shouldSteerWhenReady ? "steer-when-ready" : "send-now"}
             sendDisabled={
               !(submitMode.kind === "ready" || submitMode.kind === "queue") ||
-              runtimeDisplayStatus === "provisioning" ||
-              runtimeDisplayStatus === "starting" ||
               runtimeDisplayStatus === "waiting-for-host" ||
               isFollowUpSubmitting ||
               isQueueMutationPending
@@ -1615,7 +1615,7 @@ export function ThreadDetailPromptArea({
             actionDisabled={isQueueMutationPending}
             processingMessageId={displayedProcessingQueuedMessage?.id ?? null}
             processingAction={displayedProcessingQueuedMessage?.action ?? null}
-            onSendImmediately={handleSendQueuedImmediately}
+            onSend={handleSendQueuedMessage}
             onReorder={handleReorderQueuedMessage}
             onSetGroupBoundary={handleSetQueuedMessageGroupBoundary}
             onEdit={beginEditQueuedMessage}
@@ -1633,7 +1633,7 @@ export function ThreadDetailPromptArea({
       beginEditQueuedMessage,
       onChangedFileClick,
       handleReorderQueuedMessage,
-      handleSendQueuedImmediately,
+      handleSendQueuedMessage,
       handleSetQueuedMessageGroupBoundary,
       handleToggleBannerSection,
       handleUnarchiveCurrentThread,
@@ -1661,6 +1661,7 @@ export function ThreadDetailPromptArea({
       queuedMessagesPending,
       resolveMentionLink,
       runtimeDisplayStatus,
+      shouldSteerWhenReady,
       shouldHideComposer,
       submitMode.kind,
       thread.archivedAt,

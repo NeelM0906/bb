@@ -22,6 +22,11 @@ Read the installed declarations for exact current signatures.
 - `DiffViewMode`
 - `ExperimentalAppPanel`
 - `ExperimentalAppPanelSurface`
+- `ExperimentalDesktopBrowserAcquireInput`
+- `ExperimentalDesktopBrowserCreateInput`
+- `ExperimentalDesktopBrowserLease`
+- `ExperimentalDesktopBrowserScope`
+- `ExperimentalDesktopBrowsersArea`
 - `ExperimentalDiffFileContent`
 - `ExperimentalDiffFullFileContents`
 - `ExperimentalFileLinkProps`
@@ -49,6 +54,10 @@ Read the installed declarations for exact current signatures.
 - `ExperimentalOpenFixedTabOptions`
 - `ExperimentalPermissionModePickerProps`
 - `ExperimentalPluginFixedTabReference`
+- `ExperimentalPluginWebSocket`
+- `ExperimentalPluginWebSocketContext`
+- `ExperimentalPluginWebSocketHandler`
+- `ExperimentalPluginWebSocketHandlers`
 - `ExperimentalProviderModelPickerProps`
 - `ExperimentalProviderModelPickerRouting`
 - `ExperimentalProviderModelPickerValue`
@@ -59,8 +68,17 @@ Read the installed declarations for exact current signatures.
 - `MessageDispatchHookContext`
 - `MessageDispatchHookDecision`
 - `PluginDispatchAttemptKind`
+- `PluginDispatchEnvironmentIntent`
 - `PluginDispatchExecution`
 - `PluginDispatchExecutionSources`
+- `PluginEnvironments` — `bb.experimental_environments`: `register` +
+  `recheck` (see backend-events.md, environment providers)
+- `PluginEnvironmentProviderDeclaration`
+- `PluginEnvironmentProviderRequirements` — `requires`, e.g.
+  `{ gitCheckout: true }`; also `projectCheckout`, `gitRemote` and `projectless`.
+  Anything else comes through the declaration's `inputs` validator
+- `PluginEnvironmentValidateDecision` — `{ action: "accept" }` or
+  `{ action: "refuse", message }`, the message being the caller's error
 - `PluginDispatchInput`
 - `PluginHookHandler`
 - `PluginHookName`
@@ -149,6 +167,10 @@ Read the installed declarations for exact current signatures.
 - `PluginProviderCapabilities`
 - `PluginProviderComposerAction`
 - `PluginProviderDeclaration`
+- `ExperimentalPluginProviderEnvContext`
+- `ExperimentalPluginProviderEnvEntry`
+- `ExperimentalPluginProviderEnvHealthContext`
+- `ExperimentalPluginProviderEnvHealth`
 - `PluginProviderExtensionKindDeclaration`
 - `PluginProviderFallbackModel`
 - `PluginProviderIconRegistration`
@@ -201,7 +223,6 @@ Read the installed declarations for exact current signatures.
 - `PluginSidebarThreadPullRequestState`
 - `PluginSidebarThreadSplit`
 - `PluginSidebarThreadsState`
-- `PluginSidebarWorkspaceKind`
 - `PluginSourceCodeRendererProps`
 - `PluginSourceCodeRendererRegistration`
 - `PluginStatusApi`
@@ -235,6 +256,29 @@ Read the installed declarations for exact current signatures.
 - `ThreadChatProps`
 - `UrlLinkProps`
 
+## `@get-bb/plugin-sdk/environment-provider`
+
+- `PluginEnvironmentProviderAvailabilityContext` and
+  `PluginEnvironmentProviderAvailability` — context and result for a
+  declaration's optional `availability` method
+- `PluginEnvironmentProviderDefinition` — idempotent long-running `create`
+  and `remove`, plus optional `validate`, `availability`, `inputs` and policy
+- `PluginEnvironmentProviderInputsSchema` — the `inputs` type parameter:
+  a Standard Schema v1 validator (a zod schema is one), or `undefined` for
+  `inputs: null` in `create`
+- `PluginEnvironmentProviderPolicy` — `retireGraceMs`, `pathKeys`
+- `PluginEnvironmentProviderValidateContext` — the `validate` context
+  typed from `requires` and `inputs`, like the create context
+- `PluginEnvironmentProviderCreateContext` — a replacement create's
+  `previous.resource` is the provider's private JSON handle
+- `PluginEnvironmentProviderCreateResult` — `created` names the path and may
+  carry the private, 16 KiB-capped JSON `resource`; the selected machine owns
+  the host identity
+- `PluginEnvironmentProviderProgress` — durable `step` and `log` updates
+- `PluginEnvironmentProviderRemoveContext` — includes the private
+  `resource` returned by the launch that made the environment
+- `PluginEnvironmentProviderRemoveResult`
+
 ## `@get-bb/plugin-sdk/ai-services`
 
 - `experimental_aiInferenceCompleteInputSchema`
@@ -254,11 +298,15 @@ Read the installed declarations for exact current signatures.
 
 - `experimental_defineHostEntry`
 - `experimental_filterResolvedNativeRoots`
+- `experimental_killProcessesWithCwdUnder` — reap processes whose cwd is under a
+  workspace a provider is tearing down, before removing the directory
 - `experimental_nativeRootsHostContract`
 - `experimental_nativeRootsResolveInputSchema`
 - `experimental_nativeRootsResolveOutputSchema`
 - `experimental_resolveClaudePluginRoots`
 - `experimental_resolveVendorPluginRoots`
+- `experimental_sanitizeInheritedChildProcessEnv`
+- `experimental_spawnPortableOutputProcess`
 - `ExperimentalClaudePluginRoots`
 - `ExperimentalClaudePluginRootsArgs`
 - `ExperimentalDroppedNativeRoot`
@@ -280,16 +328,21 @@ Read the installed declarations for exact current signatures.
 - `ExperimentalNativeRootsResolveAnswer`
 - `ExperimentalNativeRootsResolveInput`
 - `ExperimentalNativeRootsResolveOutput`
+- `ExperimentalSanitizeInheritedChildProcessEnvArgs`
 - `ExperimentalVendorPlugin`
 - `ExperimentalVendorPluginRoots`
 - `ExperimentalVendorPluginRootsArgs`
 
 ## `@get-bb/plugin-sdk/testing`
 
+- `ExperimentalFakeWebSocketRouteRecord`
+- `ExperimentalFakeWebSocketSession`
 - `PluginContextStaleError`
 - `createFakePluginHost`
 - `createFakeSdk`
 - `experimental_scanPublicSdkOnly`
+- `makeMessageDispatchHookContext`
+- `makePluginAgentConfigurationContext`
 - `makeQueueEntry`
 - `makeThreadResponse`
 - `makeTurnFailedEvent`
@@ -301,6 +354,7 @@ Read the installed declarations for exact current signatures.
 - `FakeLogLevel`
 - `FakeMentionProviderRecord`
 - `FakePluginBehaviorDrivers`
+- `ExperimentalFakeHostRpcCall`
 - `FakePluginHarness`
 - `FakePluginHost`
 - `FakePluginInspectionState`

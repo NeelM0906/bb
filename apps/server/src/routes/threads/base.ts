@@ -1,3 +1,4 @@
+import { cancelAbandonedProviderLaunches } from "../../services/threads/thread-environment-providers.js";
 import {
   THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT,
   THREAD_SEARCH_LIMIT_PER_GROUP_MAX,
@@ -6,6 +7,7 @@ import {
   getEnvironment,
   getThreadSectionById,
   listThreadMentionRowsByIds,
+  listThreadsWithPendingInteractionState,
   markThreadDeleted,
   searchThreadsWithPendingInteractionState,
   updateThread,
@@ -13,6 +15,7 @@ import {
   type UpdateThreadInput,
 } from "@bb/db";
 import type { Environment, Thread, ThreadListEntry } from "@bb/domain";
+import { toEnvironmentResponse } from "../../services/environments/environment-response.js";
 import {
   threadIncludeOptionSchema,
   THREAD_COUNT_ROOT_PARENT,
@@ -32,10 +35,6 @@ import type { Hono } from "hono";
 import type { AppDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
 import { parseOptionalInteger } from "../../services/lib/validation.js";
-import {
-  requestEnvironmentCleanup,
-  requestEnvironmentCleanupAdvance,
-} from "../../services/environments/environment-cleanup-internal.js";
 import {
   getNonDestroyedHostWithStatus,
   requireEnvironment,
@@ -96,7 +95,8 @@ function resolveIncludedThreadEnvironment(
   if (thread.environmentId === null) {
     return null;
   }
-  return getEnvironment(deps.db, thread.environmentId);
+  const environment = getEnvironment(deps.db, thread.environmentId);
+  return environment === null ? null : toEnvironmentResponse(environment);
 }
 
 function buildThreadResponse(
@@ -278,40 +278,60 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     if (query.sectionId) {
       requireThreadSection(deps, query.sectionId);
     }
-    const threads = await deps.dbReadWorker.threadListSnapshot(
-      {
-        kind: "list",
-        now: Date.now(),
-        planCommands: snapshotProviderPlanCommands(deps.providerRegistry),
-        options: {
-          ...(query.projectId ? { projectId: query.projectId } : {}),
-          ...(query.parentThreadId
-            ? { parentThreadId: query.parentThreadId }
-            : {}),
-          ...(query.sourceThreadId
-            ? { sourceThreadId: query.sourceThreadId }
-            : {}),
-          ...(query.sectionId ? { sectionId: query.sectionId } : {}),
-          ...(query.unsectioned === "true" ? { unsectioned: true } : {}),
-          ...(query.originKind ? { originKind: query.originKind } : {}),
-          ...(query.originPluginId
-            ? { originPluginId: query.originPluginId }
-            : {}),
-          includeHidden: query.includeHidden === "true",
-          archived:
-            query.archived === undefined
-              ? undefined
-              : query.archived === "true",
-          hasParent:
-            query.hasParent === undefined
-              ? undefined
-              : query.hasParent === "true",
-          ...(limit !== undefined ? { limit } : {}),
-          ...(offset !== undefined ? { offset } : {}),
-        },
-      },
-      { signal: context.req.raw.signal },
-    );
+    const listOptions = {
+      ...(query.projectId ? { projectId: query.projectId } : {}),
+      ...(query.environmentId ? { environmentId: query.environmentId } : {}),
+      ...(query.parentThreadId ? { parentThreadId: query.parentThreadId } : {}),
+      ...(query.sourceThreadId ? { sourceThreadId: query.sourceThreadId } : {}),
+      ...(query.sectionId ? { sectionId: query.sectionId } : {}),
+      ...(query.unsectioned === "true" ? { unsectioned: true } : {}),
+      ...(query.originKind ? { originKind: query.originKind } : {}),
+      ...(query.originPluginId ? { originPluginId: query.originPluginId } : {}),
+      includeHidden: query.includeHidden === "true",
+      archived:
+        query.archived === undefined ? undefined : query.archived === "true",
+      hasParent:
+        query.hasParent === undefined ? undefined : query.hasParent === "true",
+      ...(limit !== undefined ? { limit } : {}),
+      ...(offset !== undefined ? { offset } : {}),
+    };
+    const threads =
+      query.environmentId === undefined
+        ? await deps.dbReadWorker.threadListSnapshot(
+            {
+              kind: "list",
+              now: Date.now(),
+              planCommands: snapshotProviderPlanCommands(deps.providerRegistry),
+              options: {
+                ...(query.projectId ? { projectId: query.projectId } : {}),
+                ...(query.parentThreadId
+                  ? { parentThreadId: query.parentThreadId }
+                  : {}),
+                ...(query.sourceThreadId
+                  ? { sourceThreadId: query.sourceThreadId }
+                  : {}),
+                ...(query.sectionId ? { sectionId: query.sectionId } : {}),
+                ...(query.unsectioned === "true" ? { unsectioned: true } : {}),
+                ...(query.originKind ? { originKind: query.originKind } : {}),
+                ...(query.originPluginId
+                  ? { originPluginId: query.originPluginId }
+                  : {}),
+                includeHidden: query.includeHidden === "true",
+                archived:
+                  query.archived === undefined
+                    ? undefined
+                    : query.archived === "true",
+                hasParent:
+                  query.hasParent === undefined
+                    ? undefined
+                    : query.hasParent === "true",
+                ...(limit !== undefined ? { limit } : {}),
+                ...(offset !== undefined ? { offset } : {}),
+              },
+            },
+            { signal: context.req.raw.signal },
+          )
+        : listThreadsWithPendingInteractionState(deps.db, listOptions);
     return context.json(
       overlayThreadListEntryLiveRuntime(
         deps,
@@ -494,6 +514,7 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       threadId: thread.id,
     });
     if (deletedThread) emitPluginThreadDeleted(deletedThread);
+    cancelAbandonedProviderLaunches(deps, thread.id);
     deps.terminalSessions.closeDeletedThreadTerminals({ threadId: thread.id });
     if (thread.environmentId === null) {
       finalizeStoppedThread(deps, {
@@ -506,12 +527,6 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     requestActiveRuntimeThreadStopIfNeeded(deps, thread, environment);
     finalizeStoppedThread(deps, {
       threadId: thread.id,
-    });
-    requestEnvironmentCleanup(deps, {
-      environmentId: environment.id,
-    });
-    requestEnvironmentCleanupAdvance(deps, {
-      environmentId: environment.id,
     });
     return context.json({ ok: true });
   });

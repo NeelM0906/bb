@@ -125,7 +125,6 @@ async function unexpectedWorkspaceCall(): Promise<never> {
 function createWorkspace(workspacePath = WORKSPACE_PATH): HostWorkspace {
   return {
     path: workspacePath,
-    managed: false,
     isGitRepo: false,
     isWorktree: false,
     getDefaultBranch: unexpectedWorkspaceCall,
@@ -143,8 +142,6 @@ function createWorkspace(workspacePath = WORKSPACE_PATH): HostWorkspace {
     listFiles: unexpectedWorkspaceCall,
     commit: unexpectedWorkspaceCall,
     reset: unexpectedWorkspaceCall,
-    squashMerge: unexpectedWorkspaceCall,
-    destroy: vi.fn(async () => undefined),
   };
 }
 
@@ -242,13 +239,13 @@ function createTurnSubmitCommand(
       bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "codex",
       providerThreadId: "provider-thread-1",
       instructions: "Be concise.",
       dynamicTools: [],
+      contributedEnv: [],
       injectedSkillSources: [],
       instructionMode: "append",
     },
@@ -331,7 +328,6 @@ function createInstallationGatedThreadStart(
     threadId,
     workspaceContext: {
       workspacePath: WORKSPACE_PATH,
-      workspaceProvisionType: "unmanaged",
     },
     projectId: "proj_1",
     providerId: "codex",
@@ -349,6 +345,7 @@ function createInstallationGatedThreadStart(
     },
     instructions: "Be concise.",
     dynamicTools: [],
+    contributedEnv: [],
     injectedSkillSources: [],
     instructionMode: "append",
   };
@@ -854,13 +851,13 @@ describe("dispatchCommand", () => {
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         workspaceContext: {
           workspacePath: WORKSPACE_PATH,
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "proj-1",
         providerId: "codex",
         providerThreadId: "provider-thread-1",
         instructions: "Be concise.",
         dynamicTools: [],
+        contributedEnv: [],
         injectedSkillSources: [],
         instructionMode: "append",
       },
@@ -902,8 +899,7 @@ describe("dispatchCommand", () => {
       .mockReturnValueOnce(newRuntime);
     const manager = new RuntimeManager({
       createRuntime: createRuntimeSpy,
-      provisionWorkspace: async (args) =>
-        createWorkspace("path" in args ? args.path : args.targetPath),
+      provisionWorkspace: async (args) => createWorkspace(args.path),
     });
     await manager.ensureEnvironment({
       environmentId: "env-old",
@@ -932,13 +928,13 @@ describe("dispatchCommand", () => {
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         workspaceContext: {
           workspacePath: "/tmp/bb-command-dispatch-new",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "proj_1",
         providerId: "codex",
         providerThreadId: "provider-thread-1",
         instructions: "Be concise.",
         dynamicTools: [],
+        contributedEnv: [],
         injectedSkillSources: [],
         instructionMode: "append",
       },
@@ -1228,8 +1224,7 @@ describe("dispatchCommand", () => {
       .mockReturnValueOnce(newRuntime);
     const manager = new RuntimeManager({
       createRuntime: createRuntimeSpy,
-      provisionWorkspace: async (args) =>
-        createWorkspace("path" in args ? args.path : args.targetPath),
+      provisionWorkspace: async (args) => createWorkspace(args.path),
     });
     await manager.ensureEnvironment({
       environmentId: "env-old",
@@ -1279,8 +1274,7 @@ describe("dispatchCommand", () => {
       .mockReturnValueOnce(newRuntime);
     const manager = new RuntimeManager({
       createRuntime: createRuntimeSpy,
-      provisionWorkspace: async (args) =>
-        createWorkspace("path" in args ? args.path : args.targetPath),
+      provisionWorkspace: async (args) => createWorkspace(args.path),
     });
     await manager.ensureEnvironment({
       environmentId: "env-old",
@@ -1307,13 +1301,13 @@ describe("dispatchCommand", () => {
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         workspaceContext: {
           workspacePath: "/tmp/bb-goal-new",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "proj_1",
         providerId: "codex",
         providerThreadId: "provider-thread-1",
         instructions: "Be concise.",
         dynamicTools: [],
+        contributedEnv: [],
         injectedSkillSources: [],
         instructionMode: "append",
       },
@@ -1389,7 +1383,6 @@ describe("dispatchCommand", () => {
       threadId: "thread-1",
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "example-agent",
@@ -1407,6 +1400,7 @@ describe("dispatchCommand", () => {
       },
       instructions: "Be concise.",
       dynamicTools: [],
+      contributedEnv: [],
       injectedSkillSources: [],
       instructionMode: "append",
     };
@@ -1468,7 +1462,6 @@ describe("dispatchCommand", () => {
       threadId: "thread-1",
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "codex",
@@ -1486,6 +1479,7 @@ describe("dispatchCommand", () => {
       },
       instructions: "Be concise.",
       dynamicTools: [],
+      contributedEnv: [],
       injectedSkillSources: [],
       instructionMode: "append",
     };
@@ -1534,7 +1528,6 @@ describe("dispatchCommand", () => {
       threadId: "thread-1",
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "codex",
@@ -1553,6 +1546,7 @@ describe("dispatchCommand", () => {
       },
       instructions: "Be concise.",
       dynamicTools: [],
+      contributedEnv: [],
       injectedSkillSources: [],
       instructionMode: "append",
     };
@@ -1812,6 +1806,7 @@ describe("dispatchCommand", () => {
       options: start.options,
       instructions: start.instructions,
       dynamicTools: start.dynamicTools,
+      contributedEnv: [],
       injectedSkillSources: start.injectedSkillSources,
       instructionMode: start.instructionMode,
     };
@@ -2360,7 +2355,6 @@ describe("dispatchCommand", () => {
       threadId: "thread-1",
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "codex",
@@ -2378,6 +2372,7 @@ describe("dispatchCommand", () => {
       },
       instructions: "Be concise.",
       dynamicTools: [],
+      contributedEnv: [],
       injectedSkillSources: [fixture.source],
       instructionMode: "append",
     };
@@ -2434,13 +2429,13 @@ describe("dispatchCommand", () => {
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         workspaceContext: {
           workspacePath: WORKSPACE_PATH,
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "proj_1",
         providerId: "codex",
         providerThreadId: "provider-thread-1",
         instructions: "Be concise.",
         dynamicTools: [],
+        contributedEnv: [],
         injectedSkillSources: [fixture.source],
         instructionMode: "append",
       },

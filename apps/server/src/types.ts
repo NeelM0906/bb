@@ -33,7 +33,6 @@ export interface ServerRuntimeConfig {
   inferenceFallbackModel: string;
   inferenceModel: string;
   isDevelopment: boolean;
-  managedEnvironmentRetireGraceMs: number;
   marketplaceUrl: string;
   openAiApiKey: string;
   serverPort: number;
@@ -75,6 +74,7 @@ export type WorkSessionDeps = Pick<
   | "config"
   | "db"
   | "hub"
+  | "logger"
   | "lifecycleDedupers"
   | "machineAuth"
   | "providerRegistry"

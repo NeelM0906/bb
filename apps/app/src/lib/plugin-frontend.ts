@@ -1,3 +1,4 @@
+import * as questionFormHost from "@bb/shared-ui/question-form-host";
 import * as react from "react";
 import * as reactDom from "react-dom";
 import * as reactDomClient from "react-dom/client";
@@ -198,6 +199,7 @@ interface BbPluginRuntime {
   tailwindMerge: unknown;
   classVarianceAuthority: unknown;
   sharedUiIcon: unknown;
+  questionFormHost: typeof questionFormHost;
 }
 
 type RuntimeHost = typeof globalThis & { __bbPluginRuntime?: BbPluginRuntime };
@@ -230,6 +232,7 @@ export function installPluginRuntime(): void {
     tailwindMerge,
     classVarianceAuthority,
     sharedUiIcon,
+    questionFormHost,
   };
 }
 
@@ -262,7 +265,11 @@ export async function fetchFrontendCandidates(
       logoDarkUrl: plugin.logoDarkUrl,
       icons: new Map(Object.entries(plugin.icons)),
     });
-    if (plugin.status !== "running") {
+    if (
+      plugin.status !== "running" &&
+      plugin.status !== "needs-configuration" &&
+      plugin.status !== "degraded"
+    ) {
       continue;
     }
     const bundle = plugin.app.bundle;
@@ -898,10 +905,6 @@ export function subscribePluginFrontendDiagnostics(
   };
 }
 
-function teardownPluginFrontends(): Promise<void> {
-  return disposePluginFrontends(state, browserReconcileDeps);
-}
-
 interface PluginFrontendPageLifecycleDeps {
   restore: () => void;
   teardown: () => void;
@@ -933,7 +936,7 @@ function installPluginFrontendPageLifecycle(): void {
   const lifecycle = createPluginFrontendPageLifecycle({
     restore: () => schedulePluginFrontendReconcile(),
     teardown: () => {
-      void teardownPluginFrontends();
+      void disposePluginFrontends(state, browserReconcileDeps);
     },
   });
   window.addEventListener("pagehide", (event) => lifecycle.onPageHide(event));

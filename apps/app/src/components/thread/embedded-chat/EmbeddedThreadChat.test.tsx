@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   pendingInteractionsRefetch: vi.fn(),
   queuedMessages: [] as Array<{ id: string }>,
   readTrackingThreads: [] as Array<unknown>,
+  sendQueuedMessageMutateAsync: vi.fn(),
   sendThreadMessageMutateAsync: vi.fn(),
   threadRuntimeDisplayStatus: "idle" as string,
   timelineRows: [] as Array<{ text: string }>,
@@ -107,19 +108,27 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
 vi.mock("@/components/promptbox/banner/QueuedMessagesList", () => ({
   QueuedMessagesList: ({
     attachedToComposer,
+    onSend,
     queuedMessages,
+    sendAction,
     sendDisabled,
   }: {
     attachedToComposer: boolean;
+    onSend: (queuedMessageId: string) => void;
     queuedMessages: readonly unknown[];
+    sendAction: "send-now" | "steer-when-ready";
     sendDisabled: boolean;
   }) => (
     <div
       data-testid="embedded-chat-queued-messages"
       data-attached-to-composer={String(attachedToComposer)}
+      data-send-action={sendAction}
       data-send-disabled={sendDisabled ? "" : undefined}
     >
       <span data-testid="queued-count">{queuedMessages.length}</span>
+      <button type="button" onClick={() => onSend("q1")}>
+        Send queued message
+      </button>
     </div>
   ),
 }));
@@ -249,6 +258,10 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
   getLatestPendingInteraction: (
     interactions: readonly { createdAt: number }[] | undefined,
   ) => (interactions && interactions.length > 0 ? interactions[0] : null),
+  isPendingInteractionStateUnknown: (
+    interactions: readonly { createdAt: number }[] | undefined,
+    isFetching: boolean,
+  ) => (!interactions || interactions.length === 0) && isFetching,
 }));
 
 vi.mock(
@@ -306,7 +319,7 @@ vi.mock("@/hooks/mutations/thread-runtime-mutations", () => ({
     isPending: false,
   }),
   useSendThreadQueuedMessage: () => ({
-    mutateAsync: vi.fn(),
+    mutateAsync: mocks.sendQueuedMessageMutateAsync,
     isPending: false,
   }),
   useSetThreadQueuedMessageGroupBoundary: () => ({
@@ -394,6 +407,7 @@ describe("EmbeddedThreadChat", () => {
     mocks.pendingInteractionsRefetch.mockReset().mockResolvedValue({});
     mocks.queuedMessages = [];
     mocks.readTrackingThreads = [];
+    mocks.sendQueuedMessageMutateAsync.mockReset().mockResolvedValue({});
     mocks.threadRuntimeDisplayStatus = "idle";
     mocks.timelineRows = [];
     mocks.injectedTimelineProps = [];
@@ -532,6 +546,27 @@ describe("EmbeddedThreadChat", () => {
     expect(screen.getByTestId("queued-count").textContent).toBe("2");
   });
 
+  it("steers a queued row once provisioning is ready", async () => {
+    mocks.threadRuntimeDisplayStatus = "provisioning";
+    mocks.queuedMessages = [{ id: "q1" }];
+    renderEmbeddedChat();
+
+    const queue = screen.getByTestId("embedded-chat-queued-messages");
+    expect(queue.dataset.sendAction).toBe("steer-when-ready");
+    expect(queue.dataset.sendDisabled).toBeUndefined();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Send queued message" }),
+    );
+
+    await vi.waitFor(() => {
+      expect(mocks.sendQueuedMessageMutateAsync).toHaveBeenCalledWith({
+        id: "thr_child",
+        mode: "steer",
+        queuedMessageId: "q1",
+      });
+    });
+  });
+
   it("shows a pending approval in place of the composer", () => {
     mocks.pendingInteractions = [
       { id: "int_1", createdAt: 1, payload: { kind: "approval" } },
@@ -545,7 +580,7 @@ describe("EmbeddedThreadChat", () => {
     expect(screen.getByTestId("embedded-chat-composer").hidden).toBe(true);
   });
 
-  it("keeps held messages visible beside a pending side-chat question", () => {
+  it("hides held messages while a pending side-chat question is answered", () => {
     mocks.pendingInteractions = [
       { id: "int_1", createdAt: 1, payload: { kind: "user_question" } },
     ];
@@ -554,17 +589,7 @@ describe("EmbeddedThreadChat", () => {
     renderEmbeddedChat({ threadId: "thr_side_chat" });
 
     expect(screen.getByTestId("pending-interaction-banner")).toBeTruthy();
-    expect(screen.getByTestId("queued-count").textContent).toBe("1");
-    expect(
-      screen
-        .getByTestId("embedded-chat-queued-messages")
-        .hasAttribute("data-send-disabled"),
-    ).toBe(true);
-    expect(
-      screen
-        .getByTestId("embedded-chat-queued-messages")
-        .getAttribute("data-attached-to-composer"),
-    ).toBe("false");
+    expect(screen.queryByTestId("embedded-chat-queued-messages")).toBeNull();
     expect(screen.getByTestId("embedded-chat-composer").hidden).toBe(true);
   });
 
@@ -608,6 +633,20 @@ describe("EmbeddedThreadChat", () => {
     expect(
       screen.getByTestId("embedded-chat-composer").dataset.submitReason,
     ).toBe("loading-pending-interactions");
+  });
+
+  it("hides the composer while cached empty interactions refresh", () => {
+    mocks.pendingInteractions = [];
+    mocks.pendingInteractionsIsFetching = true;
+    mocks.queuedMessages = [{ id: "q1" }];
+
+    renderEmbeddedChat({ threadId: "thr_side_chat" });
+
+    expect(screen.getByRole("status").textContent).toContain(
+      "Checking pending interactions",
+    );
+    expect(screen.queryByTestId("embedded-chat-queued-messages")).toBeNull();
+    expect(screen.getByTestId("embedded-chat-composer").hidden).toBe(true);
   });
 
   it("keeps the composer unavailable when pending interactions fail to load", () => {

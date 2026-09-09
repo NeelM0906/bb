@@ -23,7 +23,6 @@ import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
   type PluginNavPanelSlot,
-  type PluginRegistrationSet,
 } from "@/lib/plugin-slots";
 import {
   AUTOMATIONS_PLUGIN_ID,
@@ -53,6 +52,7 @@ import {
   usePublishPluginComposerHost,
 } from "./plugin-composer-host";
 import { PluginHomepageSections } from "./PluginHomepageSections";
+import { makePluginRegistrationSet as registrationSet } from "@/test/fixtures/plugins";
 import { PluginNavSidebarItems } from "./PluginNavSidebarItems";
 import {
   getComposerInputLock,
@@ -68,29 +68,13 @@ import {
   usePluginPanelActions,
   type OpenPluginPanelArgs,
 } from "./PluginPanelActions";
-import { NewTabActions } from "@/components/secondary-panel/NewTabFileSearch";
+import { NewTabActions } from "@/components/secondary-panel/NewTabActions";
 import { buildFileOpenerPanelTab } from "./file-opener-tabs";
 import { splitLayoutAtom } from "@/lib/split-layout/atoms";
 import type { PromptDraftState } from "@bb/client-core";
 
 function composerTextEffectValues(storageKey: string | null) {
   return getComposerTextEffects(storageKey).map(({ effect }) => effect);
-}
-
-function registrationSet(
-  overrides: Partial<PluginRegistrationSet>,
-): PluginRegistrationSet {
-  return {
-    homepageSections: [],
-    settingsSections: [],
-    navPanels: [],
-    threadPanelActions: [],
-    composerCustomizations: [],
-    sidebarFooterActions: [],
-    fileOpeners: [],
-    messageDirectives: [],
-    ...overrides,
-  };
 }
 
 afterEach(() => {

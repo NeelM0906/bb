@@ -5,6 +5,7 @@ import type {
   Environment,
   Host,
   PermissionMode,
+  PendingInteraction,
   Project,
   PromptInput,
   ProviderErrorInfo,
@@ -14,6 +15,7 @@ import type {
   ReasoningLevel,
   ServiceTier,
   ThreadQueuedMessage,
+  WorkspaceProvisionType,
 } from "@bb/domain";
 import type { ProviderFork } from "@bb/domain/provider-fork";
 import type { BbSdk } from "@bb/sdk";
@@ -85,6 +87,13 @@ export type PluginSettingDescriptor =
       default?: boolean;
     }
   | {
+      type: "number";
+      label: string;
+      description?: string;
+      experimental_schema?: StandardSchemaV1<number, number>;
+      default?: number;
+    }
+  | {
       type: "select";
       label: string;
       description?: string;
@@ -104,13 +113,13 @@ export type PluginSettingDescriptor =
 
 export type PluginSettingDescriptors = Record<string, PluginSettingDescriptor>;
 
-export type PluginSettingValue = string | boolean;
+export type PluginSettingValue = string | number | boolean;
 
 /** `default` present → non-optional value; absent → `T | undefined`. */
 export type PluginSettingsValues<
   Ds extends Record<string, PluginSettingDescriptor>,
 > = {
-  [K in keyof Ds]: Ds[K] extends { default: string | boolean }
+  [K in keyof Ds]: Ds[K] extends { default: string | number | boolean }
     ? PluginSettingValueOf<Ds[K]>
     : PluginSettingValueOf<Ds[K]> | undefined;
 };
@@ -119,7 +128,9 @@ type PluginSettingValueOf<D extends PluginSettingDescriptor> = D extends {
   type: "boolean";
 }
   ? boolean
-  : string;
+  : D extends { type: "number" }
+    ? number
+    : string;
 
 export interface PluginSettingsHandle<
   Ds extends Record<string, PluginSettingDescriptor>,
@@ -259,8 +270,21 @@ export interface PluginThreadEventPayloads {
   "thread.failed": { thread: ThreadResponse; error: string | null };
   /** Fired after a thread is archived (including cascade archives). */
   "thread.archived": { thread: ThreadResponse };
+  /**
+   * Fired after a thread comes back from the archive. Nothing is provisioned
+   * here: a provider that tore its environment down on archive is asked to
+   * provide one again when the thread next needs to run, with that
+   * environment in the ask's context. This is the moment to start warming
+   * one up ahead of that ask.
+   */
+  "thread.unarchived": { thread: ThreadResponse };
   /** Fired after a thread is soft-deleted. */
   "thread.deleted": { thread: ThreadResponse };
+  /** Fired after a pending interaction row is committed. */
+  "interaction.pending": {
+    thread: ThreadResponse;
+    interaction: PendingInteraction;
+  };
   /**
    * Fired after a dispatch attempt is queued as a row — by a `message.dispatch`
    * hook's `wait` decision, by a `sendAt` in the future, or by a core wait (the
@@ -291,6 +315,16 @@ export interface PluginThreadEventPayloads {
    * that is at capacity instead of jumping the queue.
    */
   "turn.failed": PluginTurnFailedEvent;
+  /**
+   * Fired after a queued row is removed before it ever dispatched — the user
+   * deleted it from the queued card or `bb thread queue`. This is the only
+   * signal for that removal: a plugin holding external resources for a
+   * waiting message (a sandbox mid-provision, a reserved slot) releases them
+   * here. Rows that dispatch fire `message.dispatched` instead, and rows that
+   * vanish because their thread was archived or deleted fire the thread
+   * event, not this one.
+   */
+  "message.cancelled": { entry: ThreadQueuedMessage };
 }
 
 export type PluginThreadEventName = keyof PluginThreadEventPayloads;
@@ -298,6 +332,98 @@ export type PluginThreadEventName = keyof PluginThreadEventPayloads;
 export type PluginThreadEventHandler<E extends PluginThreadEventName> = (
   payload: PluginThreadEventPayloads[E],
 ) => void | Promise<void>;
+
+// ---------------------------------------------------------------------------
+// Environment providers: places a thread can run that a plugin provisions.
+// ---------------------------------------------------------------------------
+
+/**
+ * The facts this provider consumes, in one declaration. Every member is
+ * something core can evaluate before the thread exists and supply to
+ * `create`, so it is also the whole of what decides where the provider is
+ * offered, and the picker needs to know no provider by name. Every member
+ * defaults to false.
+ *
+ * - `projectCheckout` — the provider works from this project's directory on
+ *   that machine, git or not, so core refuses a machine with no checkout of
+ *   the project at create time and `context.projectCheckout` is non-null.
+ * - `gitCheckout` — that directory must also be a git repository with at
+ *   least one commit. The picker greys the row out where it is not, and core
+ *   rejects an explicit selection using the same machine inspection before
+ *   creating the thread. Implies `projectCheckout`.
+ * - `gitRemote` — the provider clones the project itself, so it is greyed out
+ *   in a project with no git remote and an explicit selection is rejected.
+ * - `projectless` — this provider serves only threads that have no project,
+ *   so it is offered for those and nowhere else. It cannot be combined with
+ *   `projectCheckout`, `gitCheckout` or `gitRemote`, which need a project.
+ */
+export interface PluginEnvironmentProviderRequirements {
+  projectCheckout?: boolean;
+  gitCheckout?: boolean;
+  gitRemote?: boolean;
+  projectless?: boolean;
+}
+
+/**
+ * What `validate` answers. `refuse` fails the create request with `message`
+ * as the caller's error, before a thread or an environment row exists.
+ */
+export type PluginEnvironmentValidateDecision =
+  | { action: "accept" }
+  | { action: "refuse"; message: string };
+
+/**
+ * Resource operations for one place a thread can run. Core persists progress,
+ * retries, cancellation and retirement. Operations must be idempotent for the
+ * supplied pathKey. Provider ids are unique across running plugins.
+ */
+export type PluginEnvironmentProviderDeclaration<
+  Requires extends PluginEnvironmentProviderRequirements =
+    PluginEnvironmentProviderRequirements,
+  Inputs extends
+    import("./environment-provider.js").PluginEnvironmentProviderInputsSchema =
+    import("./environment-provider.js").PluginEnvironmentProviderInputsSchema,
+> = import("./environment-provider.js").PluginEnvironmentProviderDefinition<
+  Requires,
+  Inputs
+>;
+
+export interface PluginEnvironments {
+  /**
+   * Offer a place threads can run. Registering an id this plugin already
+   * registered replaces it. Experimental: see docs/api_to_audit.md.
+   */
+  register<
+    const Requires extends PluginEnvironmentProviderRequirements,
+    const Inputs extends
+      import("./environment-provider.js").PluginEnvironmentProviderInputsSchema =
+      undefined,
+  >(
+    declaration: PluginEnvironmentProviderDeclaration<Requires, Inputs>,
+  ): void;
+  /**
+   * Ask core to re-ask this plugin's waiting providers now instead of at their
+   * `sendAt` — call it whenever a launch advances (progress text changed, the
+   * environment became ready, a failure was recorded). Resolves on
+   * scheduling, exactly like `experimental_hooks.recheck`.
+   */
+  recheck(): Promise<void>;
+}
+
+/**
+ * Where a thread is going to run, as far as core knows at the checkpoint.
+ * Before provisioning attaches an environment this is the start intent the
+ * thread was created with; afterwards it is the environment itself.
+ */
+export type PluginDispatchEnvironmentIntent =
+  | { kind: "environment"; environmentId: string }
+  /** Ask a registered environment provider for the environment. */
+  | {
+      kind: "provider";
+      environmentProviderId: string;
+      machine: { type: "existing"; hostId: string };
+      inputs: JsonValue | null;
+    };
 
 // ---------------------------------------------------------------------------
 // Hooks: the questions core asks (plans/dispatch-queue-rework.md).
@@ -403,6 +529,13 @@ export interface MessageDispatchHookContext {
    * about to occupy. Null only when neither names a machine.
    */
   host: Host | null;
+  /**
+   * What kind of environment the thread will run in, so a policy can tell a
+   * worktree on this machine from a cloud sandbox from an attached directory
+   * before any of them exists. Null only for a thread with neither an
+   * environment nor a start intent.
+   */
+  environmentIntent: PluginDispatchEnvironmentIntent | null;
   input: PluginDispatchInput;
   requestedExecution: PluginDispatchExecution;
   /** Where each execution value came from. */
@@ -531,6 +664,35 @@ export type PluginHttpHandler = (
   context: Context,
 ) => Response | Promise<Response>;
 
+export interface ExperimentalPluginWebSocket {
+  send(data: string | Uint8Array): void;
+  close(code?: number, reason?: string): void;
+  readonly readyState: number;
+}
+
+export interface ExperimentalPluginWebSocketContext {
+  request: Request;
+  url: URL;
+  headers: Headers;
+}
+
+export interface ExperimentalPluginWebSocketHandlers {
+  onOpen?(socket: ExperimentalPluginWebSocket): void | Promise<void>;
+  onMessage?(
+    socket: ExperimentalPluginWebSocket,
+    data: string | Uint8Array,
+  ): void | Promise<void>;
+  onClose?(
+    socket: ExperimentalPluginWebSocket,
+    event: { code: number; reason: string },
+  ): void | Promise<void>;
+  onError?(socket: ExperimentalPluginWebSocket, error: Error): void;
+}
+
+export type ExperimentalPluginWebSocketHandler = (
+  context: ExperimentalPluginWebSocketContext,
+) => ExperimentalPluginWebSocketHandlers;
+
 export interface PluginHttp {
   /**
    * Register an HTTP route, mounted at
@@ -545,6 +707,17 @@ export interface PluginHttp {
     method: string,
     path: string,
     handler: PluginHttpHandler,
+    opts?: { auth?: PluginHttpAuthMode },
+  ): void;
+
+  /**
+   * Register a WebSocket route in the same `/http/` namespace as `route`.
+   * A GET request upgrades only when it carries `Upgrade: websocket`.
+   * Auth modes and exact-path matching are identical to HTTP routes.
+   */
+  experimental_websocket(
+    path: string,
+    handler: ExperimentalPluginWebSocketHandler,
     opts?: { auth?: PluginHttpAuthMode },
   ): void;
 }
@@ -795,8 +968,9 @@ export interface PluginAgentConfigurationContext {
     id: string;
     name: string | null;
     path: string | null;
-    workspaceProvisionType: "unmanaged" | "managed-worktree" | "personal";
     branchName: string | null;
+    /** @deprecated Use environment provider identity and capabilities instead. */
+    workspaceProvisionType: WorkspaceProvisionType | null;
   };
   host: {
     id: string;
@@ -1323,6 +1497,45 @@ export interface PluginProviders {
   register(declaration: PluginProviderDeclaration): {
     dispose(): void;
   };
+  experimental_contributeEnv(
+    providerId: string,
+    resolve: (
+      context: ExperimentalPluginProviderEnvContext,
+    ) =>
+      | readonly ExperimentalPluginProviderEnvEntry[]
+      | Promise<readonly ExperimentalPluginProviderEnvEntry[]>,
+  ): void;
+  experimental_contributeEnvHealth(
+    providerId: string,
+    resolve: (
+      context: ExperimentalPluginProviderEnvHealthContext,
+    ) =>
+      | ExperimentalPluginProviderEnvHealth
+      | null
+      | Promise<ExperimentalPluginProviderEnvHealth | null>,
+  ): void;
+}
+
+export interface ExperimentalPluginProviderEnvContext {
+  threadId: string;
+  projectId: string;
+  hostId: string;
+}
+
+export interface ExperimentalPluginProviderEnvEntry {
+  name: string;
+  value: string | { serverPath: string };
+  reason: string;
+  secret: boolean;
+}
+
+export interface ExperimentalPluginProviderEnvHealthContext {
+  hostId: string;
+}
+
+export interface ExperimentalPluginProviderEnvHealth {
+  label: string;
+  statusMessage: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1411,6 +1624,12 @@ export interface PluginEvents {
 // ---------------------------------------------------------------------------
 
 export interface PluginServerApi {
+  /**
+   * The operator-configured public app URL from `BB_APP_URL`, or `null` when
+   * the operator has not configured one. This value is not bind-gated.
+   */
+  readonly experimental_appUrl: string | null;
+
   /**
    * This BB server's own loopback base URL (e.g. "http://127.0.0.1:38886"),
    * which serves the SPA + /api + /ws. For plugins that proxy or relay
@@ -1571,6 +1790,12 @@ export interface BbPluginApi {
    * reason, or refuse.
    */
   readonly experimental_hooks: PluginHooks;
+  /**
+   * Environment targets: places a thread can run that this plugin
+   * provisions (plans/plugin-environment-providers.md). Experimental: see
+   * docs/api_to_audit.md.
+   */
+  readonly experimental_environments: PluginEnvironments;
   /** Plugin-reported status (needs-configuration). */
   readonly status: PluginStatusApi;
   /** Read-only facts about the running server (loopback base URL). */

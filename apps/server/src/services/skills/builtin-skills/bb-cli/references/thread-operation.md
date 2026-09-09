@@ -14,13 +14,13 @@
   needs clarification, or follow-up work is needed.
 - Add `--plan` to `bb thread spawn` or `bb thread tell` to send the prompt as
   the provider's structured `/plan` action: the agent proposes a plan for
-  approval before executing (Claude Code and Codex). Plain `/plan ...` text is
+  approval before executing when supported by the provider. Plain `/plan ...` text is
   not recognized and reaches the provider as literal text. Review the proposed
   plan with `bb thread interactions`; `bb thread cancel-plan` leaves Plan mode
   early. The SDK equivalent is `input: [createBuiltinPlanCommandTextInput(text)]`
   (exported by `@bb/sdk`) on `threads.spawn` / `threads.send`.
 - Use `bb thread edit-message <thread-id> --message "..."` to replace and rerun
-  the latest eligible user message in a Codex, Claude Code, or Pi thread. Pass
+  the latest eligible user message in a supporting provider thread. Pass
   `--expected-request-sequence <sequence>` to select an earlier message. Failed
   and incomplete turns are eligible; submitting against a running thread stops
   and settles its current turn first. Opening edit mode in the app is
@@ -39,10 +39,10 @@
   (epoch ms) on `threads.spawn` / `threads.send`.
 - A send that cannot run right now does not fail: it joins the thread's queue
   with a typed reason. `--json` reports `delivery: "queued"` plus
-  `queuedMessageId`, `waitingOn` and `sendAt`, so a script can tell "waiting for
-  the current turn" from "waiting on a plugin" without guessing. `waitingOn.kind`
-  is one of `time`, `thread-busy`, `provisioning`, `interaction` or `plugin`
-  (which also carries `pluginId` and a human reason).
+  the complete `queuedMessage` row, so a script can inspect its `id`,
+  `waitingOn`, and `sendAt` without guessing. `queuedMessage.waitingOn.kind` is
+  one of `time`, `thread-busy`, `turn-starting`, `provisioning`, `host-offline`,
+  `interaction`, or `plugin` (which also carries `pluginId` and a human reason).
 - Inspect and act on queued dispatches with `bb thread queue list [<thread-id>]
   [--wait-holder plugin:<plugin-id>]`, `bb thread queue send <thread-id>
   <message-id>` (send it now, bypassing every plugin wait and its schedule), and
@@ -51,6 +51,10 @@
   and `Send at` columns. Several queued rows on one thread are normal. The SDK
   equivalents are `threads.queue.list` (cross-thread) and
   `threads.queuedMessages.list/send/update/delete` (one thread).
+- `bb thread queue send <thread-id> <message-id> --mode steer` re-attempts the
+  row as a steer with the same send-now behavior: it bypasses the row's schedule
+  and plugin waits, while core waits still apply. During provisioning it reports
+  that the row is still queued and leaves it waiting for the workspace.
 - Queueing writes nothing to the timeline: a queued message reaches the thread
   log only once it dispatches. Ask the queue instead. In the app the same fact
   reaches the sidebar as a clock on any thread that holds queued work and is not

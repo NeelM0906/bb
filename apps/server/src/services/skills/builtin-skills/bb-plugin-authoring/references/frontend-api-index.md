@@ -14,6 +14,12 @@ Read the installed SDK declarations for the exact current signatures.
 - `experimental_NewThreadComposer`
 - `experimental_ProviderModelPicker`
 - `experimental_PermissionModePicker`
+- `experimental_BranchPicker` — the host's branch picker with its options
+  loading, for an environment provider's inputs control
+- `experimental_useBranches` — searchable local and remote branch lists with
+  host-backed refresh for a project source
+- `experimental_useCheckoutState` — checkout facts for composing a plugin's
+  own checkout branch control with `experimental_useBranches`
 - `experimental_SourceCode`
 - `experimental_Diff`
 - `useRpc`
@@ -37,12 +43,23 @@ Read the installed SDK declarations for the exact current signatures.
 
 - `PluginHomepageSectionProps`
 - `PluginSettingsSectionProps`
+- `ExperimentalAppOverlayProps`
 - `PluginNavPanelProps`
 - `PluginThreadPanelProps`
 - `PluginNewThreadPanelProps`
 - `PluginPendingInteractionView`
 - `PluginPendingInteractionProps`
+- `BranchPickerProps`
+- `UseBranchesArgs`
+- `BranchesState`
+- `UseCheckoutStateArgs`
+- `CheckoutState`
+- `PluginEnvironmentProviderInputsChange`
+- `PluginEnvironmentProviderInputsProps`
+- `PluginEnvironmentProviderInputsRegistration` — the registration accepted by
+  `app.slots.experimental_environmentProviderInputs`
 - `PluginSidebarFooterActionProps`
+- `ExperimentalSidebarFooterDisclosureProps`
 - `ExperimentalSidebarNavigationShortcut`
 - `ExperimentalSidebarNavigationAction`
 - `ExperimentalSidebarNavigationIcon`
@@ -67,6 +84,7 @@ Read the installed SDK declarations for the exact current signatures.
 - `PluginMessageDirectiveProps`
 - `PluginHomepageSectionRegistration`
 - `PluginSettingsSectionRegistration`
+- `ExperimentalAppOverlayRegistration`
 - `ExperimentalFixedTabTargetContract`
 - `ExperimentalPluginFixedTabReference`
 - `PluginFixedTabRegistration`
@@ -80,9 +98,15 @@ Read the installed SDK declarations for the exact current signatures.
 - `PluginPendingInteractionRegistration`
 - `PluginSidebarFooterActionContext`
 - `PluginSidebarFooterActionRegistration`
+- `ExperimentalSidebarFooterActionContext`
+- `ExperimentalSidebarFooterItemBase`
+- `ExperimentalSidebarFooterActionRegistration`
+- `ExperimentalSidebarFooterDisclosureRegistration`
+- `ExperimentalSidebarFooterItemRegistration`
+- `ExperimentalSidebarFooterDisclosureController`
+- `ExperimentalSidebarFooter`
 - `ExperimentalSidebarNavigationRegistration`
 - `PluginSidebarThreadIndicator`
-- `PluginSidebarWorkspaceKind`
 - `PluginSidebarThreadActivity`
 - `PluginSidebarThread`
 - `PluginSidebarPullRequest`

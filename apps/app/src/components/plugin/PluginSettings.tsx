@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, type FocusEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { appToast } from "@/components/ui/app-toast.js";
 import { PluginSettingsSections } from "@/components/plugin/PluginSettingsSections";
@@ -46,6 +46,7 @@ const DROPDOWN_CONTENT_CLASS =
 
 const MULTILINE_MIN_ROWS = 6;
 const MULTILINE_MAX_ROWS = 24;
+const INVALID_NUMBER_DRAFT = Symbol();
 const MULTILINE_TEXTAREA_CLASS =
   "max-h-96 min-h-32 w-full resize-y overflow-y-auto font-mono text-xs field-sizing-content";
 function multilineRows(value: string): number {
@@ -112,7 +113,7 @@ interface PluginSettingFieldProps {
   ariaInvalid: boolean;
   descriptor: PluginSettingFieldDescriptor;
   draft: string | boolean;
-  onBlur: () => void;
+  onBlur: (event: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
   onChange: (value: string | boolean) => void;
   storedValue: unknown;
 }
@@ -205,6 +206,29 @@ function PluginSettingField({
     );
   }
 
+  if (descriptor.type === "number") {
+    const value =
+      typeof draft === "string"
+        ? draft
+        : typeof storedValue === "number"
+          ? String(storedValue)
+          : "";
+    return (
+      <Input
+        type="number"
+        inputMode="decimal"
+        step="any"
+        value={value}
+        aria-label={descriptor.label}
+        aria-describedby={ariaDescribedBy}
+        aria-invalid={ariaInvalid}
+        onChange={(event) => onChange(event.target.value)}
+        onBlur={onBlur}
+        className="h-7 w-full text-xs sm:w-64"
+      />
+    );
+  }
+
   const isSecret = descriptor.secret === true;
   const secretIsSet =
     isSecret &&
@@ -257,6 +281,9 @@ function initialSettingDraft(
   if (descriptor.type === "boolean") {
     return typeof storedValue === "boolean" ? storedValue : false;
   }
+  if (descriptor.type === "number") {
+    return typeof storedValue === "number" ? String(storedValue) : "";
+  }
   if (descriptor.type === "string" && descriptor.secret === true) return "";
   return typeof storedValue === "string" ? storedValue : "";
 }
@@ -284,10 +311,22 @@ function AutosavingPluginSetting({
   const draft = draftState.value;
   const save = useMutation({
     scope: { id: `plugin-setting:${pluginId}:${settingKey}` },
-    mutationFn: (value: string | boolean) =>
-      updatePluginSettings(fetch, pluginId, {
-        [settingKey]: value,
-      }),
+    mutationFn: (value: string | boolean | typeof INVALID_NUMBER_DRAFT) => {
+      if (value === INVALID_NUMBER_DRAFT)
+        throw new Error("Enter a finite number");
+      let settingValue: string | number | boolean | null = value;
+      if (descriptor.type === "number") {
+        const trimmed = typeof value === "string" ? value.trim() : "";
+        const parsed = Number(trimmed);
+        if (trimmed.length > 0 && !Number.isFinite(parsed)) {
+          throw new Error("Enter a finite number");
+        }
+        settingValue = trimmed.length === 0 ? null : parsed;
+      }
+      return updatePluginSettings(fetch, pluginId, {
+        [settingKey]: settingValue,
+      });
+    },
     onSuccess: (view) => {
       applyPluginSettingsView({ queryClient, pluginId, view });
     },
@@ -302,17 +341,41 @@ function AutosavingPluginSetting({
   function changeDraft(value: string | boolean): void {
     setDraftState({
       value,
-      hasNewerDraft: descriptor.type === "string",
+      hasNewerDraft:
+        descriptor.type === "string" || descriptor.type === "number",
     });
-    save.reset();
-    if (descriptor.type !== "string") {
+    if (!save.isPending) save.reset();
+    if (descriptor.type !== "string" && descriptor.type !== "number") {
       save.mutate(value);
     }
   }
 
-  function saveDraft(): void {
-    if (descriptor.type !== "string") return;
-    if (draft === storedValue || (descriptor.secret === true && draft === "")) {
+  function saveDraft(
+    event: FocusEvent<HTMLInputElement | HTMLTextAreaElement>,
+  ): void {
+    if (descriptor.type !== "string" && descriptor.type !== "number") return;
+    if (descriptor.type === "number" && event.currentTarget.validity.badInput) {
+      setDraftState({ value: initialDraft, hasNewerDraft: false });
+      save.mutate(INVALID_NUMBER_DRAFT);
+      return;
+    }
+    if (descriptor.type === "number") {
+      const trimmed = typeof draft === "string" ? draft.trim() : "";
+      const parsed = Number(trimmed);
+      if (
+        (trimmed.length === 0 && storedValue === undefined) ||
+        (trimmed.length > 0 && parsed === storedValue && !save.isPending)
+      ) {
+        setDraftState({ value: draft, hasNewerDraft: false });
+        return;
+      }
+    }
+    if (
+      (draft === storedValue && !save.isPending) ||
+      (descriptor.type === "string" &&
+        descriptor.secret === true &&
+        draft === "")
+    ) {
       setDraftState({ value: draft, hasNewerDraft: false });
       return;
     }
@@ -412,6 +475,7 @@ function PluginSettingsContent({ plugin }: { plugin: PluginListItem }) {
   const queryClient = useQueryClient();
   const { settingsSections } = usePluginSlots();
   const toggle = useMutation({
+    meta: { showErrorToast: false },
     mutationFn: (enabled: boolean) =>
       setPluginEnabled(fetch, plugin.id, enabled),
     onError: (error, enabled) => {

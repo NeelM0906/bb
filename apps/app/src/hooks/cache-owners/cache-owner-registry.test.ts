@@ -149,6 +149,7 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "allProjectCommandsQueryKeyPrefix",
     "allSystemExecutionOptionsQueryKeyPrefix",
     "allSystemProvidersQueryKeyPrefix",
+    "allSystemThemesQueryKeyPrefix",
     "allThreadStorageFilePreviewQueryKeyPrefix",
     "allThreadStorageFilesQueryKeyPrefix",
     "allThreadStorageLocationsQueryKeyPrefix",
@@ -186,6 +187,7 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "allProjectPathsQueryKeyPrefix",
     "allSystemExecutionOptionsQueryKeyPrefix",
     "allSystemProvidersQueryKeyPrefix",
+    "allSystemThemesQueryKeyPrefix",
     "allTerminalsQueryKeyPrefix",
     "allThreadConversationOutlineQueryKeyPrefix",
     "allThreadDetailBootstrapQueryKeyPrefix",
@@ -230,9 +232,7 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
   ],
   "hooks/cache-owners/thread-tabs-cache-owner.ts": ["threadTabsQueryKey"],
   "hooks/cache-owners/thread-list-cache-owner.ts": [
-    "sidebarNavigationQueryKey",
     "threadQueryKey",
-    "threadSearchQueryKeyPrefix",
     "threadsQueryKey",
   ],
   "hooks/cache-owners/thread-runtime-cache-owner.ts": [

@@ -1,7 +1,9 @@
 import { useSyncExternalStore } from "react";
 import type {
   ComposerCustomization,
+  ExperimentalAppOverlayRegistration,
   PluginDiffRendererRegistration,
+  PluginEnvironmentProviderInputsRegistration,
   PluginPendingInteractionRegistration,
   PluginFileOpenerRegistration,
   PluginHomepageSectionRegistration,
@@ -20,16 +22,25 @@ import type {
   PluginThreadPanelActionRegistration,
   PluginTimelineRendererRegistration,
 } from "@get-bb/plugin-sdk";
+import {
+  adaptSidebarFooterAction,
+  getCollectedSidebarFooterItems,
+  type CollectedExperimentalSidebarFooterItem,
+  type CollectedManagedSidebarFooterItem,
+  type CollectedSidebarFooterItem,
+} from "@get-bb/plugin-sdk/internal/plugin-app-collector";
 
 export interface PluginRegistrationSet {
   homepageSections: readonly PluginHomepageSectionRegistration[];
   settingsSections: readonly PluginSettingsSectionRegistration[];
+  appOverlays?: readonly ExperimentalAppOverlayRegistration[];
   navPanels: readonly PluginNavPanelRegistration[];
   threadPanelActions: readonly PluginThreadPanelActionRegistration[];
   newThreadPanelActions?: readonly PluginNewThreadPanelActionRegistration[];
   composerCustomizations?: readonly ComposerCustomization[];
   pendingInteractions?: readonly PluginPendingInteractionRegistration[];
   sidebarFooterActions: readonly PluginSidebarFooterActionRegistration[];
+  experimentalSidebarFooterItems?: readonly CollectedExperimentalSidebarFooterItem[];
   experimentalSidebarNavigations?: readonly ExperimentalSidebarNavigationRegistration[];
   threadLists?: readonly PluginThreadListRegistration[];
   threadHeaderActions?: readonly PluginThreadHeaderActionRegistration[];
@@ -41,6 +52,7 @@ export interface PluginRegistrationSet {
   commandPaletteActions?: readonly PluginCommandPaletteActionRegistration[];
   providerIcons?: readonly PluginProviderIconRegistration[];
   timelineRenderers?: readonly PluginTimelineRendererRegistration[];
+  environmentProviderInputs?: readonly PluginEnvironmentProviderInputsRegistration[];
 }
 
 interface PluginSlotBase {
@@ -52,6 +64,8 @@ export interface PluginHomepageSectionSlot
   extends PluginHomepageSectionRegistration, PluginSlotBase {}
 export interface PluginSettingsSectionSlot
   extends PluginSettingsSectionRegistration, PluginSlotBase {}
+export interface ExperimentalAppOverlaySlot
+  extends ExperimentalAppOverlayRegistration, PluginSlotBase {}
 export interface PluginNavPanelSlot
   extends PluginNavPanelRegistration, PluginSlotBase {}
 export interface PluginThreadPanelActionSlot
@@ -62,8 +76,8 @@ export interface PluginComposerCustomizationSlot
   extends ComposerCustomization, PluginSlotBase {}
 export interface PluginPendingInteractionSlot
   extends PluginPendingInteractionRegistration, PluginSlotBase {}
-export interface PluginSidebarFooterActionSlot
-  extends PluginSidebarFooterActionRegistration, PluginSlotBase {}
+export type PluginSidebarFooterItemSlot = CollectedSidebarFooterItem &
+  PluginSlotBase;
 export interface ExperimentalSidebarNavigationSlot
   extends ExperimentalSidebarNavigationRegistration, PluginSlotBase {}
 export interface PluginThreadListSlot
@@ -86,16 +100,19 @@ interface PluginProviderIconSlot
   extends PluginProviderIconRegistration, PluginSlotBase {}
 export interface PluginTimelineRendererSlot
   extends PluginTimelineRendererRegistration, PluginSlotBase {}
+export interface PluginEnvironmentProviderInputsSlot
+  extends PluginEnvironmentProviderInputsRegistration, PluginSlotBase {}
 
 export interface PluginSlotSnapshot {
   homepageSections: readonly PluginHomepageSectionSlot[];
   settingsSections: readonly PluginSettingsSectionSlot[];
+  appOverlays: readonly ExperimentalAppOverlaySlot[];
   navPanels: readonly PluginNavPanelSlot[];
   threadPanelActions: readonly PluginThreadPanelActionSlot[];
   newThreadPanelActions: readonly PluginNewThreadPanelActionSlot[];
   composerCustomizations: readonly PluginComposerCustomizationSlot[];
   pendingInteractions: readonly PluginPendingInteractionSlot[];
-  sidebarFooterActions: readonly PluginSidebarFooterActionSlot[];
+  sidebarFooterItems: readonly PluginSidebarFooterItemSlot[];
   experimentalSidebarNavigations: readonly ExperimentalSidebarNavigationSlot[];
   threadLists: readonly PluginThreadListSlot[];
   threadHeaderActions: readonly PluginThreadHeaderActionSlot[];
@@ -107,17 +124,19 @@ export interface PluginSlotSnapshot {
   commandPaletteActions: readonly PluginCommandPaletteActionSlot[];
   providerIcons: readonly PluginProviderIconSlot[];
   timelineRenderers: readonly PluginTimelineRendererSlot[];
+  environmentProviderInputs: readonly PluginEnvironmentProviderInputsSlot[];
 }
 
 export const EMPTY_PLUGIN_SLOT_SNAPSHOT: PluginSlotSnapshot = {
   homepageSections: [],
   settingsSections: [],
+  appOverlays: [],
   navPanels: [],
   threadPanelActions: [],
   newThreadPanelActions: [],
   composerCustomizations: [],
   pendingInteractions: [],
-  sidebarFooterActions: [],
+  sidebarFooterItems: [],
   experimentalSidebarNavigations: [],
   threadLists: [],
   threadHeaderActions: [],
@@ -129,6 +148,7 @@ export const EMPTY_PLUGIN_SLOT_SNAPSHOT: PluginSlotSnapshot = {
   commandPaletteActions: [],
   providerIcons: [],
   timelineRenderers: [],
+  environmentProviderInputs: [],
 };
 
 const registrationsByPluginId = new Map<string, PluginRegistrationSet>();
@@ -141,12 +161,13 @@ type SlotKind = keyof PluginSlotSnapshot;
 const SLOT_KINDS: readonly SlotKind[] = [
   "homepageSections",
   "settingsSections",
+  "appOverlays",
   "navPanels",
   "threadPanelActions",
   "newThreadPanelActions",
   "composerCustomizations",
   "pendingInteractions",
-  "sidebarFooterActions",
+  "sidebarFooterItems",
   "experimentalSidebarNavigations",
   "threadLists",
   "threadHeaderActions",
@@ -158,6 +179,7 @@ const SLOT_KINDS: readonly SlotKind[] = [
   "commandPaletteActions",
   "providerIcons",
   "timelineRenderers",
+  "environmentProviderInputs",
 ];
 
 type FlattenedPluginSlots = {
@@ -165,6 +187,12 @@ type FlattenedPluginSlots = {
 };
 
 const flattenedByPluginId = new Map<string, FlattenedPluginSlots>();
+
+function adaptExperimentalSidebarFooterItem(
+  item: CollectedExperimentalSidebarFooterItem,
+): CollectedManagedSidebarFooterItem {
+  return { ...item, source: "experimental_sidebarFooter" };
+}
 
 function flattenRegistrations(
   pluginId: string,
@@ -179,15 +207,22 @@ function flattenRegistrations(
       pluginId,
       generation,
     }));
+  const sidebarFooterItems = getCollectedSidebarFooterItems(set) ?? [
+    ...set.sidebarFooterActions.map(adaptSidebarFooterAction),
+    ...(set.experimentalSidebarFooterItems ?? []).map(
+      adaptExperimentalSidebarFooterItem,
+    ),
+  ];
   return {
     homepageSections: stamp(set.homepageSections),
     settingsSections: stamp(set.settingsSections),
+    appOverlays: stamp(set.appOverlays),
     navPanels: stamp(set.navPanels),
     threadPanelActions: stamp(set.threadPanelActions),
     newThreadPanelActions: stamp(set.newThreadPanelActions),
     composerCustomizations: stamp(set.composerCustomizations),
     pendingInteractions: stamp(set.pendingInteractions),
-    sidebarFooterActions: stamp(set.sidebarFooterActions),
+    sidebarFooterItems: stamp<CollectedSidebarFooterItem>(sidebarFooterItems),
     experimentalSidebarNavigations: stamp(set.experimentalSidebarNavigations),
     threadLists: stamp(set.threadLists),
     threadHeaderActions: stamp(set.threadHeaderActions),
@@ -199,6 +234,7 @@ function flattenRegistrations(
     commandPaletteActions: stamp(set.commandPaletteActions),
     providerIcons: stamp(set.providerIcons),
     timelineRenderers: stamp(set.timelineRenderers),
+    environmentProviderInputs: stamp(set.environmentProviderInputs),
   };
 }
 

@@ -81,8 +81,11 @@ function recordTurnFailedAnnouncements(): string[] {
     emitThreadFailed: () => {},
     emitThreadArchived: () => {},
     emitThreadDeleted: () => {},
+    emitInteractionPending: () => {},
     emitMessageQueued: () => {},
     emitMessageDispatched: () => {},
+    emitMessageCancelled: () => {},
+    emitThreadUnarchived: () => {},
     emitTurnFailed: (threadId) => announced.push(threadId),
   });
   return announced;

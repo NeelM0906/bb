@@ -494,23 +494,28 @@ export function registerActionsCommands(
       "Retry this turn request id specifically; fails when it is not the thread's failed turn",
     )
     .option("--send-at <when>", SEND_AT_HELP)
-    .option("--reason <text>", "Why it is being retried, shown on the queued row")
+    .option(
+      "--reason <text>",
+      "Why it is being retried, shown on the queued row",
+    )
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (id: string | undefined, opts: ThreadRetryCommandOptions) => {
-        const threadId = requireThreadIdOrSelf(id, opts);
-        const sdk = createCliBbSdk(getUrl());
-        const response = await sdk.threads.retry({
-          threadId,
-          ...(opts.turn === undefined ? {} : { turnRequestId: opts.turn }),
-          ...(opts.sendAt === undefined
-            ? {}
-            : { sendAt: parseSendAt(opts.sendAt) }),
-          ...(opts.reason === undefined ? {} : { reason: opts.reason }),
-        });
-        if (outputJson(opts, { threadId, ...response })) return;
-        console.log(describeThreadRetryOutcome(threadId, response));
-      }),
+      action(
+        async (id: string | undefined, opts: ThreadRetryCommandOptions) => {
+          const threadId = requireThreadIdOrSelf(id, opts);
+          const sdk = createCliBbSdk(getUrl());
+          const response = await sdk.threads.retry({
+            threadId,
+            ...(opts.turn === undefined ? {} : { turnRequestId: opts.turn }),
+            ...(opts.sendAt === undefined
+              ? {}
+              : { sendAt: parseSendAt(opts.sendAt) }),
+            ...(opts.reason === undefined ? {} : { reason: opts.reason }),
+          });
+          if (outputJson(opts, { threadId, ...response })) return;
+          console.log(describeThreadRetryOutcome(threadId, response));
+        },
+      ),
     );
 
   parent
@@ -540,6 +545,21 @@ export function registerActionsCommands(
         await sdk.threads.compact({ threadId });
         if (outputJson(opts, { ok: true, threadId })) return;
         console.log(`Thread ${threadId} context compaction requested`);
+      }),
+    );
+
+  parent
+    .command("clear [id]")
+    .description("Clear model context for an idle or failed thread")
+    .option("--self", "Target the current thread (from BB_THREAD_ID)")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (id: string | undefined, opts: ThreadActionOptions) => {
+        const threadId = requireThreadIdOrSelf(id, opts);
+        const sdk = createCliBbSdk(getUrl());
+        await sdk.threads.clearContext({ threadId });
+        if (outputJson(opts, { ok: true, threadId })) return;
+        console.log(`Thread ${threadId} context cleared`);
       }),
     );
 
@@ -610,7 +630,7 @@ function describeThreadTellOutcome(
     // The server says WHY it is waiting, so the CLI does not have to guess
     // from the flags it happened to send. `bb thread queue list` shows the
     // same reason for the row afterwards.
-    return `Thread ${threadId} message queued (${describeQueueWait(response)}); it dispatches when that clears`;
+    return `Thread ${threadId} message queued (${describeQueueWait(response.queuedMessage)}); it dispatches when that clears`;
   }
   return response.mode === "steer"
     ? `Thread ${threadId} steered`

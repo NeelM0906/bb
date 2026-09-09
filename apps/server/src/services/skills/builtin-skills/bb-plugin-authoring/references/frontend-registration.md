@@ -46,6 +46,10 @@ export default definePluginApp((app) => {
     description: "Configure the remote service used by this plugin.",
     component: SettingsSection,
   });
+  app.slots.experimental_appOverlay({
+    id: "floating-status",
+    component: FloatingStatus,
+  });
   app.slots.navPanel({
     id: "board",
     title: "Board",
@@ -112,11 +116,12 @@ export default definePluginApp((app) => {
     id: "credentials",
     component: CredentialForm,
   });
-  app.slots.sidebarFooterAction({
+  app.experimental_sidebarFooter.register({
+    kind: "action",
     id: "remote",
-    title: "Remote access",
+    label: "Remote access",
     icon: "Smartphone",
-    run: ({ openSettings }) => openSettings(),
+    onActivate: ({ openPluginDetails }) => openPluginDetails(),
   });
   app.slots.experimental_sidebarNavigation({
     id: "compact",
@@ -223,7 +228,8 @@ const actions = experimental_useSidebarThreadActions();
 // threads: PluginSidebarThread[] — id, projectId, title, titleFallback,
 // parentThreadId, sectionId, originKind, originPluginId, providerId,
 // hasPendingInteraction, activity, isUnread/isPinned/isArchived,
-// environment { id, name, branchName, workspaceDisplayKind }, host { id, name },
+// environment { id, name, branchName, providerId, workspaceDisplayKind },
+// where workspaceDisplayKind is deprecated compatibility data; host { id, name },
 // createdAt, updatedAt, lastReadAt, latestAttentionAt, and
 // `indicator` (bb's resolved status kind) + `indicatorLabel` (its a11y string).
 // Draw your own glyph for `indicator`; the SDK ships no status component.

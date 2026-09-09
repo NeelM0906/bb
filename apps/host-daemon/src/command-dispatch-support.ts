@@ -1,7 +1,9 @@
+import type { DesktopBrowserBroker } from "./desktop-browser-broker.js";
 import type { AgentRuntimeBridgeLaunch } from "@bb/agent-runtime";
 import type { AvailableModel } from "@bb/domain";
 import type { EventSinkInput } from "./event-sink.js";
 import type {
+  EnvironmentHookProgressMessage,
   HostDaemonCommand,
   ProviderHealthResult,
   ProviderUsageResult,
@@ -16,10 +18,7 @@ import type {
   ProviderInstallationRunResult,
   ProviderInstallationStatus,
 } from "@bb/provider-bridge-protocol";
-import {
-  canonicalizeUnmanagedWorkspacePath,
-  getPersonalWorkspaceRoot,
-} from "@bb/host-workspace";
+import { canonicalizeUnmanagedWorkspacePath } from "@bb/host-workspace";
 import { ensurePluginProcessDataDir } from "@bb/process-utils";
 import type { InteractiveResolveCommandInput } from "./interactive-request-registry.js";
 import { RuntimeManager, type RuntimeEntry } from "./runtime-manager.js";
@@ -51,6 +50,10 @@ export const noopEventSink: EventSink = {
 };
 
 export interface CommandDispatchOptions {
+  emitEnvironmentHookProgress?: (
+    message: EnvironmentHookProgressMessage,
+  ) => void;
+  desktopBrowserBroker?: DesktopBrowserBroker;
   dataDir: string;
   logger: Pick<HostDaemonLogger, "debug" | "warn">;
   fetchProjectAttachment: FetchProjectAttachment;
@@ -245,10 +248,7 @@ export async function requireWorkspaceEnvironment(
   const existing = await runtimeManager.getOrAwait(args.environmentId);
   if (existing) {
     let requestedWorkspacePath = args.workspaceContext.workspacePath;
-    if (
-      existing.path !== requestedWorkspacePath &&
-      args.workspaceContext.workspaceProvisionType === "unmanaged"
-    ) {
+    if (existing.path !== requestedWorkspacePath) {
       try {
         requestedWorkspacePath = await canonicalizeUnmanagedWorkspacePath(
           requestedWorkspacePath,
@@ -276,10 +276,6 @@ export async function requireWorkspaceEnvironment(
     ...(args.targetThreadId !== undefined
       ? { targetThreadId: args.targetThreadId }
       : {}),
-    ...(args.dataDir
-      ? { personalWorkspaceRoot: getPersonalWorkspaceRoot(args.dataDir) }
-      : {}),
     workspacePath: args.workspaceContext.workspacePath,
-    workspaceProvisionType: args.workspaceContext.workspaceProvisionType,
   });
 }

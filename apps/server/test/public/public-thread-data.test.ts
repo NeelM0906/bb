@@ -45,9 +45,11 @@ import {
   reportQueuedCommandError,
   reportQueuedCommandSuccess,
   waitForQueuedCommand,
-  waitForQueuedCommandAfter,
 } from "../helpers/commands.js";
-import { registerHostRpcResponder } from "../helpers/host-rpc.js";
+import {
+  registerHostRpcResponder,
+  type HostRpcHandlerResult,
+} from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
 import { textInput } from "../helpers/prompt-input.js";
 import {
@@ -61,6 +63,7 @@ import {
   seedThreadFixture,
   seedThreadRuntimeState,
 } from "../helpers/seed.js";
+import { installFakeEnvironmentProvider } from "../helpers/environment-provider.js";
 import { withTestHarness } from "../helpers/test-app.js";
 
 const queuedMessageIdResponseSchema = z.object({
@@ -256,6 +259,46 @@ describe("public thread data routes", () => {
       expect(hiddenList).toContainEqual(
         expect.objectContaining({ id: thread.id, visibility: "hidden" }),
       );
+    });
+  });
+
+  it("lists only the threads on one environment", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-list-env",
+        projectId: project.id,
+      });
+      const other = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-list-env-other",
+        projectId: project.id,
+      });
+      const onEnvironment = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        title: "On the environment",
+      });
+      seedThread(harness.deps, {
+        environmentId: other.id,
+        projectId: project.id,
+        title: "Somewhere else",
+      });
+      seedThread(harness.deps, {
+        projectId: project.id,
+        title: "No environment yet",
+      });
+
+      const response = await harness.app.request(
+        `/api/v1/threads?environmentId=${environment.id}`,
+      );
+      expect(response.status).toBe(200);
+      const listed = z.array(threadSchema).parse(await readJson(response));
+      expect(listed.map((thread) => thread.id)).toEqual([onEnvironment.id]);
     });
   });
 
@@ -2680,12 +2723,14 @@ describe("public thread data routes", () => {
       );
 
       expect(response.status).toBe(200);
-      await expect(readJson(response)).resolves.toEqual({
+      await expect(readJson(response)).resolves.toMatchObject({
         ok: true,
         delivery: "queued",
-        queuedMessageId: expect.any(String),
-        waitingOn: { kind: "thread-busy" },
-        sendAt: null,
+        queuedMessage: {
+          id: expect.any(String),
+          waitingOn: { kind: "thread-busy" },
+          sendAt: null,
+        },
       });
       const queuedRows = listQueuedThreadMessages(harness.db, thread.id);
       expect(queuedRows).toMatchObject([
@@ -2747,12 +2792,14 @@ describe("public thread data routes", () => {
       );
 
       expect(response.status).toBe(200);
-      await expect(readJson(response)).resolves.toEqual({
+      await expect(readJson(response)).resolves.toMatchObject({
         ok: true,
         delivery: "queued",
-        queuedMessageId: expect.any(String),
-        waitingOn: { kind: "thread-busy" },
-        sendAt: null,
+        queuedMessage: {
+          id: expect.any(String),
+          waitingOn: { kind: "thread-busy" },
+          sendAt: null,
+        },
       });
       expect(listQueuedThreadMessages(harness.db, thread.id)).toMatchObject([
         {
@@ -3201,7 +3248,6 @@ describe("public thread data routes", () => {
         hostId: host.id,
         projectId: project.id,
         path: "/tmp/queued-message-create-idle-auto-send-environment",
-        workspaceProvisionType: "unmanaged",
       });
       const thread = seedThread(harness.deps, {
         projectId: project.id,
@@ -3504,12 +3550,32 @@ describe("public thread data routes", () => {
         projectId: project.id,
         path: "/tmp/queued-message-reprovision",
         status: "error",
-        managed: true,
-        workspaceProvisionType: "managed-worktree",
+        environmentProviderId: "personal-workspace",
+        environmentProviderPluginId: "bb-plugin-environment-personal-workspace",
+        isGitRepo: false,
       });
       const thread = seedThread(harness.deps, {
         projectId: project.id,
         environmentId: environment.id,
+      });
+      installFakeEnvironmentProvider({
+        id: "personal-workspace",
+        pluginId: "bb-plugin-environment-personal-workspace",
+        displayName: "Personal workspace",
+        requires: {
+          projectCheckout: false,
+          gitCheckout: false,
+          gitRemote: false,
+          projectless: false,
+        },
+        decide: () => ({
+          action: "ready",
+          environment: {
+            type: "host",
+            hostId: host.id,
+            path: "/tmp/queued-message-reprovision-rebuilt",
+          },
+        }),
       });
 
       const createResponse = await harness.app.request(
@@ -3552,13 +3618,12 @@ describe("public thread data routes", () => {
       expect(
         getQueuedThreadMessage(harness.db, createdQueuedMessage.id),
       ).toBeNull();
-      const provisionCommand = await waitForQueuedCommand(
+      const startCommand = await waitForQueuedCommand(
         harness,
         ({ command }) =>
-          command.type === "environment.provision" &&
-          command.environmentId === environment.id,
+          command.type === "thread.start" && command.threadId === thread.id,
       );
-      expect(provisionCommand.command.type).toBe("environment.provision");
+      expect(startCommand.command.type).toBe("thread.start");
       const requestedEvent = harness.db
         .select({ data: events.data })
         .from(events)
@@ -3606,8 +3671,6 @@ describe("public thread data routes", () => {
         projectId: project.id,
         path: "/tmp/queued-message-reprovision-rejected",
         status: "error",
-        managed: false,
-        workspaceProvisionType: "managed-worktree",
       });
       const thread = seedThread(harness.deps, {
         projectId: project.id,
@@ -3663,8 +3726,9 @@ describe("public thread data routes", () => {
         projectId: project.id,
         path: "/tmp/queued-message-immediate-reprovision",
         status: "error",
-        managed: true,
-        workspaceProvisionType: "managed-worktree",
+        environmentProviderId: "personal-workspace",
+        environmentProviderPluginId: "bb-plugin-environment-personal-workspace",
+        isGitRepo: false,
       });
       const thread = seedThread(harness.deps, {
         projectId: project.id,
@@ -3673,6 +3737,25 @@ describe("public thread data routes", () => {
       const queuedMessage = seedQueuedMessage(harness.deps, {
         threadId: thread.id,
         content: textInput("Queued message before immediate reprovision"),
+      });
+      installFakeEnvironmentProvider({
+        id: "personal-workspace",
+        pluginId: "bb-plugin-environment-personal-workspace",
+        displayName: "Personal workspace",
+        requires: {
+          projectCheckout: false,
+          gitCheckout: false,
+          gitRemote: false,
+          projectless: false,
+        },
+        decide: () => ({
+          action: "ready",
+          environment: {
+            type: "host",
+            hostId: host.id,
+            path: "/tmp/queued-message-immediate-reprovision-rebuilt",
+          },
+        }),
       });
       let stateAtProvisionStart: {
         activeContextStage: string | null;
@@ -3683,7 +3766,7 @@ describe("public thread data routes", () => {
       const responder = registerHostRpcResponder(harness, {
         hostId: host.id,
         sessionId: session.id,
-        handle: (request) => {
+        handle: (request): HostRpcHandlerResult => {
           if (request.command.type === "host.admission.reserve") {
             return {
               ok: true,
@@ -3698,7 +3781,10 @@ describe("public thread data routes", () => {
               },
             };
           }
-          if (request.command.type === "environment.provision") {
+          if (request.command.type === "environment.hook.run") {
+            return { ok: true, result: {} };
+          }
+          if (request.command.type === "host.inspect_git_source") {
             stateAtProvisionStart = {
               activeContextStage:
                 loadActiveThreadProvisionContext(harness.deps, thread.id)?.state
@@ -3719,14 +3805,17 @@ describe("public thread data routes", () => {
             return {
               ok: true,
               result: {
-                path:
-                  environment.path ??
-                  "/tmp/queued-message-immediate-reprovision",
-                branchName: `bb/${thread.id}`,
+                checkout: {
+                  kind: "branch",
+                  branchName: `bb/${thread.id}`,
+                  headSha: "abc123",
+                },
                 defaultBranch: "main",
-                isGitRepo: true,
-                isWorktree: true,
-                transcript: [],
+                defaultBranchRelation: "equal",
+                isWorktree: false,
+                hasUncommittedChanges: false,
+                operation: { kind: "none" },
+                originDefaultBranch: "origin/main",
               },
             };
           }
@@ -3765,11 +3854,13 @@ describe("public thread data routes", () => {
       );
 
       expect(sendResponse.status, await sendResponse.clone().text()).toBe(200);
-      expect(stateAtProvisionStart).toEqual({
-        activeContextStage: "environment-provisioning",
-        queuedMessageExists: false,
-        requestEventCount: 1,
-      });
+      await vi.waitFor(() =>
+        expect(stateAtProvisionStart).toEqual({
+          activeContextStage: "environment-provisioning",
+          queuedMessageExists: false,
+          requestEventCount: 1,
+        }),
+      );
       await vi.waitFor(() => {
         expect(
           responder.requests.some(
@@ -3793,8 +3884,9 @@ describe("public thread data routes", () => {
         projectId: project.id,
         path: "/tmp/grouped-queued-message-reprovision",
         status: "error",
-        managed: true,
-        workspaceProvisionType: "managed-worktree",
+        environmentProviderId: "personal-workspace",
+        environmentProviderPluginId: "bb-plugin-environment-personal-workspace",
+        isGitRepo: false,
       });
       const thread = seedThread(harness.deps, {
         projectId: project.id,
@@ -3807,6 +3899,25 @@ describe("public thread data routes", () => {
       const secondQueuedMessage = seedQueuedMessage(harness.deps, {
         threadId: thread.id,
         content: textInput("Second reprovision grouped message"),
+      });
+      installFakeEnvironmentProvider({
+        id: "personal-workspace",
+        pluginId: "bb-plugin-environment-personal-workspace",
+        displayName: "Personal workspace",
+        requires: {
+          projectCheckout: false,
+          gitCheckout: false,
+          gitRemote: false,
+          projectless: false,
+        },
+        decide: () => ({
+          action: "ready",
+          environment: {
+            type: "host",
+            hostId: host.id,
+            path: "/tmp/grouped-queued-message-reprovision-rebuilt",
+          },
+        }),
       });
       expect(
         setQueuedThreadMessageGroupBoundary({
@@ -3840,13 +3951,11 @@ describe("public thread data routes", () => {
         getQueuedThreadMessage(harness.db, secondQueuedMessage.id),
       ).toBeNull();
 
-      const provisionCommand = await waitForQueuedCommand(
+      const startCommand = await waitForQueuedCommand(
         harness,
         ({ command }) =>
-          command.type === "environment.provision" &&
-          command.environmentId === environment.id,
+          command.type === "thread.start" && command.threadId === thread.id,
       );
-      expect(provisionCommand.command.type).toBe("environment.provision");
 
       const requestedEvent = harness.db
         .select({ data: events.data })
@@ -3869,21 +3978,6 @@ describe("public thread data routes", () => {
         ],
       );
 
-      await reportQueuedCommandSuccess(harness, provisionCommand, {
-        path: "/tmp/grouped-queued-message-reprovision",
-        branchName: `bb/${thread.id}`,
-        defaultBranch: "main",
-        isGitRepo: true,
-        isWorktree: true,
-        transcript: [],
-      });
-      const startCommand = await waitForQueuedCommandAfter(
-        harness,
-        provisionCommand.row.cursor,
-        ({ command }) =>
-          command.type === "thread.start" && command.threadId === thread.id,
-      );
-      expect(startCommand.command.type).toBe("thread.start");
       if (startCommand.command.type !== "thread.start") {
         throw new Error("Expected thread.start command");
       }
@@ -4425,6 +4519,45 @@ describe("public thread data routes", () => {
       expect(fileResponse.headers.get("x-bb-size-bytes")).toBeNull();
       expect(new Uint8Array(await fileResponse.arrayBuffer())).toEqual(
         pngBytes,
+      );
+    });
+  });
+
+  it("privately revalidates worktree images", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session, environment, thread } = seedThreadFixture(harness);
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          expect(request.command).toMatchObject({
+            type: "host.read_file",
+            ifNoneMatch: {
+              kind: "sha256",
+              values: ["0".repeat(64)],
+            },
+          });
+          return {
+            ok: true,
+            result: {
+              path: `${environment.path}/public/chart.png`,
+              contentEncoding: "base64",
+              mimeType: "image/png",
+              sizeBytes: 4,
+              sha256: "0".repeat(64),
+              notModified: true,
+            },
+          };
+        },
+      });
+
+      const fileResponse = await harness.app.request(
+        `/api/v1/threads/${thread.id}/worktree/files/public/chart.png`,
+        { headers: { "if-none-match": `"${"0".repeat(64)}"` } },
+      );
+      expect(fileResponse.status).toBe(304);
+      expect(fileResponse.headers.get("cache-control")).toBe(
+        "private, no-cache",
       );
     });
   });
@@ -4987,6 +5120,27 @@ describe("public thread data routes", () => {
         { seq: 3, type: "system/error" },
         { seq: 2, type: "item/completed" },
       ]);
+    });
+  });
+
+  it("rejects thread event list pages above the public limit", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness);
+      for (let sequence = 1; sequence <= 101; sequence += 1) {
+        seedEvent(harness.deps, {
+          data: { message: `error ${sequence}` },
+          environmentId: environment.id,
+          scope: threadScope(),
+          sequence,
+          threadId: thread.id,
+          type: "system/error",
+        });
+      }
+
+      const response = await harness.app.request(
+        `/api/v1/threads/${thread.id}/events?limit=1000`,
+      );
+      expect(response.status).toBe(400);
     });
   });
 

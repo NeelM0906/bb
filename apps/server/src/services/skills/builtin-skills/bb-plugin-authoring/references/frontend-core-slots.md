@@ -72,6 +72,18 @@ Slot props contracts (versioned, additive-only):
   for data. Enabled plugins appear in the
   settings sidebar when they declare settings descriptors OR register
   settings sections.
+- `experimental_appOverlay` → `{}` (deliberately no props). An additive,
+  app-wide React owner for floating plugin UI. Registration:
+  `{ id, component }`. BB mounts every registration once per app window
+  through `PluginSlotMount`, outside route-owned layout regions. The component
+  can therefore call app-level SDK hooks, including the sidebar thread data and
+  action hooks, and keep their React contexts through a portal. Hooks whose
+  contract requires a particular surface, including `useComposer` and
+  `useComposerView`, remain limited to that surface. BB supplies no chrome,
+  positioning, visibility, focus, or responsive behavior; render fixed UI
+  directly or use the vendored responsive overlay primitives. A crash hides
+  only that overlay. Use a content script instead for DOM enhancement that does
+  not need React context. Experimental: see `docs/api_to_audit.md`.
 - `navPanel` → `{ subPath: string }` — owns the whole route at
   `/plugins/<pluginId>/<path>/*` and gets its own sidebar entry. `subPath`
   is the route remainder after the panel root (`""` at the root), so deep
@@ -203,15 +215,21 @@ target? })`. Inside the fixed-tab component,
   `submit(value)` returns the JSON value to the waiting backend invocation,
   while `cancel()` settles it without a value. Keep sensitive field values in
   component state only.
-- `sidebarFooterAction` → host-rendered icon button in the app sidebar footer
-  (next to Settings / bug report). No plugin component — the host paints
-  the chrome so icons stay consistent. Registration:
-  `{ id, title, icon, run }`. Activating it calls
-  `run({ openSettings })` — use `openSettings()` to open this plugin's
-  detail page in Tools, or do anything else (rpc, toast). Errors from `run`
-  (sync or async) are contained and logged,
-  never breaking the sidebar. `title` is the tooltip + accessible label;
-  `icon` is a BB icon-name hint (unknown names fall back to a generic bolt).
+- `experimental_sidebarFooter.register` → managed host-rendered icon items in
+  the app sidebar footer. Both variants take `{ id, label, icon }`. An action
+  adds `{ kind: "action", onActivate }`; its callback receives
+  `openPluginDetails()`. A disclosure adds
+  `{ kind: "disclosure", component }`; bb toggles that component above the
+  row and passes it only `{ dismiss }`. A disclosure registration returns a
+  controller that requests `open`, `close`, or `toggle`; an action registration
+  returns nothing. BB keeps only one disclosure open across all plugins.
+  The component owns everything inside, including tabs and navigation.
+  Experimental: see `docs/api_to_audit.md`.
+- `sidebarFooterAction` → compatibility API for a host-rendered footer action.
+  Registration remains `{ id, title, icon, run }`, and `run` still receives
+  `{ openSettings }`. New plugins should use
+  `app.experimental_sidebarFooter.register({ kind: "action", ... })` so actions
+  and disclosures share one surface.
 - `experimental_sidebarNavigation` → replaces the bounded navigation controls
   above the thread list. Registration:
   `{ id, title, description?, component }`. The component receives semantic

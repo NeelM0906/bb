@@ -2,10 +2,14 @@ import type { AiServiceRegistry } from "../ai/ai-service-registry.js";
 import type { DbConnection } from "@bb/db";
 import type {
   DynamicTool,
+  PendingInteraction,
   Thread,
   ThreadQueuedMessage,
 } from "@bb/domain";
-import type { HostDaemonConnectTunnelIdentity } from "@bb/host-daemon-contract";
+import type {
+  HostDaemonConnectTunnelIdentity,
+  HostDaemonContributedEnvEntry,
+} from "@bb/host-daemon-contract";
 import {
   pluginUpdateCheckEntrySchema,
   type InstalledPlugin,
@@ -105,6 +109,7 @@ export interface PluginServiceDeps {
     | "interruptPluginInteractions"
     | "setPluginDirectory"
   >;
+  getAppUrl?: () => string | null;
   dataDir: string;
   appVersion: string;
   bundledPlugins?: readonly BundledPluginRegistration[];
@@ -114,6 +119,7 @@ export interface PluginServiceDeps {
   serviceRestartBaseMs?: number;
   mentionSearchTimeoutMs?: number;
   mentionResolveTimeoutMs?: number;
+  providerEnvResolveTimeoutMs?: number;
   stabilizationWindowMs?: number;
   artifactRetentionMs?: number;
   now?: () => number;
@@ -165,6 +171,15 @@ export interface PluginResolvedAgentConfiguration {
   dynamicInstructions: Array<{ pluginId: string; text: string }>;
 }
 
+export interface PluginResolvedProviderEnv {
+  entries: HostDaemonContributedEnvEntry[];
+}
+
+export interface PluginResolvedProviderEnvHealth {
+  label: string;
+  statusMessage: string;
+}
+
 export interface PluginMentionProviderContribution {
   pluginId: string;
   id: string;
@@ -196,7 +211,9 @@ export interface PluginThreadEventEmitter {
   emitThreadIdle(thread: Thread): void;
   emitThreadFailed(thread: Thread): void;
   emitThreadArchived(thread: Thread): void;
+  emitThreadUnarchived(thread: Thread): void;
   emitThreadDeleted(thread: Thread): void;
+  emitInteractionPending(thread: Thread, interaction: PendingInteraction): void;
   /**
    * Queue lifecycle. The row is already in its new state when these fire; the
    * DTO is built once and shared by every listener, exactly like the thread
@@ -204,6 +221,7 @@ export interface PluginThreadEventEmitter {
    */
   emitMessageQueued(entry: ThreadQueuedMessage): void;
   emitMessageDispatched(entry: ThreadQueuedMessage): void;
+  emitMessageCancelled(entry: ThreadQueuedMessage): void;
   /**
    * A turn on this thread failed and the thread has already landed in `error`.
    * Takes the id alone: the payload is read from the failed turn's own records,

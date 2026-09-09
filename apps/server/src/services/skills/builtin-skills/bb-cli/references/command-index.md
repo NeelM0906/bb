@@ -140,6 +140,7 @@ This index lists every command path that the core CLI registers. Read the task-s
 - `bb thread retry`
 - `bb thread stop`
 - `bb thread compact`
+- `bb thread clear`
 - `bb thread cancel-plan`
 - `bb thread clear-goal`
 - `bb thread interactions`
@@ -154,6 +155,9 @@ This index lists every command path that the core CLI registers. Read the task-s
 ## environment
 
 - `bb environment`
+- `bb environment providers`
+- `bb environment list`
+- `bb environment delete`
 - `bb environment show`
 - `bb environment status`
 - `bb environment branches`
@@ -164,7 +168,6 @@ This index lists every command path that the core CLI registers. Read the task-s
 - `bb environment diff-patch`
 - `bb environment update`
 - `bb environment commit`
-- `bb environment squash-merge`
 - `bb environment archive-threads`
 - `bb environment pull-request`
 - `bb environment pull-request show`
@@ -249,3 +252,17 @@ This index lists every command path that the core CLI registers. Read the task-s
 
 - `bb voice`
 - `bb voice transcribe`
+
+## browser
+
+- `bb browser`
+- `bb browser instances`
+- `bb browser tabs`
+- `bb browser create`
+- `bb browser acquire`
+- `bb browser connection`
+- `bb browser release`
+- `bb browser reveal`
+- `bb browser close`
+- `bb browser capture`
+- `bb browser watch`

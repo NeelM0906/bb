@@ -458,7 +458,7 @@ describe("createHostDaemonApp", () => {
     const closeMachineAuthProxy = vi.fn(async () => undefined);
     const { app } = await createAppFixture({}, { closeMachineAuthProxy });
 
-    await app.daemon.shutdown("test");
+    await app.daemon.shutdown("test", 0);
 
     expect(closeMachineAuthProxy).toHaveBeenCalledTimes(1);
   });
@@ -561,7 +561,7 @@ describe("createHostDaemonApp", () => {
       expect(resolveRuntimeShellEnv).toHaveBeenCalledTimes(1);
       expect(listModels).toHaveBeenCalledTimes(2);
     } finally {
-      await app.daemon.shutdown("test");
+      await app.daemon.shutdown("test", 0);
     }
   });
 
@@ -637,7 +637,7 @@ describe("createHostDaemonApp", () => {
         }),
       );
     } finally {
-      await app.daemon.shutdown("test");
+      await app.daemon.shutdown("test", 0);
     }
   });
 
@@ -795,7 +795,7 @@ describe("createHostDaemonApp", () => {
         "Server reported inactive daemon session; reconnecting",
       );
     } finally {
-      await app.daemon.shutdown("test");
+      await app.daemon.shutdown("test", 0);
     }
   });
 
@@ -854,7 +854,7 @@ describe("createHostDaemonApp", () => {
         loadedEnvironments: [{ environmentId: "env-app-retired" }],
       });
     } finally {
-      await app.daemon.shutdown("test");
+      await app.daemon.shutdown("test", 0);
     }
   });
 
@@ -900,7 +900,7 @@ describe("createHostDaemonApp", () => {
         "Unexpected provider process exited with stderr",
       );
     } finally {
-      await app.daemon.shutdown("test");
+      await app.daemon.shutdown("test", 0);
     }
   });
 
@@ -968,7 +968,7 @@ describe("createHostDaemonApp", () => {
         ],
       });
     } finally {
-      await app.daemon.shutdown("test");
+      await app.daemon.shutdown("test", 0);
     }
   });
 
@@ -1043,7 +1043,7 @@ describe("createHostDaemonApp", () => {
         reason: 'Provider "codex" exited while awaiting user interaction',
       });
     } finally {
-      await app.daemon.shutdown("test");
+      await app.daemon.shutdown("test", 0);
     }
   });
 
@@ -1078,7 +1078,7 @@ describe("createHostDaemonApp", () => {
         "Failed to forward dynamic tool call to server",
       );
     } finally {
-      await app.daemon.shutdown("test");
+      await app.daemon.shutdown("test", 0);
     }
   });
 
@@ -1118,7 +1118,7 @@ describe("createHostDaemonApp", () => {
         "Failed to forward interactive provider request to server",
       );
     } finally {
-      await app.daemon.shutdown("test");
+      await app.daemon.shutdown("test", 0);
     }
   });
 
@@ -1166,7 +1166,7 @@ describe("createHostDaemonApp", () => {
         "Failed to forward interactive provider request to server",
       );
     } finally {
-      await app.daemon.shutdown("test");
+      await app.daemon.shutdown("test", 0);
     }
   });
 });

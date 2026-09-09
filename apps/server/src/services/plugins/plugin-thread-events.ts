@@ -1,5 +1,5 @@
 import type { ApplyThreadLifecycleEventOutcome } from "@bb/db";
-import type { Thread } from "@bb/domain";
+import type { PendingInteraction, Thread } from "@bb/domain";
 import type { ThreadQueuedMessage } from "@bb/domain";
 import type { PluginThreadEventEmitter } from "./plugin-service.js";
 
@@ -23,8 +23,19 @@ export function emitPluginThreadArchived(thread: Thread): void {
   emitter?.emitThreadArchived(thread);
 }
 
+export function emitPluginThreadUnarchived(thread: Thread): void {
+  emitter?.emitThreadUnarchived(thread);
+}
+
 export function emitPluginThreadDeleted(thread: Thread): void {
   emitter?.emitThreadDeleted(thread);
+}
+
+export function emitPluginInteractionPending(
+  thread: Thread,
+  interaction: PendingInteraction,
+): void {
+  emitter?.emitInteractionPending(thread, interaction);
 }
 
 /** Called after a dispatch attempt is queued as a row (recordQueuedMessageWait). */
@@ -35,6 +46,10 @@ export function emitPluginMessageQueued(entry: ThreadQueuedMessage): void {
 /** Called after a queued row's waits cleared and it dispatched. */
 export function emitPluginMessageDispatched(entry: ThreadQueuedMessage): void {
   emitter?.emitMessageDispatched(entry);
+}
+
+export function emitPluginMessageCancelled(entry: ThreadQueuedMessage): void {
+  emitter?.emitMessageCancelled(entry);
 }
 
 /**

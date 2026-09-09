@@ -14,16 +14,10 @@
   `--turn` names a different turn (409 `no_failed_turn`), and when that turn
   already has a retry queued (`retry_already_queued`). Add `--send-at <when>` to
   queue the retry on the clock (same `<when>` grammar as `bb thread tell
-  --send-at`); without it the retry is attempted now and may still queue behind
+--send-at`); without it the retry is attempted now and may still queue behind
   a busy thread or a plugin's dispatch hook. `--reason <text>` labels the queued
   row. The SDK equivalent is `sdk.threads.retry({ threadId, turnRequestId?,
-  sendAt?, reason? })`.
-- The Provider retry plugin is enabled on fresh installations. When a turn fails
-  on a structured Codex or Claude Code subscription-window limit that reports a
-  reset, it queues that turn to be re-sent after the window opens, re-sending
-  the original message verbatim and marked agent-only. A pending retry is an
-  ordinary queued row on the thread, so it survives a restart and appears in
-  `bb thread queue list <thread-id>`.
+sendAt?, reason? })`.
 - For interrupted or stopped threads, inspect first. If the user stopped the
   thread, treat that as intentional unless they ask you to continue.
 - Use `bb thread stop <id>` when a thread is stuck or no longer needed.
@@ -35,7 +29,10 @@
   directory option pointed at an existing checkout; that heals the stored cwd.
   This session state belongs to the provider harness, outside bb's terminal
   process boundary.
-- Use `bb thread compact <id>` to send the built-in `/compact` command to an idle or errored thread. Completion or failure appears in the timeline. Codex, Claude Code, Pi, and OpenCode ACP support it; Cursor ACP does not expose compatible compaction through ACP.
+- Use `bb thread compact <id>` to send the built-in `/compact` command to an idle or errored thread. Completion or failure appears in the timeline. Provider support varies; consult its skill and reported capabilities.
+- Use `bb thread clear <id>` on an idle or failed thread to reset its active
+  timeline and model context in place while keeping the same BB thread,
+  workspace, durable event history, and sticky execution settings.
 - Use `bb thread cancel-plan <id>` to exit an active Plan turn without
   optimistically clearing its banner. Use `bb thread clear-goal <id>` to clear
-  a Codex thread's durable active Goal. Both wait for provider confirmation.
+  a thread's durable active Goal when supported by its provider. Both wait for provider confirmation.

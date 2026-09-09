@@ -281,7 +281,6 @@ export async function buildThreadStartCommand(
     threadId: args.thread.id,
     workspaceContext: workspaceContextFromPath({
       path: runtimeContext.workspacePath,
-      workspaceProvisionType: runtimeContext.workspaceProvisionType,
     }),
     projectId: args.projectId,
     providerId: args.providerId,
@@ -300,6 +299,7 @@ export async function buildThreadStartCommand(
     }),
     instructions: runtimeContext.instructions,
     dynamicTools: runtimeContext.dynamicTools,
+    contributedEnv: runtimeContext.contributedEnv,
     injectedSkillSources: runtimeContext.injectedSkillSources,
     instructionMode: runtimeContext.instructionMode,
     threadStoragePath: runtimeContext.threadStoragePath,
@@ -333,7 +333,6 @@ function buildPreparedTurnSubmitCommandPayload(
     resumeContext: {
       workspaceContext: workspaceContextFromPath({
         path: args.runtimeContext.workspacePath,
-        workspaceProvisionType: args.runtimeContext.workspaceProvisionType,
       }),
       projectId: args.runtimeContext.projectId,
       providerId: args.runtimeContext.providerId,
@@ -341,6 +340,7 @@ function buildPreparedTurnSubmitCommandPayload(
       providerThreadId: args.providerThreadId,
       instructions: args.runtimeContext.instructions,
       dynamicTools: args.runtimeContext.dynamicTools,
+      contributedEnv: args.runtimeContext.contributedEnv,
       injectedSkillSources: args.runtimeContext.injectedSkillSources,
       instructionMode: args.runtimeContext.instructionMode,
     },
@@ -518,7 +518,6 @@ export function dispatchArchivedThreadProviderArchiveCommand(
   const workspaceContext = workspaceContextFromPath({
     path:
       getEnvironmentCanonicalPath(deps.db, environment.id) ?? environment.path,
-    workspaceProvisionType: environment.workspaceProvisionType,
   });
 
   const bridgeLaunch = resolveBridgeLaunchForProviderId(

@@ -216,6 +216,12 @@ function pluginAppSurfaceItems(
     ),
     ...namedSlotItems(
       pluginId,
+      slots.appOverlays,
+      "app-overlay",
+      "Renders app-wide floating interface content.",
+    ),
+    ...namedSlotItems(
+      pluginId,
       slots.threadLists,
       "thread-list",
       "Can replace the sidebar thread list; configured in Appearance.",
@@ -258,12 +264,18 @@ function pluginAppSurfaceItems(
       "input",
       "Renders a custom interaction inside a thread.",
     ),
-    ...namedSlotItems(
-      pluginId,
-      slots.sidebarFooterActions,
-      "sidebar",
-      "Adds an action to the app sidebar.",
-    ),
+    ...slots.sidebarFooterItems
+      .filter((slot) => slot.pluginId === pluginId)
+      .map((slot) =>
+        namedSurface(
+          "sidebar-footer",
+          slot.id,
+          slot.label,
+          slot.kind === "action"
+            ? "Adds an action to the app sidebar footer."
+            : "Adds content revealed from the app sidebar footer.",
+        ),
+      ),
     ...namedSlotItems(
       pluginId,
       slots.messageActions,
@@ -488,6 +500,12 @@ function PluginRuntimeStatusAlert({
   onReload: () => void;
   reloadPending: boolean;
 }) {
+  const { settingsSections } = usePluginSlots();
+  const hasSettingsPage =
+    plugin.hasSettings ||
+    settingsSections.some((section) => section.pluginId === plugin.id);
+  const canOpenSettings =
+    plugin.status === "needs-configuration" && hasSettingsPage;
   const canReload =
     plugin.status === "error" ||
     plugin.status === "degraded" ||
@@ -512,23 +530,38 @@ function PluginRuntimeStatusAlert({
       detail={detail}
       separator={plugin.status !== "degraded"}
       action={
-        canReload ? (
-          <Button
-            type="button"
-            size="sm"
-            disabled={reloadPending}
-            className="h-7 px-2.5 text-xs"
-            onClick={onReload}
-          >
-            {reloadPending ? (
-              <Icon
-                name="Loading"
-                className="size-3.5 animate-spin"
-                aria-hidden
-              />
+        canOpenSettings || canReload ? (
+          <span className="flex items-center gap-2">
+            {canOpenSettings ? (
+              <Button asChild size="sm" className="h-7 gap-0.5 px-2.5 text-xs">
+                <Link
+                  to={getPluginConfigurationRoutePath({ pluginId: plugin.id })}
+                >
+                  Open settings
+                  <Icon name="ChevronRight" className="size-3.5" aria-hidden />
+                </Link>
+              </Button>
             ) : null}
-            {reloadPending ? "Reloading\u2026" : "Reload"}
-          </Button>
+            {canReload ? (
+              <Button
+                type="button"
+                size="sm"
+                variant={canOpenSettings ? "outline" : "default"}
+                disabled={reloadPending}
+                className="h-7 px-2.5 text-xs"
+                onClick={onReload}
+              >
+                {reloadPending ? (
+                  <Icon
+                    name="Loading"
+                    className="size-3.5 animate-spin"
+                    aria-hidden
+                  />
+                ) : null}
+                {reloadPending ? "Reloading\u2026" : "Reload"}
+              </Button>
+            ) : null}
+          </span>
         ) : undefined
       }
     />
@@ -544,6 +577,7 @@ export function PluginHealthBanner({
 }) {
   const queryClient = useQueryClient();
   const reload = useMutation({
+    meta: { showErrorToast: false },
     mutationFn: () => reloadPlugin(fetch, plugin.id),
     onSuccess: () => invalidatePluginList({ queryClient }),
     onError: (error) => {
