@@ -9,8 +9,12 @@ import {
   FIRST_PARTY_GOAL_EXTENSION_KIND,
   GOAL_EXTENSION_KINDS,
   threadScope,
+  type DynamicTool,
+  type Thread,
   type ThreadTimelineGoal,
+  type ToolCallResponse,
 } from "@bb/domain";
+import { z } from "zod";
 import { extractThreadTimelineGoal } from "@bb/thread-view";
 import type { AppDeps } from "../../types.js";
 import { parseStoredEvent } from "./thread-data.js";
@@ -116,4 +120,83 @@ export function clearPersistedThreadGoalIfPresent(
     payload: null,
     threadId: args.threadId,
   });
+}
+
+export const COMPLETE_GOAL_TOOL_NAME = "goal.complete";
+
+export const COMPLETE_GOAL_INSTRUCTIONS =
+  "A first-party Goal is active on this thread. Keep working toward that objective across turns. When the objective is fully complete, call `goal.complete`. Do not call it for partial progress.";
+
+const completeGoalInputSchema = z
+  .object({
+    summary: z.string().trim().min(1).optional(),
+  })
+  .strict();
+
+export const COMPLETE_GOAL_TOOL: DynamicTool = {
+  name: COMPLETE_GOAL_TOOL_NAME,
+  description:
+    "Mark the active first-party Goal complete. Call this only when the objective is fully done.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      summary: {
+        type: "string",
+        description: "Optional short summary of what completed the Goal.",
+      },
+    },
+    additionalProperties: false,
+  },
+  presentation: {
+    label: {
+      pending: "Completing the Goal",
+      completed: "Completed the Goal",
+    },
+    icon: { glyph: "Target" },
+  },
+};
+
+function toolCallTextResponse(
+  success: boolean,
+  text: string,
+): ToolCallResponse {
+  return {
+    success,
+    contentItems: [{ type: "inputText", text }],
+  };
+}
+
+export function handleCompleteGoalToolCall(
+  deps: Pick<AppDeps, "db" | "hub">,
+  args: { input: unknown; thread: Thread },
+): ToolCallResponse {
+  const parsed = completeGoalInputSchema.safeParse(args.input ?? {});
+  if (!parsed.success) {
+    return toolCallTextResponse(false, "goal.complete arguments are invalid.");
+  }
+  const goal = loadThreadTimelineGoal(deps.db, args.thread.id);
+  if (goal === null || goal.status !== "active") {
+    return toolCallTextResponse(
+      false,
+      "No active first-party Goal to complete.",
+    );
+  }
+  appendFirstPartyGoalSnapshot(deps, {
+    environmentId: args.thread.environmentId,
+    payload: {
+      objective: goal.objective,
+      status: "complete",
+      tokenBudget: goal.tokenBudget,
+      tokensUsed: goal.tokensUsed,
+      timeUsedSeconds: goal.timeUsedSeconds,
+    },
+    threadId: args.thread.id,
+  });
+  const summary = parsed.data.summary;
+  return toolCallTextResponse(
+    true,
+    summary === undefined
+      ? "Goal marked complete."
+      : `Goal marked complete: ${summary}`,
+  );
 }

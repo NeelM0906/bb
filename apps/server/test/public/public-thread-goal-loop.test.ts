@@ -1,19 +1,22 @@
-import { getLatestThreadSequence, listEvents } from "@bb/db";
+import { getLatestThreadSequence, getThread, listEvents } from "@bb/db";
 import {
   FIRST_PARTY_GOAL_EXTENSION_KIND,
   createBuiltinGoalCommandTextInput,
   threadScope,
 } from "@bb/domain";
 import { describe, expect, it, vi } from "vitest";
+import { internalAuthHeaders } from "../helpers/commands.js";
 import {
   registerHostRpcResponder,
   type HostRpcHandlerResult,
 } from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
+import { resolveThreadRuntimeCommandConfig } from "../../src/services/threads/thread-runtime-config.js";
 import {
   seedEnvironment,
   seedEvent,
   seedHostSession,
+  seedPrimaryHost,
   seedProjectWithSource,
   seedThread,
   seedThreadRuntimeState,
@@ -389,6 +392,160 @@ describe("first-party Goal send intercept", () => {
         kind: FIRST_PARTY_GOAL_EXTENSION_KIND,
         payload: null,
       });
+    });
+  });
+});
+
+function seedActiveFirstPartyGoal(
+  harness: TestAppHarness,
+  args: {
+    environmentId: string;
+    objective?: string;
+    providerThreadId: string;
+    threadId: string;
+  },
+): void {
+  seedEvent(harness.deps, {
+    threadId: args.threadId,
+    environmentId: args.environmentId,
+    providerThreadId: args.providerThreadId,
+    sequence: getLatestThreadSequence(harness.db, { threadId: args.threadId }) + 1,
+    type: "thread/extensionState/updated",
+    scope: threadScope(),
+    data: {
+      providerThreadId: args.providerThreadId,
+      kind: FIRST_PARTY_GOAL_EXTENSION_KIND,
+      payload: {
+        objective: args.objective ?? "ship the hybrid loop",
+        status: "active",
+        tokenBudget: null,
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+      },
+    },
+  });
+}
+
+describe("first-party goal.complete tool", () => {
+  it("injects goal.complete only while a first-party Goal is active", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, host, thread } = seedGoalThread(harness, {
+        providerId: "claude-code",
+        providerThreadId: "provider-thread-1",
+      });
+      seedPrimaryHost(harness.deps, host.id);
+      const loaded = getThread(harness.db, thread.id);
+      if (!loaded) throw new Error("missing thread");
+
+      const withoutGoal = await resolveThreadRuntimeCommandConfig(
+        harness.deps,
+        {
+          thread: loaded,
+          model: "test-model",
+          environment: {
+            hostId: environment.hostId,
+            id: environment.id,
+            path: environment.path,
+            status: environment.status,
+          },
+        },
+      );
+      expect(withoutGoal.dynamicTools.map((tool) => tool.name)).toEqual([
+        "update_environment_directory",
+      ]);
+
+      seedActiveFirstPartyGoal(harness, {
+        environmentId: environment.id,
+        providerThreadId: "provider-thread-1",
+        threadId: thread.id,
+      });
+      const withGoal = await resolveThreadRuntimeCommandConfig(harness.deps, {
+        thread: loaded,
+        model: "test-model",
+        environment: {
+          hostId: environment.hostId,
+          id: environment.id,
+          path: environment.path,
+          status: environment.status,
+        },
+      });
+      expect(withGoal.dynamicTools.map((tool) => tool.name)).toEqual([
+        "update_environment_directory",
+        "goal.complete",
+      ]);
+      expect(withGoal.instructions).toContain("goal.complete");
+    });
+  });
+
+  it("marks the first-party Goal complete when the tool is called", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, session, thread } = seedGoalThread(harness, {
+        providerId: "claude-code",
+        providerThreadId: "provider-thread-1",
+      });
+      seedActiveFirstPartyGoal(harness, {
+        environmentId: environment.id,
+        providerThreadId: "provider-thread-1",
+        threadId: thread.id,
+      });
+
+      const response = await harness.app.request("/internal/session/tool-call", {
+        method: "POST",
+        headers: internalAuthHeaders(harness),
+        body: JSON.stringify({
+          sessionId: session.id,
+          threadId: thread.id,
+          providerThreadId: "provider-thread-1",
+          turnId: "turn-goal-complete",
+          callId: "call-goal-complete",
+          tool: "goal.complete",
+          arguments: { summary: "Shipped the hybrid loop" },
+        }),
+      });
+
+      expect(
+        response.status,
+        JSON.stringify(await readJson(response.clone())),
+      ).toBe(200);
+      expect(await readJson(response)).toMatchObject({
+        success: true,
+      });
+      expect(firstPartyGoalEvents(harness, thread.id).at(-1)).toMatchObject({
+        kind: FIRST_PARTY_GOAL_EXTENSION_KIND,
+        payload: expect.objectContaining({
+          objective: "ship the hybrid loop",
+          status: "complete",
+        }),
+      });
+    });
+  });
+
+  it("refuses goal.complete when no first-party Goal is active", async () => {
+    await withTestHarness(async (harness) => {
+      const { session, thread } = seedGoalThread(harness, {
+        providerId: "claude-code",
+        providerThreadId: "provider-thread-1",
+      });
+
+      const response = await harness.app.request("/internal/session/tool-call", {
+        method: "POST",
+        headers: internalAuthHeaders(harness),
+        body: JSON.stringify({
+          sessionId: session.id,
+          threadId: thread.id,
+          providerThreadId: "provider-thread-1",
+          turnId: "turn-goal-complete",
+          callId: "call-goal-complete",
+          tool: "goal.complete",
+          arguments: {},
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(await readJson(response)).toMatchObject({
+        success: false,
+      });
+      expect(firstPartyGoalEvents(harness, thread.id)).toEqual([]);
     });
   });
 });
