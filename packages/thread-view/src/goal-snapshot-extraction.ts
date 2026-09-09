@@ -1,5 +1,5 @@
 import {
-  LEGACY_CODEX_GOAL_EXTENSION_KIND,
+  isGoalExtensionKind,
   threadTimelineGoalStatusSchema,
 } from "@bb/domain";
 import type { ThreadEvent, ThreadTimelineGoal } from "@bb/domain";
@@ -35,7 +35,7 @@ function extractGoalSnapshotCandidate(
 ): GoalSnapshotCandidate | null {
   if (
     event.type !== "thread/extensionState/updated" ||
-    event.kind !== LEGACY_CODEX_GOAL_EXTENSION_KIND
+    !isGoalExtensionKind(event.kind)
   ) {
     return null;
   }

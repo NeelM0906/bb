@@ -41,6 +41,12 @@ import { discoverPluginSkillIds } from "../skills/injected-skills.js";
 import { resolveWorkspaceProjectSkills } from "../skills/workspace-skills.js";
 import { resolveSharedSkills } from "../skills/shared-skills.js";
 import { UPDATE_ENVIRONMENT_DIRECTORY_TOOL } from "./thread-environment-directory.js";
+import { providerIdHasNativeGoal } from "./provider-command-typeahead.js";
+import {
+  COMPLETE_GOAL_INSTRUCTIONS,
+  COMPLETE_GOAL_TOOL,
+  loadThreadTimelineGoal,
+} from "./thread-first-party-goal.js";
 import {
   DATA_DIR_AGENT_INSTRUCTIONS_RELATIVE_PATH,
   WORKSPACE_AGENT_INSTRUCTIONS_RELATIVE_PATH,
@@ -113,21 +119,38 @@ interface DynamicToolContribution {
   pluginId: string | null;
 }
 
-function resolveDynamicTools(
-  pluginTools: ReturnType<typeof listPluginAgentTools>,
-): DynamicToolContribution[] {
-  return [
+function resolveDynamicTools(args: {
+  db: LoggedWorkSessionDeps["db"];
+  pluginTools: ReturnType<typeof listPluginAgentTools>;
+  providerId: string;
+  providerRegistry: LoggedWorkSessionDeps["providerRegistry"];
+  threadId: string;
+}): DynamicToolContribution[] {
+  const tools: DynamicToolContribution[] = [
     {
       tool: UPDATE_ENVIRONMENT_DIRECTORY_TOOL,
       instructions: UPDATE_ENVIRONMENT_DIRECTORY_INSTRUCTIONS,
       pluginId: null,
     },
-    ...pluginTools.map((contribution) => ({
+  ];
+  if (
+    !providerIdHasNativeGoal(args.providerRegistry, args.providerId) &&
+    loadThreadTimelineGoal(args.db, args.threadId)?.status === "active"
+  ) {
+    tools.push({
+      tool: COMPLETE_GOAL_TOOL,
+      instructions: COMPLETE_GOAL_INSTRUCTIONS,
+      pluginId: null,
+    });
+  }
+  tools.push(
+    ...args.pluginTools.map((contribution) => ({
       tool: contribution.tool,
       instructions: contribution.instructions,
       pluginId: contribution.pluginId,
     })),
-  ];
+  );
+  return tools;
 }
 
 export function resolvePermissionEscalation(
@@ -252,9 +275,13 @@ export async function resolveThreadRuntimeCommandConfig(
     deps.logger,
     deps.config.dataDir,
   );
-  const dynamicToolContributions = resolveDynamicTools(
-    conditionalConfiguration.tools,
-  );
+  const dynamicToolContributions = resolveDynamicTools({
+    db: deps.db,
+    pluginTools: conditionalConfiguration.tools,
+    providerId: args.thread.providerId,
+    providerRegistry: deps.providerRegistry,
+    threadId: args.thread.id,
+  });
   const dynamicTools = dynamicToolContributions.map(
     (contribution) => contribution.tool,
   );

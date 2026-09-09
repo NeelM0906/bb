@@ -502,6 +502,7 @@ describe("bb.agents.registerTool", () => {
     expect(RESERVED_AGENT_TOOL_NAMES).toContain(
       UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME,
     );
+    expect(RESERVED_AGENT_TOOL_NAMES).toContain("goal.complete");
     const rootDir = await writePlugin(workDir, {
       name: "bb-plugin-shadower",
       serverSource: `

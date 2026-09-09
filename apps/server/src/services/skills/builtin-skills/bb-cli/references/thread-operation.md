@@ -19,6 +19,12 @@
   plan with `bb thread interactions`; `bb thread cancel-plan` leaves Plan mode
   early. The SDK equivalent is `input: [createBuiltinPlanCommandTextInput(text)]`
   (exported by `@bb/sdk`) on `threads.spawn` / `threads.send`.
+- Add `--goal` to `bb thread spawn` or `bb thread tell` to send the prompt as
+  the structured `/goal` action. Codex uses native Goal. Claude, Pi, and ACP
+  keep working across turns until `goal.complete`, pause, `/clear`,
+  `bb thread clear-goal`, or a stall. Cannot be combined with `--plan`. The SDK
+  equivalent is `input: [createBuiltinGoalCommandTextInput(text)]` from
+  `@bb/sdk`.
 - Use `bb thread edit-message <thread-id> --message "..."` to replace and rerun
   the latest eligible user message in a supporting provider thread. Pass
   `--expected-request-sequence <sequence>` to select an earlier message. Failed

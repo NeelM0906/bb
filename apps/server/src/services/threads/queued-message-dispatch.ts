@@ -21,6 +21,7 @@ import {
 import { isDispatchRequeuedRecently } from "./dispatch-hooks.js";
 import { recordQueuedMessageDrainFailure } from "./queue-drain-failure.js";
 import { clearQueuedMessageWait } from "./queue-waits.js";
+import { maybeContinueFirstPartyGoal } from "./thread-first-party-goal-loop.js";
 import {
   createAutomaticQueuedMessageGroupEligibility,
   releaseStaleQueuedMessageDispatchClaims,
@@ -219,6 +220,7 @@ async function runThreadReadyDispatch(
       threadId,
       async () => {
         await sendNextQueuedMessageIfPresent(deps, { threadId });
+        await maybeContinueFirstPartyGoal(deps, threadId);
       },
     );
   } catch (error) {

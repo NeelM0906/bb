@@ -1,5 +1,6 @@
 import {
   createBbSdk,
+  createBuiltinGoalCommandTextInput,
   createBuiltinPlanCommandTextInput,
   type BbSdk,
   type BbSdkAreas,
@@ -49,7 +50,12 @@ export const bb = createBrowserBbSdk();
 
 export { BbHttpError, BbRequestTimeoutError } from "./response.js";
 export type { BbHttpErrorArgs } from "./response.js";
-export { createBbSdk, createBuiltinPlanCommandTextInput, createHttpTransport };
+export {
+  createBbSdk,
+  createBuiltinGoalCommandTextInput,
+  createBuiltinPlanCommandTextInput,
+  createHttpTransport,
+};
 export type { BbSdk, BbSdkAreas, BbSdkContext, BbSdkTransport };
 export type * from "./areas/skills.js";
 export type * from "./public-types.js";

@@ -5,7 +5,6 @@ import {
   getUnmanagedWorkspaceMutationWaitState,
   getSessionById,
   listActiveBackgroundTaskCountsByThreadIds,
-  listLatestThreadStateEventRowsByThreadIds,
   listLatestSessionsForHosts,
   listOpenTurnInputAcceptedRowsByThreadIds,
   listStoredClientTurnRequestRowsByKeys,
@@ -15,7 +14,7 @@ import {
   type ThreadClientTurnRequestKey,
   type ThreadWithPendingInteractionState,
 } from "@bb/db";
-import { LEGACY_CODEX_GOAL_EXTENSION_KIND } from "@bb/domain";
+import { listLatestGoalStateEventRowsByThreadIds } from "./thread-first-party-goal.js";
 import type {
   Thread,
   ThreadActivityState,
@@ -440,10 +439,10 @@ function listPromptBannerActivityCandidateRows(
   deps: ThreadPromptBannerDeps,
   threads: readonly Thread[],
 ): StoredEventRow[] {
-  const latestGoalRows = listLatestThreadStateEventRowsByThreadIds(deps.db, {
-    threadIds: threads.map((thread) => thread.id),
-    kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
-  });
+  const latestGoalRows = listLatestGoalStateEventRowsByThreadIds(
+    deps.db,
+    threads.map((thread) => thread.id),
+  );
   const openAcceptedRows = listOpenTurnInputAcceptedRowsByThreadIds(deps.db, {
     threadIds: threads
       .filter((thread) => canThreadShowActivePlanMode(deps, thread))

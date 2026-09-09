@@ -9,6 +9,7 @@ import { ApiError } from "../../errors.js";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import { withThreadContextClearGuard } from "./thread-context-mutation-guard.js";
 import { appendThreadEvent } from "./thread-events.js";
+import { clearPersistedThreadGoalIfPresent } from "./thread-first-party-goal.js";
 import { stopThreadForCurrentState } from "./thread-lifecycle.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
 import { requestQueuedMessageDispatch } from "./queued-message-dispatch.js";
@@ -68,6 +69,10 @@ export async function clearThreadContext(
         message:
           "Earlier chat is hidden from the active timeline. Durable history and workspace are unchanged.",
       },
+    });
+    clearPersistedThreadGoalIfPresent(deps, {
+      environmentId: releasedThread.environmentId,
+      threadId: releasedThread.id,
     });
     deps.hub.notifyThread(
       releasedThread.id,

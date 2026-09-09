@@ -35,6 +35,7 @@ describe("buildCommandListResponse", () => {
         },
       ],
       includeBuiltinCompact: true,
+      includeBuiltinGoal: false,
       skillCatalog: [],
     });
 
@@ -60,6 +61,7 @@ describe("buildCommandListResponse", () => {
     const response = buildCommandListResponse({
       commands: [],
       includeBuiltinCompact: true,
+      includeBuiltinGoal: false,
       skillCatalog: [
         {
           provenance: { kind: "plugin", pluginId: "ottonomous" },
@@ -92,6 +94,7 @@ describe("buildCommandListResponse", () => {
         skill("bb-cli", { description: "Built-in default" }),
       ],
       includeBuiltinCompact: true,
+      includeBuiltinGoal: false,
       skillCatalog: [],
     });
 
@@ -112,6 +115,7 @@ describe("buildCommandListResponse", () => {
     const response = buildCommandListResponse({
       commands: [],
       includeBuiltinCompact: false,
+      includeBuiltinGoal: false,
       skillCatalog: [],
     });
 
@@ -124,5 +128,54 @@ describe("buildCommandListResponse", () => {
         argumentHint: null,
       },
     ]);
+  });
+
+  it("includes the built-in goal row only when the provider has no native Goal", () => {
+    expect(
+      buildCommandListResponse({
+        commands: [],
+        includeBuiltinCompact: false,
+        includeBuiltinGoal: true,
+        skillCatalog: [],
+      }).commands,
+    ).toEqual([
+      {
+        name: "clear",
+        source: "command",
+        origin: "builtin",
+        description: "Start fresh context in this thread",
+        argumentHint: null,
+      },
+      {
+        name: "goal",
+        source: "command",
+        origin: "builtin",
+        description: "Keep working until this objective is complete",
+        argumentHint: "<objective>",
+      },
+    ]);
+
+    expect(
+      buildCommandListResponse({
+        commands: [
+          {
+            name: "goal",
+            source: "command",
+            origin: "user",
+            description: "Provider Goal",
+            argumentHint: " ",
+          },
+        ],
+        includeBuiltinCompact: false,
+        includeBuiltinGoal: false,
+        skillCatalog: [],
+      }).commands.find((command) => command.name === "goal"),
+    ).toEqual({
+      name: "goal",
+      source: "command",
+      origin: "user",
+      description: "Provider Goal",
+      argumentHint: " ",
+    });
   });
 });

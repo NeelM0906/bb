@@ -43,6 +43,7 @@ Spawning:
     --service-tier <tier>          Service tier: fast, default
     --permission-mode <mode>       Permission mode: accept-edits, auto, or full
     --plan                         Send the prompt as the provider's /plan action (plan first, execute after approval)
+    --goal                         Send the prompt as /goal so the agent keeps working until the objective is complete
     --section <id>                 Create the thread in a section
     --visibility <visibility>      visible or hidden; a child inherits its parent by default
     --send-at <when>               Dispatch the first message at an ISO 8601 timestamp or a duration from now (30s, 10m, 2h, 7d)
@@ -229,6 +230,7 @@ Messaging:
     --model <model>                        Model override for this turn
     --reasoning-level <level>              Reasoning level override
     --plan                                 Send the message as the provider's /plan action
+    --goal                                 Send the message as /goal until the objective is complete
     --send-at <when>                       Dispatch at an ISO 8601 timestamp or a duration from now (30s, 10m, 2h, 7d)
     --file <path>                          Host-readable absolute or uploaded file path
     --image <path>                         Host-readable absolute or uploaded image path
@@ -255,11 +257,18 @@ Messaging:
   `createBuiltinPlanCommandTextInput(text)` from `@bb/sdk` and pass it as
   `input` to `threads.spawn` or `threads.send`.
 
+  --goal sends the same structured /goal command the composer offers. Codex
+  uses its native Goal. Claude, Pi, and ACP keep working across turns until
+  they call `goal.complete`, the Goal is paused or cleared, or consecutive
+  continuation turns stall. Plain "/goal ..." text is not recognized. Cannot
+  be combined with --plan. SDK callers use
+  `createBuiltinGoalCommandTextInput(text)` from `@bb/sdk`.
+
   bb thread stop [id]                      Stop work and release the agent runtime
   bb thread compact [id]                   Request compaction of an idle or errored thread's context
   bb thread clear [id]                     Clear model context for an idle or failed thread
   bb thread cancel-plan [id]               Exit the provider's active Plan mode
-  bb thread clear-goal [id]                Clear the provider's active Goal
+  bb thread clear-goal [id]                Clear the active Goal
     --self                                 Target current thread
 
   `thread compact` enqueues the same structured /compact turn used by the

@@ -6,7 +6,7 @@ import {
   type AcceptedClientRequestContext,
   type ThreadEventWithMeta,
 } from "@bb/thread-view";
-import { LEGACY_CODEX_GOAL_EXTENSION_KIND } from "@bb/domain";
+import { listLatestGoalStateEventRowsByThreadIds } from "./thread-first-party-goal.js";
 import type {
   ClientTurnRequestId,
   ProviderComposerCommand,
@@ -48,7 +48,6 @@ import {
   listStoredBufferedTextDeltaRowsByItems,
   listStoredItemLifecycleRowsByItems,
   listLatestBackgroundTaskStateRowsByItemIds,
-  listLatestThreadStateEventRowsByThreadIds,
   listLatestOpenBackgroundTaskStateRowsForThread,
   listStoredTimelineWindowEventRows,
   listTodoSnapshotEventRowsForThread,
@@ -1004,10 +1003,7 @@ function ensureLatestTimelineHeadStateRows(
   args: TimelineWindowRowsArgs,
 ): StoredEventRow[] {
   const headStateRows = [
-    ...listLatestThreadStateEventRowsByThreadIds(db, {
-      threadIds: [args.threadId],
-      kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
-    }),
+    ...listLatestGoalStateEventRowsByThreadIds(db, [args.threadId]),
     ...listTodoSnapshotEventRowsForThread(db, { threadId: args.threadId }),
   ];
   if (headStateRows.length === 0) {

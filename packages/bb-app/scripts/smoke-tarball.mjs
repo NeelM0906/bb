@@ -885,9 +885,18 @@ async function smokeBuiltinPluginsRunning({ binDir, cliEnv }) {
           .join("\n")}`,
       );
     }
-    const pending = EXPECTED_RUNNING_BUILTIN_PLUGINS.filter(
-      (id) => byId.get(id)?.status !== "running",
-    );
+    const pending = EXPECTED_RUNNING_BUILTIN_PLUGINS.filter((id) => {
+      const plugin = byId.get(id);
+      if (
+        id === "account-pool" &&
+        plugin?.status === "needs-configuration" &&
+        plugin.statusDetail ===
+          "Add and enable a Claude or Codex account with `bb pool account add`."
+      ) {
+        return false;
+      }
+      return plugin?.status !== "running";
+    });
     if (pending.length === 0) {
       return;
     }

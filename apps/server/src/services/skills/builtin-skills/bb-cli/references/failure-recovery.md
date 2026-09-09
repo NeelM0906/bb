@@ -35,4 +35,5 @@ sendAt?, reason? })`.
   workspace, durable event history, and sticky execution settings.
 - Use `bb thread cancel-plan <id>` to exit an active Plan turn without
   optimistically clearing its banner. Use `bb thread clear-goal <id>` to clear
-  a thread's durable active Goal when supported by its provider. Both wait for provider confirmation.
+  a thread's durable active Goal. Codex waits for provider confirmation; Claude,
+  Pi, and ACP clear the first-party Goal locally. `/clear` also clears Goal.

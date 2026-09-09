@@ -184,6 +184,69 @@ describe("bb thread tell command output", () => {
     });
   });
 
+  it("bb thread tell --goal sends the composer's /goal command mention", async () => {
+    const post = vi.fn(async () => ({ ok: true }));
+    stubServerApi({ "v1.threads.:id.send.$post": post });
+
+    await runCommand(
+      [
+        "thread",
+        "tell",
+        "thread-goal",
+        "ship the hybrid loop",
+        "--goal",
+      ],
+      register,
+    );
+
+    expect(post).toHaveBeenCalledWith({
+      param: { id: "thread-goal" },
+      json: {
+        input: [
+          {
+            type: "text",
+            text: "/goal ship the hybrid loop",
+            mentions: [
+              {
+                start: 0,
+                end: 5,
+                resource: {
+                  kind: "command",
+                  trigger: "/",
+                  name: "goal",
+                  source: "command",
+                  origin: "builtin",
+                  label: "goal",
+                  argumentHint: "<objective>",
+                },
+              },
+            ],
+          },
+        ],
+        mode: "steer-if-active",
+      },
+    });
+  });
+
+  it("bb thread tell rejects combining --plan with --goal", async () => {
+    await expect(
+      runCommand(
+        [
+          "thread",
+          "tell",
+          "thread-goal",
+          "do both",
+          "--plan",
+          "--goal",
+        ],
+        register,
+      ),
+    ).rejects.toThrow("process.exit:1");
+    expect(console.error).toHaveBeenCalledWith(
+      "Error: Cannot combine --plan with --goal.",
+    );
+  });
+
   it("bb thread tell --plan sends the composer's /plan command mention", async () => {
     const post = vi.fn(async () => ({ ok: true }));
     stubServerApi({ "v1.threads.:id.send.$post": post });

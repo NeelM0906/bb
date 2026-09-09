@@ -25,6 +25,9 @@
 worktree` only; a provider takes its branch through `--environment-inputs`.
 - Spawn also accepts `--title`, `--origin-kind`, `--source-thread`,
   `--source-seq-end`, `--agent-context-seed`, and `--json`.
+- Add `--plan` or `--goal` to send the prompt as the composer's structured
+  `/plan` or `/goal` action. They cannot be combined. See `bb guide threads`
+  and `thread-operation.md`.
 - Add repeatable `--file <path>` / `--image <path>` flags for structured prompt
   attachments, and `--section <id>` to add the new thread to a section. These
   flags pass host-readable absolute paths (or relative server-upload tokens)
