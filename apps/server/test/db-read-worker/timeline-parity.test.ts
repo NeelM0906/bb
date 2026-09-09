@@ -94,7 +94,7 @@ describe("database read worker timeline snapshot", () => {
     const options = {
       eventBudget: 10_000,
       includeNestedRows: false,
-      includeProviderUnhandledOperations: false,
+      includeDiagnosticOperations: false,
       maxInlineOutputChars: 10_000,
       maxSeq: eventCount,
       page: { kind: "latest" as const, segmentLimit: 20 },
@@ -109,8 +109,8 @@ describe("database read worker timeline snapshot", () => {
       options: {
         eventBudget: options.eventBudget,
         includeNestedRows: options.includeNestedRows,
-        includeProviderUnhandledOperations:
-          options.includeProviderUnhandledOperations,
+        includeDiagnosticOperations:
+          options.includeDiagnosticOperations,
         maxInlineOutputChars: options.maxInlineOutputChars,
         page: options.page,
       },
@@ -155,7 +155,7 @@ describe("database read worker timeline snapshot", () => {
     const options = {
       eventBudget: 10_000,
       includeNestedRows: false,
-      includeProviderUnhandledOperations: false,
+      includeDiagnosticOperations: false,
       maxInlineOutputChars: 10_000,
       maxSeq: eventCount,
       page: { kind: "latest" as const, segmentLimit: eventCount },
@@ -173,8 +173,8 @@ describe("database read worker timeline snapshot", () => {
       options: {
         eventBudget: options.eventBudget,
         includeNestedRows: options.includeNestedRows,
-        includeProviderUnhandledOperations:
-          options.includeProviderUnhandledOperations,
+        includeDiagnosticOperations:
+          options.includeDiagnosticOperations,
         maxInlineOutputChars: options.maxInlineOutputChars,
         page: options.page,
       },
@@ -225,7 +225,7 @@ describe("database read worker timeline snapshot", () => {
         options: {
           eventBudget: 10_000,
           includeNestedRows: false,
-          includeProviderUnhandledOperations: false,
+          includeDiagnosticOperations: false,
           maxInlineOutputChars: 10_000,
           page: { kind: "latest", segmentLimit: eventCount },
         },
@@ -303,7 +303,7 @@ describe("database read worker timeline snapshot", () => {
         options: {
           eventBudget: 10_000,
           includeNestedRows: true,
-          includeProviderUnhandledOperations: false,
+          includeDiagnosticOperations: false,
           maxInlineOutputChars: DEFAULT_MAX_INLINE_OUTPUT_CHARS,
           page: { kind: "latest", segmentLimit: 20 },
         },

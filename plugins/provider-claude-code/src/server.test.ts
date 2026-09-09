@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { PluginProviderOptionsContext } from "@get-bb/plugin-sdk";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import claudeCodePlugin from "../server.js";
 
@@ -16,7 +17,7 @@ function loadClaudeCodePlugin() {
 
 function providerOptions(
   declaration: ReturnType<typeof loadClaudeCodePlugin>["declaration"],
-  settings: Readonly<Record<string, string | boolean | undefined>>,
+  settings: PluginProviderOptionsContext["settings"],
 ) {
   const deriveProviderOptions = declaration.deriveProviderOptions;
   if (deriveProviderOptions === undefined) {
@@ -50,6 +51,18 @@ describe("the Claude Code provider settings", () => {
     expect(
       providerOptions(declaration, { idleQueryReleaseEnabled: true })
         .idleQueryReleaseEnabled,
+    ).toBe(true);
+  });
+
+  it("keeps Claude in Chrome off by default and derives an explicit opt-in", () => {
+    const { declaration, host } = loadClaudeCodePlugin();
+
+    expect(
+      host.harness.registrations.settingsDescriptors.chromeEnabled,
+    ).toMatchObject({ type: "boolean", default: false });
+    expect(providerOptions(declaration, {}).chromeEnabled).toBe(false);
+    expect(
+      providerOptions(declaration, { chromeEnabled: true }).chromeEnabled,
     ).toBe(true);
   });
 });

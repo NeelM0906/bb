@@ -221,6 +221,7 @@ interface NodeSurface {
 }
 
 type ExpectedBbSdkKey =
+  | "experimental_desktopBrowsers"
   | "environments"
   | "files"
   | "guide"
@@ -242,6 +243,9 @@ type ExpectedRealtimeKey = "subscribe";
 type ExpectedEnvironmentsKey =
   | "archiveThreads"
   | "commit"
+  | "delete"
+  | "list"
+  | "listProviders"
   | "diff"
   | "diffBranches"
   | "diffFile"
@@ -253,7 +257,6 @@ type ExpectedEnvironmentsKey =
   | "mergePullRequest"
   | "paths"
   | "pullRequest"
-  | "squashMerge"
   | "status"
   | "update";
 
@@ -345,7 +348,7 @@ type ExpectedSystemKey =
   | "usageLimits"
   | "version";
 
-type ExpectedThemeKey = "catalog" | "get" | "set";
+type ExpectedThemeKey = "catalog" | "get" | "resolve" | "set";
 
 type ExpectedThreadSectionsKey = "create" | "delete" | "list" | "update";
 
@@ -354,6 +357,7 @@ type ExpectedThreadsKey =
   | "archiveAll"
   | "cancelPlan"
   | "childSummary"
+  | "clearContext"
   | "clearGoal"
   | "compact"
   | "conversationOutline"

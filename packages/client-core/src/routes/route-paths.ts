@@ -7,6 +7,7 @@ export const SETTINGS_SECTION_ROUTE_PATH = "/settings/:section";
 export const SETTINGS_PLUGINS_ROUTE_PATH = "/settings/plugins";
 export const SETTINGS_PLUGIN_ROUTE_PATH = "/settings/plugins/:pluginId";
 export const SETTINGS_MACHINE_ROUTE_PATH = "/settings/machines/:hostId";
+export const SETTINGS_PROJECT_ROUTE_PATH = "/settings/projects/:projectId";
 export const TOOLS_ROUTE_PATH = "/extensions";
 export const TOOLS_SKILLS_ROUTE_PATH = "/extensions/skills";
 export const TOOLS_SKILL_DETAIL_ROUTE_PATH =
@@ -86,6 +87,10 @@ export function getSettingsMachineRoutePath(hostId: string): string {
   return `/settings/machines/${encodeURIComponent(hostId)}`;
 }
 
+export function getSettingsProjectRoutePath(projectId: string): string {
+  return `/settings/projects/${encodeURIComponent(projectId)}`;
+}
+
 export function getSkillsRoutePath(): string {
   return SKILLS_ROUTE_PATH;
 }
@@ -130,7 +135,9 @@ export function getPluginDetailRoutePath({
   view,
 }: PluginDetailRoutePathArgs): string {
   const path = `${TOOLS_PLUGINS_ROUTE_PATH}/${encodeURIComponent(pluginId)}`;
-  return view === "installed" ? `${path}?view=installed` : path;
+  return view === "installed"
+    ? `${SETTINGS_PLUGINS_ROUTE_PATH}/${encodeURIComponent(pluginId)}?view=installed`
+    : path;
 }
 
 export function getPluginConfigurationRoutePath(

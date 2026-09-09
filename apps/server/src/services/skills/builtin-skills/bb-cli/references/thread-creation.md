@@ -5,13 +5,24 @@
 - Use `bb thread spawn --project <project-id> --prompt "..."` to create another
   thread. Pass the intended project explicitly; the CLI does not infer it from
   context variables. Omitted execution flags use remembered project defaults;
-  without a remembered model, bb uses the explicitly requested provider or
-  Codex and resolves its provider-reported default model on the target machine.
+  without a remembered model, bb resolves the selected provider and its reported
+  default model on the target machine.
 - Select a target with `--environment`, `--new-environment`, `--base-branch`,
   or `--machine`. Select execution with `--provider`, `--model`,
   `--reasoning-level`, `--service-tier`, and `--permission-mode`.
+- List plugin-provisioned environment choices with `bb environment providers`. Add `--project <id>` and optionally `--machine <id>` to omit providers whose requirements are unmet; eligible providers retain setup or availability messages. Without a machine, the project listing includes providers eligible on any persistent machine.
+  Add `--project <id>` and `--machine <id-or-name>` (`--host` is an alias) to
+  resolve each provider's `available`, `setup-required`, or `unavailable`
+  status for that project and machine. `--json` includes availability, each
+  provider's `requires` facts, and its `inputs` JSON Schema or null. Providers
+  structurally ineligible for that project or projectless thread are omitted.
+  Pass the selected ID to `--environment-provider`. Add
+  `--environment-inputs <json>` only when the provider's schema does not accept
+  an empty object; otherwise the CLI supplies `{}` when the flag is omitted.
+  `--machine` picks the existing machine.
 - Omit `--base-branch` for bb's default. Explicit values are exact; use
-  `origin/<branch>` for a remote ref.
+  `origin/<branch>` for a remote ref. It applies to `--new-environment
+worktree` only; a provider takes its branch through `--environment-inputs`.
 - Spawn also accepts `--title`, `--origin-kind`, `--source-thread`,
   `--source-seq-end`, `--agent-context-seed`, and `--json`.
 - Add repeatable `--file <path>` / `--image <path>` flags for structured prompt
@@ -21,10 +32,14 @@
 - Spawn creates a root thread unless you pass `--parent-thread`.
 - Use `bb thread fork <source-thread-id>` to clone a provider session. The
   fork inherits the source conversation in its timeline. It creates an idle
-  fork by default; add `--prompt`, select `--workspace isolated|reuse`, or
-  anchor with `--source-seq-end` on a completed source turn (the clone and the
-  inherited timeline both end with the turn containing that sequence).
-  Permission mode inherits the source thread unless explicitly overridden.
+  fork in the source environment by default; add `--prompt`, select an existing
+  environment with `--environment`, or create a fresh personal workspace or
+  worktree with `--new-environment personal|worktree`. `--base-branch` matches
+  spawn for worktrees, while the target machine is always derived from the
+  source environment. Anchor with
+  `--source-seq-end` on a completed source turn (the clone and inherited
+  timeline both end with the turn containing that sequence). Permission mode
+  inherits the source thread unless explicitly overridden.
 - Pass `--visibility hidden` for background/plugin workers that should remain
   out of sidebar organization without contributing unread/pending favicon
   attention. `bb thread list` excludes them by
@@ -41,7 +56,7 @@
 - Add remote execution machines from Settings → Machines. Its one-line
   installer stores the account machine credential locally and configures
   both the daemon protocol and agent-launched `bb` CLI to traverse the account
-  gate; revoke a lost machine from the getbb.app dashboard. The installer uses
+  gate; revoke a lost machine from the getbb.app dashboard. It uses
   the server's exact `/install/bb-app.tgz` artifact and uses the npm registry
   only on a 404. It installs under the enrollment's bb data directory, without
   `sudo` or a global npm configuration, and enables daemon `--auto-update`.
@@ -64,9 +79,10 @@
   surface that sets it, and machine credentials are refused — so read it from
   `bb machine list --json` or `bb machine show` and ask the user to change it
   in the app.
-- `bb machine show`, `join-code`, `rename`, `retry-update`, and `remove` cover
-  the Settings → Machines lifecycle. Use `bb machine provider-cli
-status|install` to inspect or install provider CLIs on a selected machine.
+- `bb machine list`, `show`, `join-code`, `rename`, `retry-update`,
+  and `remove` cover the Settings →
+  Machines lifecycle. Use `bb machine provider-cli status|install` to inspect
+  or install provider CLIs on a selected machine.
 - `bb updates` runs the default `bb updates status` action. It aggregates BB and provider
   CLI update state across every machine — the CLI counterpart of Settings →
   Updates. `bb updates apply [--machine <id-or-name>]` runs every available
@@ -112,7 +128,7 @@ environment pull-request show <id>`. Diff commands require an explicit target
   and the matching merge-base or commit flags; all support `--json`.
 - `bb environment pull-request ready|draft|merge` manages pull-request state;
   `bb environment archive-threads` bulk-archives an environment's threads.
-- Use `bb environment show|update|commit|squash-merge` for environment metadata
+- Use `bb environment show|update|commit` for environment metadata
   and Git changes. Check live help before a commit or merge.
 - Spawned child threads inherit permission from explicit flags, then the
   parent thread's last execution, then project defaults. The parent's mode is
@@ -136,21 +152,10 @@ environment pull-request show <id>`. Diff commands require an explicit target
   (alias `--host`) or `--environment <id>` to inspect the machine where work
   will run; the selectors cannot be combined. With neither selector they
   intentionally inspect the primary machine.
-- Known ACP agents can appear automatically when their CLI is installed on the
-  host; for example `opencode`, `omp`, Grok Build's `grok` CLI, or Hermes'
-  `hermes` CLI on PATH appears as provider `acp-opencode`, `acp-omp`,
-  `acp-grok`, or `acp-hermes-agent`.
-- Cursor ACP threads discover project skills from `.cursor/skills`. This root
-  can link to `.agents/skills`. `bb skill list` shows linked Cursor skills under
-  `cursor-project` and keeps them read-only.
 - Top-level `customModels` in the same `config.json` registers extra picker
-  models. `providerId` accepts a built-in provider id or any `acp-*` provider
-  id. The provider must still accept the id: `claude-code` and `codex` accept
-  unlisted ids, while an ACP agent can reject an unknown id at session start.
-  OpenCode rejects unlisted ids; add the model to the OpenCode config instead
-  and bb discovers it automatically. An OpenCode agent is a session mode, not
-  a model, and cannot be selected through bb. This list also has no set/unset
-  CLI surface. Edit the JSON and restart BB.
+  models. Use a provider ID returned by the target host's catalog. Acceptance
+  of unlisted models is provider-specific; consult that provider's skill.
+  This list has no set/unset CLI surface. Edit the JSON and restart BB.
   The `streamerMode` General preference hides every entry from model lists.
 - Top-level `sharedSkillRoots` uses the same relative `user` and `project`
   paths. bb lists these skills as read-only. bb injects them into each provider,
@@ -159,3 +164,12 @@ environment pull-request show <id>`. Diff commands require an explicit target
 Give spawned threads clear prompts: objective, constraints, expected deliverable,
 validation to perform, and what to report back. Ask for outcome, changed files
 or artifacts, validation performed, and blockers.
+
+`bb environment show <id>` includes the core-owned lifecycle phase, retirement deadline, and teardown status/attempt/message. Archive or delete the last live thread to begin its provider's retirement grace; unarchive cancels pending retirement. Teardown failures retry automatically. Checkout policy keeps its directory indefinitely.
+
+For paths a provider owns, bb runs `.bb-env-setup.sh` after create and
+`.bb-env-teardown.sh` before remove on that machine, with separate 15-minute
+timeouts. Setup failure fails the launch with output in provisioning progress;
+teardown script failure is logged and removal continues. Attaching a project
+checkout or personal workspace skips both hooks. Providers do not run these
+core hooks themselves.

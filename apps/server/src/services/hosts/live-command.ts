@@ -10,7 +10,9 @@ import { ApiError } from "../../errors.js";
 import {
   buildCommandResultSettlementDeps,
   type CommandResultPostCommitAction,
+  type CommandResultSettlementDeps,
   type CommandResultSideEffectsDeps,
+  type CommandResultSideEffectsResult,
   type HostDaemonCommandExecutionRecord,
   type HostDaemonCommandForType,
   type LiveHostCommandFailureResultReportForType,
@@ -173,7 +175,7 @@ export function expectedLiveHostCommandErrorLogFields(
   };
 }
 
-function buildLiveHostCommandFailureReport<
+export function buildLiveHostCommandFailureReport<
   TType extends HostDaemonSettledCommandType,
 >(
   args: BuildLiveHostCommandFailureReportArgs<TType>,
@@ -188,7 +190,7 @@ function buildLiveHostCommandFailureReport<
   };
 }
 
-function buildLiveHostCommandSuccessReport<
+export function buildLiveHostCommandSuccessReport<
   TType extends HostDaemonSettledCommandType,
 >(
   args: BuildLiveHostCommandSuccessReportArgs<TType>,
@@ -211,27 +213,37 @@ async function runPostCommitActions(
   }
 }
 
+export async function runLiveHostCommandSettlement(
+  deps: CommandResultSideEffectsDeps,
+  settle: (
+    settlementDeps: CommandResultSettlementDeps,
+  ) => CommandResultSideEffectsResult,
+): Promise<void> {
+  const notificationBuffer = new NotificationBuffer();
+  const sideEffects = deps.db.transaction(
+    (tx) =>
+      settle(
+        buildCommandResultSettlementDeps({
+          db: tx,
+          deps,
+          hub: notificationBuffer,
+        }),
+      ),
+    { behavior: "immediate" },
+  );
+  notificationBuffer.flushInto(deps.hub);
+  await runPostCommitActions(deps, sideEffects.postCommitActions);
+}
+
 async function applyLiveHostCommandReport<
   TType extends HostDaemonSettledCommandType,
 >(
   deps: CommandResultSideEffectsDeps,
   args: ApplyLiveHostCommandReportArgs<TType>,
 ): Promise<void> {
-  const notificationBuffer = new NotificationBuffer();
-  const sideEffects = deps.db.transaction(
-    (tx) =>
-      handleLiveCommandResultSideEffects(
-        buildCommandResultSettlementDeps({
-          db: tx,
-          deps,
-          hub: notificationBuffer,
-        }),
-        args,
-      ),
-    { behavior: "immediate" },
+  await runLiveHostCommandSettlement(deps, (settlementDeps) =>
+    handleLiveCommandResultSideEffects(settlementDeps, args),
   );
-  notificationBuffer.flushInto(deps.hub);
-  await runPostCommitActions(deps, sideEffects.postCommitActions);
 }
 
 export function createLiveHostCommandExecution(

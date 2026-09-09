@@ -1,8 +1,8 @@
 ---
 kind: instruction
 title: bb Guide — Customization
-summary: Command reference for customizing the bb app color palette and keyboard shortcuts.
-intent: Explain the CLI theme surface and server-backed app customization.
+summary: Command reference for customizing the bb app color palette, keyboard shortcuts, and mobile push notifications.
+intent: Explain the CLI theme surface, server-backed app customization, and push-notification device registration.
 editingNotes: Keep flags accurate against the CLI implementation. Theme details live in the bb-cli skill's references/theming.md.
 ---
 Customization commands
@@ -20,7 +20,8 @@ app uses ~/.bb/theme/…). The folder name is the theme id.
   bb theme set <id> [--favicon-color <color>]
                                  Activate a theme, preserving the favicon color
                                  unless the flag supplies the complete selection
-  bb theme show [--css]          Print the active palette; --css dumps the CSS
+  bb theme show [id] [--css]     Print the active palette, or resolve <id> without
+                                 activating it; --css dumps the CSS
   bb theme reset                 Back to the default theme; preserve favicon color
   bb theme favicon set <color>   Set favicon color; preserve the active theme
   bb theme favicon reset         Reset favicon color; preserve the active theme
@@ -34,6 +35,9 @@ the bb-cli skill (references/theming.md).
 Favicon colors are `default`, `red`, `orange`, `yellow`, `green`, `teal`,
 `blue`, `purple`, and `pink`. Theme and favicon-only commands carry the other
 appearance value forward explicitly.
+
+Hovering a palette in Settings → Appearance previews it live in that window
+without saving; `bb theme show <id>` is the CLI counterpart.
 
 Add --json to any theme command for machine-readable output.
 
@@ -83,9 +87,11 @@ Turn it off to hide the delayed shortcut badges shown while holding Command or
 Control on macOS, or Control on Windows/Linux. Shortcut commands continue to
 work.
 
-Settings → General includes `showUnhandledProviderEvents`, which defaults to
-false in packaged builds. Turn it on to show raw provider events bb does not yet
-understand; development builds always show these diagnostic rows.
+Settings → General includes `showDiagnosticEvents`, which defaults to false
+in all builds. Turn it on to show provider environment resolution and unhandled
+provider events. Warnings, errors, and model fallback stay visible. Existing
+unhandled-event preferences are preserved. Set it with
+`bb settings general showDiagnosticEvents <true|false>`.
 
 Settings → General also includes `steerActiveThreadOnEnter`, which defaults to
 true for a new install. An earlier install with saved settings or work keeps
@@ -100,7 +106,7 @@ it on to hide every `customModels` entry from `~/.bb/config.json` in all model
 lists (pickers, `bb provider models`, and the SDK) during a screen share. The
 entries stay in the config file.
 
-Settings → General also includes `managedBranchPrefix`, which defaults to
+Settings → General includes `managedBranchPrefix`, which defaults to
 `bb/`. bb puts it in front of every branch name it creates for a worktree, so
 the default gives `bb/fix-login-flow-thr_ab12cd34ef`. Set `sawyer/wt-` to get
 `sawyer/wt-fix-login-flow-thr_ab12cd34ef`, or clear it for no prefix. bb rejects
@@ -137,6 +143,13 @@ BB releases restorable provider sessions after 30 idle minutes. The daemon
 checks for these sessions every five minutes. Active turns, commands, agents,
 workflows, and monitors keep their sessions loaded.
 
+The default-off `sidebarProgressiveDisclosure` experiment shows the first five
+groups in the current sort order in **By project** and **By machine**, keeps
+attention groups visible, and reveals ten more per **Show more** click. Revealed
+groups stay visible through activity and sort-order changes.
+**Manually** is unchanged. Enable it with `bb settings experiment
+sidebarProgressiveDisclosure true`.
+
 The default-off `timelineWindowing` experiment mounts only nearby rows in long
 timelines and large expanded timeline details. Enable it with
 `bb settings experiment timelineWindowing true`.
@@ -163,6 +176,30 @@ same resolved bindings. The complete default table is in docs/configuration.md.
   bb settings keyboard hints <true|false>
   bb settings keyboard set <command> <shortcut|disabled>
   bb settings keyboard reset [command]
+
+Push notifications
+
+The built-in Push notifications plugin sends mobile updates through Expo and
+system notifications to connected web and desktop clients. Web tabs or desktop
+windows must stay open; browser permission is requested in the plugin settings.
+
+  bb push-notifications list
+  bb push-notifications add --token <expo-push-token>
+      --platform <ios|android> --label <device-name>
+  bb push-notifications remove <id>
+  bb push-notifications status
+  bb push-notifications test <web|desktop>
+  bb plugin config push-notifications set <mobileEnabled|webEnabled|desktopEnabled> <true|false>
+
+`add` is an upsert by token: a known token refreshes its label and last-seen
+time and keeps its id. Expo tokens that are no longer registered are removed
+automatically after a failed delivery. Use `bb plugin disable
+push-notifications` to stop delivery. Change the relay URL with `bb plugin
+config push-notifications set expoPushUrl <url>`. Add `--json` to `list` or
+`status` for machine-readable output. The list returns token suffixes only.
+The three channel switches default to true and apply immediately across this
+server. `test` broadcasts to all connected clients of the selected type with
+permission; OS notification settings still control whether a banner appears.
 
 Host files and voice transcription
 

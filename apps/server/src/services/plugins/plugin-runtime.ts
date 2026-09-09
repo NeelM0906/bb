@@ -66,6 +66,7 @@ import type {
   PluginSettingDescriptors,
 } from "@get-bb/plugin-sdk";
 import type { PluginHookRegistration } from "./plugin-hook-registry.js";
+import type { PluginEnvironmentProviderRecord } from "./plugin-environment-provider-registry.js";
 import {
   isPluginSdkRangeSatisfied,
   pluginSdkRangeProblem,
@@ -621,6 +622,41 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       if (handler !== null) registrations.push({ pluginId: id, handler });
     }
     return registrations;
+  }
+
+  function listPluginEnvironmentProviders(): PluginEnvironmentProviderRecord[] {
+    const records: PluginEnvironmentProviderRecord[] = [];
+    const seen = new Set<string>();
+    for (const [pluginId, plugin] of loaded) {
+      for (const provider of plugin.handle.environmentProviders.values()) {
+        if (seen.has(provider.id)) {
+          logger.warn(
+            `[plugin:${pluginId}] environment provider "${provider.id}" is already registered by another plugin; ignoring`,
+          );
+          continue;
+        }
+        seen.add(provider.id);
+        const declared =
+          provider.icon === null ? null : parseNamespacedGlyph(provider.icon);
+        const icon =
+          declared !== null
+            ? brandingAssets.get(pluginId)?.icons.get(declared.name)
+            : readPluginProviderIcon(
+                plugin.manifest.rootDir,
+                provider.icon ?? undefined,
+              );
+        records.push({ pluginId, provider, ...(icon == null ? {} : { icon }) });
+      }
+    }
+    return records;
+  }
+
+  function getPluginEnvironmentProvider(
+    id: string,
+  ): PluginEnvironmentProviderRecord | undefined {
+    return listPluginEnvironmentProviders().find(
+      (record) => record.provider.id === id,
+    );
   }
 
   function hasThreadEventHandlers(event: PluginThreadEventName): boolean {
@@ -1300,6 +1336,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       db: deps.db,
       dataDir: deps.dataDir,
       getSdk: () => boundSdk,
+      getAppUrl: deps.getAppUrl ?? (() => null),
       getLoopbackBaseUrl: () => boundLoopbackBaseUrl,
       publishSignal: (channel, payload) => {
         deps.hub.notifyPluginSignal(row.id, channel, payload);
@@ -1312,6 +1349,17 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         reportNeedsConfiguration(row.id, message);
       },
       isAgentToolNameTaken: (name) => findAgentToolOwner(name, row.id),
+      isEnvironmentProviderIdTaken: (id) => {
+        for (const [pluginId, plugin] of loaded) {
+          if (
+            pluginId !== row.id &&
+            plugin.handle.environmentProviders.has(id)
+          ) {
+            return pluginId;
+          }
+        }
+        return undefined;
+      },
       reportAgentToolProblem: (message) => {
         reportAgentToolProblem(row.id, message);
       },
@@ -1598,6 +1646,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
   ): Promise<void> {
     disposingPluginIds.add(id);
     try {
+      plugin.handle.closeWebSockets();
       const hostArtifact = hostArtifacts.get(id);
       if (hostArtifact !== undefined && deps.disposePluginHost) {
         try {
@@ -1721,6 +1770,8 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     invokeWrapped,
     isBuiltinPluginId,
     listPluginHooks,
+    listPluginEnvironmentProviders,
+    getPluginEnvironmentProvider,
     identities,
     isPackagedBuiltinEntry,
     loadAll,

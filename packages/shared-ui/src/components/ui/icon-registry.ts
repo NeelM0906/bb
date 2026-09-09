@@ -1,6 +1,7 @@
 import type { IconSvgElement } from "@hugeicons/react";
 
 export const EXTENDED_ICON_NAMES = [
+  "AiBrain01",
   "AiBrowser",
   "AiContentGenerator01",
   "AlignLeft",
@@ -15,6 +16,7 @@ export const EXTENDED_ICON_NAMES = [
   "ArrowTurnForward",
   "ArrowUpRight",
   "Beaker",
+  "BellDot",
   "Browser",
   "Brain",
   "Calendar",

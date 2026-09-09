@@ -42,7 +42,8 @@ describe("internal environment change websocket hints", () => {
         hostId: host.id,
         projectId: project.id,
         path: "/tmp/env-canonical-path-alias",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
         status: "ready",
       });
       recordEnvironmentCanonicalPath(
@@ -241,7 +242,7 @@ describe("internal environment change websocket hints", () => {
           workspace: {
             path: environment.path,
             isGitRepo: true,
-            isWorktree: false,
+            isWorktree: true,
             branchName: "main",
             defaultBranch: "main",
           },
@@ -251,7 +252,7 @@ describe("internal environment change websocket hints", () => {
       expect(socket.close).not.toHaveBeenCalled();
       expect(getEnvironment(harness.db, environment.id)).toMatchObject({
         isGitRepo: true,
-        isWorktree: false,
+        isWorktree: true,
         branchName: "main",
         defaultBranch: "main",
       });
@@ -273,7 +274,8 @@ describe("internal environment change websocket hints", () => {
         hostId: host.id,
         projectId: project.id,
         path: "/tmp/env-metadata-alias",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
         status: "ready",
         isGitRepo: false,
       });

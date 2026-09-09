@@ -44,7 +44,6 @@ import {
 import {
   AUTOMATIONS_PLUGIN_ID,
   AUTOMATIONS_PLUGIN_PANEL_PATH,
-  getSkillsRoutePath,
 } from "@/lib/route-paths";
 import { splitLayoutAtom } from "@/lib/split-layout/atoms";
 import {
@@ -52,6 +51,11 @@ import {
   sidebarOrganizationModeAtom,
   type SidebarOrganizationMode,
 } from "./sidebarCollapsedAtoms";
+import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import {
+  makeProjectWithThreadsResponse,
+  makeSidebarBootstrapResponse,
+} from "@/test/fixtures/projects";
 
 export default {
   title: "Sidebar/Overview",
@@ -78,11 +82,9 @@ const personalProject = makeProject({
   name: "Personal",
 });
 
-const loadedSidebarNavigation = {
-  sections: [],
-  personalProject: {
+const loadedSidebarNavigation = makeSidebarBootstrapResponse({
+  personalProject: makeProjectWithThreadsResponse({
     ...personalProject,
-    defaultExecutionOptions: null,
     threads: [
       makeThreadListEntry({
         id: "thr_story_personal",
@@ -113,11 +115,10 @@ const loadedSidebarNavigation = {
         updatedAt: 75,
       }),
     ],
-  },
+  }),
   projects: [
-    {
+    makeProjectWithThreadsResponse({
       ...bbProject,
-      defaultExecutionOptions: null,
       threads: [
         makeThreadListEntry({
           id: "thr_story_pinned",
@@ -179,8 +180,8 @@ const loadedSidebarNavigation = {
           environmentId: "env_story_sidebar",
           environmentName: "Sidebar polish",
           environmentBranchName: BRANCH_NAMES.feature,
+          environmentProviderId: "git-worktree",
           queuedWork: "none",
-          environmentWorkspaceDisplayKind: "managed-worktree",
           title: "Tighten loading skeleton",
           titleFallback: "Tighten loading skeleton",
           latestAttentionAt: 170,
@@ -193,8 +194,8 @@ const loadedSidebarNavigation = {
           environmentId: "env_story_sidebar",
           environmentName: "Sidebar polish",
           environmentBranchName: BRANCH_NAMES.feature,
+          environmentProviderId: "git-worktree",
           queuedWork: "none",
-          environmentWorkspaceDisplayKind: "managed-worktree",
           title: "Audit sidebar stories",
           titleFallback: "Audit sidebar stories",
           hasPendingInteraction: true,
@@ -203,10 +204,9 @@ const loadedSidebarNavigation = {
           updatedAt: 160,
         }),
       ],
-    },
-    {
+    }),
+    makeProjectWithThreadsResponse({
       ...docsProject,
-      defaultExecutionOptions: null,
       threads: [
         makeThreadListEntry({
           id: "thr_story_docs",
@@ -218,9 +218,9 @@ const loadedSidebarNavigation = {
           updatedAt: 120,
         }),
       ],
-    },
+    }),
   ],
-} satisfies SidebarBootstrapResponse;
+});
 
 const emptySidebarNavigation = {
   ...loadedSidebarNavigation,
@@ -267,7 +267,7 @@ function SidebarFrame({ children }: SidebarFrameProps) {
             <ProjectListActionButtons onNewChat={noop} />
           </div>
           {}
-          <PluginNavSidebarItems toolsRoutePath={getSkillsRoutePath()} />
+          <PluginNavSidebarItems />
           <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
           <div className="shrink-0 border-t border-sidebar-border/70 px-2 py-2">
             <button
@@ -338,17 +338,9 @@ function LoadedSidebar({
 function registrationSet(
   navPanels: PluginRegistrationSet["navPanels"],
 ): PluginRegistrationSet {
-  return {
-    homepageSections: [],
-    settingsSections: [],
+  return makePluginRegistrationSet({
     navPanels,
-    threadPanelActions: [],
-    composerCustomizations: [],
-    pendingInteractions: [],
-    sidebarFooterActions: [],
-    fileOpeners: [],
-    messageDirectives: [],
-  };
+  });
 }
 
 function StoryPluginPageRegistrations() {
@@ -601,25 +593,25 @@ export function SplitPageLabels() {
         ],
       },
     });
-    setPluginSlotRegistrations("story-split-page", {
-      homepageSections: [],
-      settingsSections: [],
-      navPanels: [
-        {
-          id: "notes",
-          title: "Project notes",
-          icon: "FileText",
-          path: "notes",
-          component: () => null,
-        },
-      ],
-      threadPanelActions: [],
-      composerCustomizations: [],
-      pendingInteractions: [],
-      sidebarFooterActions: [],
-      fileOpeners: [],
-      messageDirectives: [],
-    });
+    setPluginSlotRegistrations(
+      "story-split-page",
+      makePluginRegistrationSet({
+        navPanels: [
+          {
+            id: "notes",
+            title: "Project notes",
+            icon: "FileText",
+            path: "notes",
+            component: () => null,
+          },
+        ],
+        threadPanelActions: [],
+        composerCustomizations: [],
+        pendingInteractions: [],
+        sidebarFooterActions: [],
+        fileOpeners: [],
+      }),
+    );
 
     return () => {
       store.set(splitLayoutAtom, null);

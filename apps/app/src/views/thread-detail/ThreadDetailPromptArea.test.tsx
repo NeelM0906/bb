@@ -20,6 +20,10 @@ import {
 } from "@testing-library/react";
 import type { TimelineWorkflowWorkRow } from "@bb/server-contract";
 import { createDeferredPromise } from "@bb/test-helpers";
+import {
+  makeThreadQueuedMessage as makeThreadQueuedMessageFixture,
+  makeThreadWithRuntime as makeThreadWithRuntimeFixture,
+} from "@bb/test-helpers/domain-fixtures";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { workflowRow } from "@/test/fixtures/thread-timeline-rows";
@@ -36,6 +40,7 @@ import {
   ThreadDetailPromptArea,
   type ThreadDetailSentMessageEdit,
 } from "./ThreadDetailPromptArea";
+import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
 
 const mocks = vi.hoisted(() => ({
   cancelThreadPlanMutate: vi.fn(),
@@ -90,6 +95,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
     FollowUpPromptBox: ({
       attachments,
       composer,
+      environmentSummary,
       execution,
       executionReadOnly,
       pendingInteraction,
@@ -113,6 +119,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
         submitTitle?: string;
         submitMode: { kind: string; reason?: string };
       } | null;
+      environmentSummary?: ReactNode;
       execution: {
         footerAction?: {
           label: string;
@@ -137,7 +144,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
       }[];
     }) => (
       <div data-testid="follow-up-prompt-box">
-        {}
+        {environmentSummary}
         <div data-testid="prompt-stack">
           {pluginComposerHost ? (
             <ComposerBannersSlot
@@ -279,7 +286,9 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
 });
 
 vi.mock("@/components/promptbox/ThreadEnvironmentSummary", () => ({
-  ThreadEnvironmentSummary: () => <div />,
+  ThreadEnvironmentSummary: () => (
+    <div data-testid="thread-environment-summary" />
+  ),
 }));
 
 vi.mock(
@@ -292,6 +301,9 @@ vi.mock(
       inlineEditor,
       queuedMessages,
       onEdit,
+      onSend,
+      sendAction,
+      sendDisabled,
     }: {
       inlineEditor?: { content: ReactNode; onDismiss: () => void };
       queuedMessages: readonly ThreadQueuedMessage[];
@@ -299,22 +311,35 @@ vi.mock(
         queuedMessageId: string;
         queuedMessageIndex: number;
       }) => void;
+      onSend: (queuedMessageId: string) => void;
+      sendAction: "send-now" | "steer-when-ready";
+      sendDisabled: boolean;
     }) => (
-      <div data-testid="queued-message-list">
+      <div
+        data-testid="queued-message-list"
+        data-send-action={sendAction}
+        data-send-disabled={sendDisabled ? "" : undefined}
+      >
         <div data-testid="queued-message-count">{queuedMessages.length}</div>
         {queuedMessages.map((message, index) => (
-          <button
-            key={message.id}
-            type="button"
-            onClick={() =>
-              onEdit({
-                queuedMessageId: message.id,
-                queuedMessageIndex: index,
-              })
-            }
-          >
-            Edit queued message {index + 1}
-          </button>
+          <div key={message.id}>
+            <button type="button" onClick={() => onSend(message.id)}>
+              {sendAction === "steer-when-ready"
+                ? `Steer queued message ${index + 1} when ready`
+                : `Send queued message ${index + 1} now`}
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                onEdit({
+                  queuedMessageId: message.id,
+                  queuedMessageIndex: index,
+                })
+              }
+            >
+              Edit queued message {index + 1}
+            </button>
+          </div>
         ))}
         {inlineEditor ? (
           <div data-testid="inline-queued-message-editor">
@@ -568,39 +593,26 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
 function makeQueuedMessage(
   overrides: Partial<ThreadQueuedMessage> = {},
 ): ThreadQueuedMessage {
-  return {
+  return makeThreadQueuedMessageFixture({
     id: "qmsg_1",
     threadId: "thr_1",
     content: [{ type: "text", text: "Already queued", mentions: [] }],
     model: "gpt-5",
-    reasoningLevel: "medium",
-    permissionMode: "auto",
-    serviceTier: "default",
-    groupWithNext: false,
-    sendAt: null,
-    waitingOn: null,
-    failureReason: null,
-    payload: { kind: "inline" },
-    editable: true,
     createdAt: 1,
     updatedAt: 1,
     ...overrides,
-  };
+  });
 }
 
 function makeThread(
   overrides: Partial<ThreadWithRuntime> = {},
 ): ThreadWithRuntime {
-  return {
-    archivedAt: null,
+  return makeThreadWithRuntimeFixture({
     environmentId: null,
     id: "thr_1",
     projectId: "proj_1",
-    providerId: "codex",
-    runtime: { displayStatus: "idle" },
-    status: "idle",
     ...overrides,
-  } as ThreadWithRuntime;
+  });
 }
 
 const activePlan = {
@@ -766,6 +778,22 @@ afterEach(() => {
     .forEach((element) => element.remove());
   resetPluginSlotStoreForTest();
   vi.clearAllMocks();
+});
+
+describe("environment follow-up summary", () => {
+  it("renders for a thread with an environment even when it has no environment label", () => {
+    renderPromptArea({ thread: makeThread({ environmentId: "env_1" }) });
+
+    expect(screen.getByTestId("thread-environment-summary")).toBeTruthy();
+  });
+
+  it("shows no environment row for an errored thread with no environment", () => {
+    renderPromptArea({
+      thread: makeThread({ environmentId: null, status: "error" }),
+    });
+
+    expect(screen.queryByTestId("thread-environment-summary")).toBeNull();
+  });
 });
 
 describe("ThreadDetailPromptArea", () => {
@@ -934,6 +962,39 @@ describe("ThreadDetailPromptArea", () => {
     const composer = screen.getByTestId("composer-boundary");
     expect(stack.lastElementChild).toBe(queue);
     expect(stack.nextElementSibling).toBe(composer);
+  });
+
+  it("steers a queued row once a provisioning thread is ready", async () => {
+    mocks.queuedMessages = [
+      makeQueuedMessage({ waitingOn: { kind: "provisioning" } }),
+    ];
+
+    renderPromptArea({
+      thread: makeThread({
+        runtime: {
+          displayStatus: "provisioning",
+          hostReconnectGraceExpiresAt: null,
+        },
+        status: "starting",
+      }),
+    });
+
+    const queue = screen.getByTestId("queued-message-list");
+    expect(queue.dataset.sendAction).toBe("steer-when-ready");
+    expect(queue.dataset.sendDisabled).toBeUndefined();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Steer queued message 1 when ready",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.sendQueuedMessageMutateAsync).toHaveBeenCalledWith({
+        id: "thr_1",
+        mode: "steer",
+        queuedMessageId: "qmsg_1",
+      });
+    });
   });
 
   it("uses the real thread cache keys immediately", () => {
@@ -1552,41 +1613,39 @@ describe("ThreadDetailPromptArea", () => {
   });
 
   it("keeps plugin banners mounted while pending interaction suspends editor regions", () => {
-    setPluginSlotRegistrations("pending-plugin", {
-      homepageSections: [],
-      settingsSections: [],
-      navPanels: [],
-      threadPanelActions: [],
-      composerCustomizations: [
-        {
-          id: "pending",
-          scopes: ["thread"],
-          actions: [
-            { id: "action", component: () => <button>Editor action</button> },
-          ],
-          plusMenu: [{ id: "menu", label: "Editor menu", run: () => {} }],
-          banners: [
-            {
-              id: "banner",
-              component: () => <div>Persistent plugin banner</div>,
-            },
-          ],
-          richText: {
-            effects: [
+    setPluginSlotRegistrations(
+      "pending-plugin",
+      makePluginRegistrationSet({
+        composerCustomizations: [
+          {
+            id: "pending",
+            scopes: ["thread"],
+            actions: [
+              { id: "action", component: () => <button>Editor action</button> },
+            ],
+            plusMenu: [{ id: "menu", label: "Editor menu", run: () => {} }],
+            banners: [
               {
-                id: "rule",
-                className: "pending-rule",
-                match: (text) => [{ from: 0, to: text.length }],
+                id: "banner",
+                component: () => <div>Persistent plugin banner</div>,
               },
             ],
+            richText: {
+              effects: [
+                {
+                  id: "rule",
+                  className: "pending-rule",
+                  match: (text) => [{ from: 0, to: text.length }],
+                },
+              ],
+            },
           },
-        },
-      ],
-      pendingInteractions: [],
-      sidebarFooterActions: [],
-      fileOpeners: [],
-      messageDirectives: [],
-    });
+        ],
+        pendingInteractions: [],
+        sidebarFooterActions: [],
+        fileOpeners: [],
+      }),
+    );
 
     renderPromptArea({ pendingInteractions: [makePendingInteraction()] });
 

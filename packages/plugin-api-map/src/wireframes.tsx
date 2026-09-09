@@ -70,19 +70,20 @@ export function useSurfaceMap(): SurfaceMapState {
 }
 
 export const APP_SHELL_MARKS = [
-  "nav-panel",
   "sidebar-navigation",
-  "thread-list",
+  "nav-panel",
   "thread-row-status",
+  "thread-list",
   "sidebar-footer",
   "thread-header",
+  "timeline-renderers",
   "message-directives",
   "message-actions",
   "pending-interaction",
   "code-renderers",
   "thread-panel",
   "file-opener",
-  "timeline-renderers",
+  "app-overlay",
   "content-scripts",
 ] as const;
 
@@ -295,13 +296,15 @@ function MeasuredBadge({
   anchor,
   at,
   align = "center",
+  flush = false,
   onActivate,
 }: {
   id: string;
   label: string;
   anchor: string;
   at: "start" | "end" | "above" | "lane";
-  align?: "center" | "end";
+  align?: "start" | "center" | "end";
+  flush?: boolean;
   onActivate?: () => void;
 }) {
   const { setActiveId, numberOf, onSelect } = useSurfaceMap();
@@ -341,7 +344,10 @@ function MeasuredBadge({
         Number(strategy?.dataset.guideScale ?? "1"),
       );
       const chipBox = CHIP_SIZE * counterScale;
-      const chipGap = CHIP_GAP * counterScale;
+      const edgeGap = flush
+        ? parseFloat(getComputedStyle(container).borderLeftWidth || "0")
+        : CHIP_GAP;
+      const chipGap = edgeGap * counterScale;
       const chipTuck = 4 * counterScale;
       const recenter = (chipBox - CHIP_SIZE) / 2;
       const containerOrigin = layoutOrigin(container);
@@ -354,7 +360,11 @@ function MeasuredBadge({
       };
       const centerY = local.top + local.height / 2 - chipBox / 2;
       const anchoredY =
-        align === "end" ? local.top + local.height - chipBox : centerY;
+        align === "start"
+          ? local.top
+          : align === "end"
+            ? local.top + local.height - chipBox
+            : centerY;
       const frame = container.querySelector<HTMLElement>("[data-guide-frame]");
       const frameOrigin = frame ? layoutOrigin(frame) : containerOrigin;
       const frameWidth = frame ? frame.offsetWidth : container.offsetWidth;
@@ -377,6 +387,8 @@ function MeasuredBadge({
                   left: local.left + local.width / 2 - chipBox / 2,
                   top: Math.max(0, (frameLocal.top - chipBox) / 2),
                 };
+      const clamp = (value: number, extent: number) =>
+        Math.max(0, Math.min(value, Math.max(0, extent - chipBox)));
       const clippingFrame =
         container.closest<HTMLElement>("[data-guide-frame]");
       if (clippingFrame) {
@@ -387,9 +399,9 @@ function MeasuredBadge({
           clipLeft + clippingFrame.offsetWidth - chipBox - chipTuck,
         );
       }
-      const clamp = (value: number, extent: number) =>
-        Math.max(0, Math.min(value, Math.max(0, extent - chipBox)));
-      next.left = clamp(next.left, container.offsetWidth);
+      if (!flush) {
+        next.left = clamp(next.left, container.offsetWidth);
+      }
       next.top = clamp(next.top, container.offsetHeight);
       next.left += recenter;
       next.top += recenter;
@@ -411,13 +423,14 @@ function MeasuredBadge({
     );
     if (scaleWrapper) observer.observe(scaleWrapper);
     return () => observer.disconnect();
-  }, [anchor, at, align]);
+  }, [anchor, at, align, flush]);
 
   return (
     <a
       ref={ref}
       data-guide-badge={id}
       data-guide-badge-placement={at}
+      data-guide-badge-align={align}
       href={`#surface-${id}`}
       aria-label={`${label} — jump to details`}
       onClick={(event) => {
@@ -506,9 +519,14 @@ const SIDEBAR_THREADS: readonly { title: string; glyph?: "spin" | "dot" }[] = [
 
 const FOOTER_ITEM_RENDERERS: Record<string, () => ReactNode> = {
   settings: () => <MiniIcon icon={Settings02Icon} className="size-4" />,
-  "plugin-footer-actions": () => (
-    <span className="flex size-5.5 items-center justify-center rounded-md bg-state-hover">
-      <PluginGlyph className="size-3.5" />
+  "plugin-footer-items": () => (
+    <span className="flex items-center gap-1.5">
+      <span className="flex size-5.5 items-center justify-center rounded-md">
+        <PluginGlyph className="size-3.5" />
+      </span>
+      <span className="flex size-5.5 items-center justify-center rounded-md bg-state-hover">
+        <PluginGlyph className="size-3.5" />
+      </span>
     </span>
   ),
   "bug-report": () => <MiniIcon icon={Bug01Icon} className="size-4" />,
@@ -544,7 +562,7 @@ const SIDEBAR_SECTION_RENDERERS: Record<string, () => ReactNode> = {
       <Mark
         id="nav-panel"
         label="Plugin nav panels, above the thread list"
-        className="mx-1.5 space-y-0.5 px-2 pb-2"
+        className="mx-1.5 z-[2] block space-y-0.5 px-2 pb-2"
         showChip={false}
       >
         <span className="flex h-6.5 items-center gap-2 rounded-md px-2">
@@ -607,12 +625,34 @@ const SIDEBAR_SECTION_RENDERERS: Record<string, () => ReactNode> = {
   footer: () => (
     <Mark
       id="sidebar-footer"
-      label="Plugin footer buttons, between Settings and Report a bug"
-      className="mx-1.5 mb-1.5 flex w-fit items-center gap-2 px-2.5 py-2"
+      label="Plugin footer items can run actions or reveal content"
+      className="mx-1.5 mb-1.5 flex w-44 flex-col gap-1.5 p-1.5"
     >
-      {anatomy.sidebarFooter.map((key) => (
-        <Fragment key={key}>{FOOTER_ITEM_RENDERERS[key]?.()}</Fragment>
-      ))}
+      <span className="block w-full overflow-hidden rounded-md border border-border bg-surface-raised-solid">
+        <span className="flex h-6 items-center gap-1 border-b border-border px-1.5">
+          <span className="flex size-4 items-center justify-center rounded bg-state-hover text-2xs text-foreground">
+            A
+          </span>
+          <span className="flex size-4 items-center justify-center rounded text-2xs">
+            B
+          </span>
+          <span className="ml-auto text-2xs">×</span>
+        </span>
+        <span className="block space-y-1.5 p-2">
+          <span className="flex items-center justify-between text-2xs">
+            <span>5-hour limit</span>
+            <span className="text-warning">18% left</span>
+          </span>
+          <span className="block h-1 overflow-hidden rounded-full bg-muted">
+            <span className="block h-full w-4/5 rounded-full bg-warning" />
+          </span>
+        </span>
+      </span>
+      <span className="flex w-full items-center gap-2 px-1 py-0.5">
+        {anatomy.sidebarFooter.map((key) => (
+          <Fragment key={key}>{FOOTER_ITEM_RENDERERS[key]?.()}</Fragment>
+        ))}
+      </span>
     </Mark>
   ),
 };
@@ -877,6 +917,7 @@ export function CommandPaletteWireframe() {
                   label="Plugin actions in bb's quick command palette"
                   anchor='[data-guide-region="command-palette-actions"]'
                   at="start"
+                  flush
                 />
               </div>
             </div>
@@ -916,12 +957,19 @@ export function AppShellWireframe() {
         label="The sidebar navigation controls, replaceable by one plugin"
         anchor='[data-guide-region="sidebar-navigation"]'
         at="start"
+        align="start"
       />
       <MeasuredBadge
         id="thread-list"
         label="The thread list, replaceable by one plugin"
         anchor='[data-guide-region="thread-list"]'
         at="start"
+      />
+      <MeasuredBadge
+        id="thread-header"
+        label="Plugin thread-header control, left end of the action row"
+        anchor='[data-guide-region="thread-header"]'
+        at="above"
       />
       {}
       <MeasuredBadge
@@ -955,7 +1003,7 @@ function AppShellWireframeBody({
     assistantMessageHovered || messageActionsSelected;
 
   return (
-    <WindowFrame className="relative">
+    <WindowFrame className="relative overflow-visible">
       {}
       <span
         aria-hidden
@@ -995,6 +1043,7 @@ function AppShellWireframeBody({
               id="thread-header"
               label="Plugin thread-header control, left end of the action row"
               className="flex h-6.5 items-center gap-1 px-2"
+              showChip={false}
             >
               <PluginGlyph className="size-3.5" />
             </Mark>
@@ -1148,6 +1197,20 @@ function AppShellWireframeBody({
           onTabSelect={onRightPanelTabSelect}
         />
       </div>
+
+      <Mark
+        id="app-overlay"
+        label="App-wide floating plugin interface"
+        className="absolute bottom-24 right-12 z-[6] flex w-44 items-center gap-2 border border-border bg-popover px-3 py-2 text-foreground shadow-md"
+      >
+        <PluginGlyph className="size-4 shrink-0" />
+        <span className="min-w-0">
+          <span className="block truncate font-medium">Floating widget</span>
+          <span className="block truncate text-2xs text-subtle-foreground">
+            2 agents active
+          </span>
+        </span>
+      </Mark>
     </WindowFrame>
   );
 }
@@ -1717,6 +1780,20 @@ export function SettingsWireframe() {
                 className="mt-0.5 flex h-4.5 w-8 shrink-0 items-center rounded-full bg-foreground/60 p-0.5"
               >
                 <span className="ml-auto size-3.5 rounded-full bg-background" />
+              </span>
+            </span>
+            <span className="flex items-start justify-between gap-3 py-1.5">
+              <span className="min-w-0">
+                <span className="block text-foreground">Retry attempts</span>
+                <span className="block pt-1 leading-relaxed">
+                  Maximum retries before stopping.
+                </span>
+              </span>
+              <span
+                aria-hidden
+                className="flex h-6 w-32 shrink-0 items-center rounded-md border border-border bg-card px-2 text-xs text-foreground"
+              >
+                3
               </span>
             </span>
             <span className="block py-1.5">

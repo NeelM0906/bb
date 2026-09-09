@@ -30,6 +30,17 @@ import { getWorkAdmission } from "../../src/data/work-admissions.js";
 import { migrate } from "../../src/migrate.js";
 import { noopNotifier } from "../../src/notifier.js";
 
+function checkoutProvider(hostId: string) {
+  return {
+    environmentProviderId: "project-checkout",
+    instanceKey: null,
+    selection: {
+      machine: { type: "existing" as const, hostId },
+      inputs: null,
+    },
+  };
+}
+
 function setup() {
   const db = createConnection(":memory:");
   migrate(db);
@@ -53,14 +64,16 @@ function setup() {
     path: "/canonical/repo",
     projectId: firstProject.id,
     status: "ready",
-    workspaceProvisionType: "unmanaged",
+    providerOwnsPath: false,
+    environmentProvider: checkoutProvider(host.id),
   });
   const secondEnvironment = createEnvironment(db, noopNotifier, {
     hostId: host.id,
     path: "/canonical/repo",
     projectId: secondProject.id,
     status: "ready",
-    workspaceProvisionType: "unmanaged",
+    providerOwnsPath: false,
+    environmentProvider: checkoutProvider(host.id),
   });
   const firstThread = createThread(db, noopNotifier, {
     environmentId: firstEnvironment.id,
@@ -115,7 +128,8 @@ describe("unmanaged workspace mutation leases", () => {
       path: "/transition",
       projectId: project.id,
       status: "ready",
-      workspaceProvisionType: "unmanaged",
+      providerOwnsPath: false,
+      environmentProvider: checkoutProvider(host.id),
     });
     const thread = createThread(db, noopNotifier, {
       environmentId: environment.id,
@@ -164,7 +178,8 @@ describe("unmanaged workspace mutation leases", () => {
       path: "/queued-transition",
       projectId: project.id,
       status: "ready",
-      workspaceProvisionType: "unmanaged",
+      providerOwnsPath: false,
+      environmentProvider: checkoutProvider(host.id),
     });
     const thread = createThread(db, noopNotifier, {
       environmentId: environment.id,
@@ -225,7 +240,8 @@ describe("unmanaged workspace mutation leases", () => {
       path: "/canonical/retargeted",
       projectId: firstProject.id,
       status: "ready",
-      workspaceProvisionType: "unmanaged",
+      providerOwnsPath: false,
+      environmentProvider: checkoutProvider(host.id),
     });
     const targetHolder = createThread(db, noopNotifier, {
       environmentId: targetEnvironment.id,
@@ -466,18 +482,26 @@ describe("unmanaged workspace mutation leases", () => {
     const { db, firstProject, host } = setup();
     const managed = createEnvironment(db, noopNotifier, {
       hostId: host.id,
-      managed: true,
       path: "/canonical/managed",
       projectId: firstProject.id,
       status: "ready",
-      workspaceProvisionType: "managed-worktree",
+      providerOwnsPath: true,
+      environmentProvider: {
+        environmentProviderId: "git-worktree",
+        instanceKey: null,
+        selection: {
+          machine: { type: "existing", hostId: host.id },
+          inputs: null,
+        },
+      },
     });
     const destroyed = createEnvironment(db, noopNotifier, {
       hostId: host.id,
       path: "/canonical/destroyed",
       projectId: firstProject.id,
       status: "destroyed",
-      workspaceProvisionType: "unmanaged",
+      providerOwnsPath: false,
+    environmentProvider: checkoutProvider(host.id),
     });
 
     expect(isUnmanagedWorkspaceMutationProtected(db, managed.id)).toBe(false);

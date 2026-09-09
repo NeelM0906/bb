@@ -1,20 +1,21 @@
 import {
   and,
+  asc,
   eq,
   inArray,
   isNotNull,
   isNull,
   ne,
+  or,
   sql,
-  lt,
 } from "drizzle-orm";
 import type {
   DiscoveredWorkspaceProperties,
   EnvironmentChangeKind,
   EnvironmentLifecycleEvent,
   EnvironmentLifecycleNoopReason,
+  EnvironmentProviderSelection,
   EnvironmentStatus,
-  WorkspaceProvisionType,
 } from "@bb/domain";
 import { evaluateEnvironmentLifecycleEvent } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
@@ -27,22 +28,26 @@ import { createEnvironmentId } from "../ids.js";
 
 type EnvironmentReadConnection = DbConnection | DbTransaction;
 type EnvironmentWriteConnection = DbConnection | DbTransaction;
-type EnvironmentRow = typeof environments.$inferSelect;
+export type EnvironmentRow = typeof environments.$inferSelect;
 
 export interface CreateEnvironmentInput {
   name?: string | null;
   projectId: string;
   hostId: string;
-  workspaceProvisionType: WorkspaceProvisionType;
   path?: string | null;
-  managed?: boolean;
   isGitRepo?: boolean;
-  isWorktree?: boolean;
   branchName?: string | null;
   baseBranch?: string | null;
   defaultBranch?: string | null;
   mergeBaseBranch?: string | null;
   status?: EnvironmentStatus;
+  providerOwnsPath: boolean;
+  environmentProvider?: {
+    environmentProviderId: string;
+    pluginId?: string;
+    instanceKey: string | null;
+    selection: EnvironmentProviderSelection;
+  } | null;
 }
 
 export function createEnvironment(
@@ -60,16 +65,20 @@ export function createEnvironment(
       projectId: input.projectId,
       hostId: input.hostId,
       path: input.path ?? null,
-      managed: input.managed ?? false,
       isGitRepo: input.isGitRepo ?? false,
-      isWorktree: input.isWorktree ?? false,
       branchName: input.branchName ?? null,
       baseBranch: input.baseBranch ?? null,
       defaultBranch: input.defaultBranch ?? null,
       mergeBaseBranch: input.mergeBaseBranch ?? null,
-      workspaceProvisionType: input.workspaceProvisionType,
+      environmentProviderId:
+        input.environmentProvider?.environmentProviderId ?? null,
+      environmentProviderPluginId: input.environmentProvider?.pluginId ?? null,
+      environmentProviderSelection:
+        input.environmentProvider?.selection ?? null,
+      environmentProviderInstanceKey:
+        input.environmentProvider?.instanceKey ?? null,
+      providerOwnsPath: input.providerOwnsPath,
       status: input.status ?? "provisioning",
-      retireRequestedAt: input.status === "retiring" ? now : null,
       createdAt: now,
       updatedAt: now,
     })
@@ -112,6 +121,28 @@ export interface FindForeignManagedEnvironmentAtHostPathArgs {
   projectId: string;
 }
 
+export function findProviderEnvironmentContainingPath(
+  db: DbConnection,
+  path: string,
+) {
+  return (
+    db
+      .select()
+      .from(environments)
+      .where(
+        and(
+          or(
+            eq(environments.path, path),
+            sql`${path} LIKE ${environments.path} || '/%'`,
+          ),
+          eq(environments.providerOwnsPath, true),
+          ne(environments.status, "destroyed"),
+        ),
+      )
+      .get() ?? null
+  );
+}
+
 export function findForeignManagedEnvironmentAtHostPath(
   db: DbConnection,
   args: FindForeignManagedEnvironmentAtHostPathArgs,
@@ -123,8 +154,11 @@ export function findForeignManagedEnvironmentAtHostPath(
       .where(
         and(
           eq(environments.hostId, args.hostId),
-          eq(environments.path, args.path),
-          eq(environments.managed, true),
+          or(
+            eq(environments.path, args.path),
+            sql`${args.path} LIKE ${environments.path} || '/%'`,
+          ),
+          eq(environments.providerOwnsPath, true),
           ne(environments.projectId, args.projectId),
           ne(environments.status, "destroyed"),
         ),
@@ -133,15 +167,52 @@ export function findForeignManagedEnvironmentAtHostPath(
   );
 }
 
-export function listEnvironments(db: DbConnection, projectId?: string) {
-  if (projectId) {
-    return db
-      .select()
-      .from(environments)
-      .where(eq(environments.projectId, projectId))
-      .all();
-  }
-  return db.select().from(environments).all();
+export interface ListEnvironmentsFilters {
+  environmentProviderId?: string;
+  hostId?: string;
+  instanceKey?: string;
+  limit?: number;
+  offset?: number;
+  path?: string;
+  projectId?: string;
+  statuses?: readonly EnvironmentStatus[];
+}
+
+export function listEnvironments(
+  db: DbConnection,
+  filters: ListEnvironmentsFilters = {},
+) {
+  const conditions = [
+    filters.projectId === undefined
+      ? undefined
+      : eq(environments.projectId, filters.projectId),
+    filters.hostId === undefined
+      ? undefined
+      : eq(environments.hostId, filters.hostId),
+    filters.environmentProviderId === undefined
+      ? undefined
+      : eq(environments.environmentProviderId, filters.environmentProviderId),
+    filters.instanceKey === undefined
+      ? undefined
+      : eq(environments.environmentProviderInstanceKey, filters.instanceKey),
+    filters.path === undefined
+      ? undefined
+      : eq(environments.path, filters.path),
+    filters.statuses === undefined
+      ? undefined
+      : inArray(environments.status, [...filters.statuses]),
+  ].filter((condition) => condition !== undefined);
+  const query = db
+    .select()
+    .from(environments)
+    .where(conditions.length === 0 ? undefined : and(...conditions))
+    .orderBy(asc(environments.createdAt), asc(environments.id))
+    .$dynamic();
+  const limited =
+    filters.limit === undefined ? query : query.limit(filters.limit);
+  const paged =
+    filters.offset === undefined ? limited : limited.offset(filters.offset);
+  return paged.all();
 }
 
 export function listUncanonicalizedLiveUnmanagedEnvironmentsOnHost(
@@ -161,7 +232,7 @@ export function listUncanonicalizedLiveUnmanagedEnvironmentsOnHost(
     .where(
       and(
         eq(environments.hostId, hostId),
-        eq(environments.workspaceProvisionType, "unmanaged"),
+        eq(environments.providerOwnsPath, false),
         ne(environments.status, "destroyed"),
         isNotNull(environments.path),
         isNull(environmentPathCanonicalizations.environmentId),
@@ -334,7 +405,10 @@ function updateEnvironmentMetadataRecord(
   const metadata = buildEnvironmentMetadataUpdateSet(metadataInput);
   const updated = db
     .update(environments)
-    .set({ ...metadata, updatedAt: Date.now() })
+    .set({
+      ...metadata,
+      updatedAt: Date.now(),
+    })
     .where(eq(environments.id, id))
     .returning()
     .get();
@@ -373,7 +447,6 @@ export function recordEnvironmentCurrentBranch(
   });
 }
 
-/** Persist a host-observed canonical path for a legacy unmanaged workspace. */
 export function recordEnvironmentCanonicalPath(
   db: EnvironmentWriteConnection,
   notifier: DbNotifier,
@@ -406,6 +479,42 @@ function recordEnvironmentPathCanonicalization(
       set: { canonicalPath, confirmedAt, path },
     })
     .run();
+}
+
+export function recordEnvironmentProviderProvenance(
+  db: EnvironmentWriteConnection,
+  notifier: DbNotifier,
+  id: string,
+  input: {
+    environmentProviderId: string;
+    instanceKey: string | null;
+    selection: EnvironmentProviderSelection;
+  },
+) {
+  const existing = getEnvironment(db, id);
+  if (existing === null) return null;
+  const updated = db
+    .update(environments)
+    .set({
+      environmentProviderId: input.environmentProviderId,
+      environmentProviderInstanceKey: input.instanceKey,
+      environmentProviderSelection: input.selection,
+      updatedAt: Date.now(),
+    })
+    .where(eq(environments.id, id))
+    .returning()
+    .get();
+  if (updated === undefined) return null;
+  if (
+    existing.environmentProviderId !== updated.environmentProviderId ||
+    existing.environmentProviderInstanceKey !==
+      updated.environmentProviderInstanceKey ||
+    JSON.stringify(existing.environmentProviderSelection) !==
+      JSON.stringify(updated.environmentProviderSelection)
+  ) {
+    notifier.notifyEnvironment(id, ["metadata-changed"]);
+  }
+  return updated;
 }
 
 export interface RecordProvisionedEnvironmentWorkspaceInput extends DiscoveredWorkspaceProperties {
@@ -466,27 +575,6 @@ export function recordObservedEnvironmentWorkspaceMetadata(
     input.path,
   );
   return updated;
-}
-
-export interface ListStaleDestroyingManagedEnvironmentsArgs {
-  updatedBefore: number;
-}
-
-export function listStaleDestroyingManagedEnvironments(
-  db: DbConnection,
-  args: ListStaleDestroyingManagedEnvironmentsArgs,
-) {
-  return db
-    .select()
-    .from(environments)
-    .where(
-      and(
-        eq(environments.managed, true),
-        eq(environments.status, "destroying"),
-        lt(environments.updatedAt, args.updatedBefore),
-      ),
-    )
-    .all();
 }
 
 export type ApplyEnvironmentLifecycleEventNoopReason =
@@ -569,27 +657,7 @@ export function applyEnvironmentLifecycleEventInTransaction(
     status: evaluation.to,
     updatedAt: now,
   };
-  if (args.event.type === "retire.requested") {
-    set.retireRequestedAt = now;
-  } else if (
-    evaluation.to === "ready" ||
-    evaluation.to === "provisioning" ||
-    evaluation.to === "destroyed"
-  ) {
-    set.retireRequestedAt = null;
-  }
-  if (args.event.type === "destroy.started") {
-    set.destroyAttemptId = args.event.destroyAttemptId;
-  }
-  if (
-    args.event.type === "destroy.failed" ||
-    evaluation.to === "ready" ||
-    evaluation.to === "provisioning"
-  ) {
-    set.destroyAttemptId = null;
-  }
   if (evaluation.to === "destroyed") {
-    set.destroyAttemptId = null;
     set.path = null;
   }
 
@@ -597,7 +665,7 @@ export function applyEnvironmentLifecycleEventInTransaction(
     eq(environments.id, args.environmentId),
     eq(environments.status, environment.status),
   ];
-  if (args.event.type === "destroy.started") {
+  if (args.event.type === "destroy.recorded") {
     conditions.push(
       sql`NOT EXISTS (
         SELECT 1 FROM threads

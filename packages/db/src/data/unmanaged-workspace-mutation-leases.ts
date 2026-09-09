@@ -72,7 +72,7 @@ function protectedWorkspaceKey(
   if (
     !target ||
     target.path === null ||
-    target.workspaceProvisionType !== "unmanaged" ||
+    target.environmentProviderId !== "project-checkout" ||
     target.status === "destroyed"
   ) {
     return null;
@@ -106,7 +106,7 @@ function protectedWorkspaceKey(
           sql<string>`coalesce(${environmentPathCanonicalizations.canonicalPath}, ${environments.path})`,
           canonicalPath,
         ),
-        eq(environments.workspaceProvisionType, "unmanaged"),
+        eq(environments.environmentProviderId, "project-checkout"),
         ne(environments.status, "destroyed"),
         isNotNull(environments.path),
         eq(projects.protectUnmanagedWorkspace, true),
@@ -137,7 +137,7 @@ export function hasProtectedUnmanagedWorkspaceOnHost(
       .where(
         and(
           eq(environments.hostId, hostId),
-          eq(environments.workspaceProvisionType, "unmanaged"),
+          eq(environments.environmentProviderId, "project-checkout"),
           ne(environments.status, "destroyed"),
           isNotNull(environments.path),
           eq(projects.protectUnmanagedWorkspace, true),

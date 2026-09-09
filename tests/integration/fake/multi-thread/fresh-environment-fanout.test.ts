@@ -14,15 +14,19 @@ import { createTestGitRepo } from "../../helpers/seed.js";
 import { scaleTimeoutMs } from "../../helpers/time.js";
 import { DEFAULT_TIMEOUT_MS } from "./shared.js";
 
-const FANOUT_PROVIDERS: ReadonlyArray<string> = ["fake", "fake-alpha"];
-const THREADS_PER_PROVIDER = 2;
-const FRESH_FANOUT_TIMEOUT_MS = scaleTimeoutMs(30_000);
+const FANOUT_PROVIDERS: ReadonlyArray<string> = [
+  "fake",
+  "fake-alpha",
+  "fake-beta",
+];
+const THREADS_PER_PROVIDER = 5;
+const FRESH_FANOUT_TIMEOUT_MS = scaleTimeoutMs(45_000);
 
-describe.sequential(
-  "fake provider fresh-environment fanout integration",
-  () => {
-    it("runs same-source managed worktree setup scripts concurrently", () =>
-      withHarness(async (harness) => {
+describe.sequential("fake provider fresh-environment fanout integration", () => {
+  it("runs same-source managed worktree setup scripts concurrently", () =>
+    withHarness(
+      { builtinPlugins: ["environment-git-worktree"] },
+      async (harness) => {
         const coordinationDir = path.join(
           path.dirname(harness.repoDir),
           "setup-coordination",
@@ -110,64 +114,73 @@ describe.sequential(
         expect(await getThreadOutput(harness.api, secondThread.id)).toContain(
           "second concurrent setup",
         );
-      }));
+      },
+    ));
 
-    it(
-      "starts two fresh managed-worktree threads per provider",
-      () =>
-        withHarness(async (harness) => {
-          const sourceRepo = await createTestGitRepo({
-            repoDir: path.join(path.dirname(harness.repoDir), "fanout-project"),
-            files: [
-              {
-                relativePath: "README.md",
-                content: "fanout project\n",
-              },
-            ],
-          });
-          const project = await createProjectFixture(harness, {
-            name: "Fresh Environment Fanout",
-            path: sourceRepo,
-          });
-          const requests = FANOUT_PROVIDERS.flatMap((providerId) =>
-            Array.from({ length: THREADS_PER_PROVIDER }, (_, index) => ({
-              index: index + 1,
-              providerId,
-            })),
-          );
+  it("starts five fresh managed-worktree threads per provider concurrently", () =>
+    withHarness(
+      { builtinPlugins: ["environment-git-worktree"] },
+      async (harness) => {
+        const project = await createProjectFixture(harness, {
+          name: "Fresh Environment Fanout",
+        });
+        const requests = FANOUT_PROVIDERS.flatMap((providerId) =>
+          Array.from({ length: THREADS_PER_PROVIDER }, (_, index) => ({
+            index: index + 1,
+            providerId,
+          })),
+        );
 
-          // Sequential: same-source worktree adds serialize on the git metadata
-          // lock, and overlapping provision RPCs retry instead of waiting.
-          for (const request of requests) {
+        const spawned = await Promise.all(
+          requests.map(async (request) => {
             const token = `${request.providerId}-fresh-${request.index}`;
-            const created = await createHostThread(harness.api, {
+            const thread = await createHostThread(harness.api, {
               hostId: harness.hostId,
               input: [{ type: "text", text: token, mentions: [] }],
               projectId: project.id,
               providerId: request.providerId,
               workspace: { type: "managed-worktree" },
             });
-            const thread = await waitForThreadStatus(
+            return { ...request, thread, token };
+          }),
+        );
+
+        const readyThreads = await Promise.all(
+          spawned.map(async (entry) => ({
+            ...entry,
+            thread: await waitForThreadStatus(
               harness.api,
-              created.id,
+              entry.thread.id,
               "idle",
               FRESH_FANOUT_TIMEOUT_MS,
+            ),
+          })),
+        );
+
+        for (const entry of readyThreads) {
+          expect(entry.thread.environmentId).toBeTruthy();
+          const output = await getThreadOutput(harness.api, entry.thread.id);
+          if (!output?.includes(entry.token)) {
+            const events = await getThreadEvents(harness.api, entry.thread.id);
+            throw new Error(
+              [
+                `Missing output for ${entry.thread.id}`,
+                `provider=${entry.providerId}`,
+                `token=${entry.token}`,
+                `status=${entry.thread.status}`,
+                `output=${JSON.stringify(output)}`,
+                `events=${events
+                  .map((event) => `${event.seq}:${event.type}`)
+                  .join(",")}`,
+              ].join("; "),
             );
-            expect(thread.environmentId).toBeTruthy();
-            expect(await getThreadOutput(harness.api, thread.id)).toContain(
-              token,
-            );
-            expect(
-              (await getThreadEvents(harness.api, thread.id)).every(
-                (event) => event.threadId === thread.id,
-              ),
-            ).toBe(true);
           }
-        }),
-      FRESH_FANOUT_TIMEOUT_MS *
-        FANOUT_PROVIDERS.length *
-        THREADS_PER_PROVIDER +
-        scaleTimeoutMs(20_000),
-    );
-  },
-);
+          expect(
+            (await getThreadEvents(harness.api, entry.thread.id)).every(
+              (event) => event.threadId === entry.thread.id,
+            ),
+          ).toBe(true);
+        }
+      },
+    ));
+});

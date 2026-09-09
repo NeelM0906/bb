@@ -304,7 +304,7 @@ function assertUnmanagedWorkspaceProtectionCanBeEnabled(
     .where(
       and(
         eq(environments.projectId, project.id),
-        eq(environments.workspaceProvisionType, "unmanaged"),
+        eq(environments.environmentProviderId, "project-checkout"),
         ne(environments.status, "destroyed"),
       ),
     )
@@ -325,7 +325,7 @@ function assertUnmanagedWorkspaceProtectionCanBeEnabled(
       and(
         inArray(workAdmissions.status, ["waiting", "running"]),
         inArray(environments.hostId, hostIds),
-        eq(environments.workspaceProvisionType, "unmanaged"),
+        eq(environments.environmentProviderId, "project-checkout"),
         ne(environments.status, "destroyed"),
       ),
     )

@@ -50,7 +50,8 @@ describe("public project local host routes", () => {
         path: "/tmp/protection-transition",
         projectId: project.id,
         status: "ready",
-        workspaceProvisionType: "unmanaged",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
       });
       const thread = seedThread(harness.deps, {
         environmentId: environment.id,

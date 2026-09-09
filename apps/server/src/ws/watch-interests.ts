@@ -403,7 +403,6 @@ export class WatchInterestCoordinator {
             environmentId: environment.id,
             workspaceContext: workspaceContextFromPath({
               path: workspacePath,
-              workspaceProvisionType: environment.workspaceProvisionType,
             }),
           },
         };

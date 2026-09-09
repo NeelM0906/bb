@@ -39,6 +39,7 @@ import {
   SETTINGS_PLUGIN_ROUTE_PATH,
   SETTINGS_PLUGINS_ROUTE_PATH,
   SETTINGS_MACHINE_ROUTE_PATH,
+  SETTINGS_PROJECT_ROUTE_PATH,
   SETTINGS_ROUTE_PATH,
   SETTINGS_SECTION_ROUTE_PATH,
   SKILLS_ROUTE_PATH,
@@ -56,7 +57,6 @@ import {
 } from "./lib/route-paths";
 import { AppCommandProvider } from "./components/commands/AppCommandProvider";
 import { ProviderCliInstallLogDialogHost } from "./components/provider-cli/provider-cli-install";
-import { PluginSettingsCompatibilityRoute } from "./components/settings/PluginSettingsCompatibilityRoute";
 import { RouteLoadingSkeleton } from "./components/ui/route-loading-skeleton";
 
 const SettingsView = lazy(() =>
@@ -67,6 +67,11 @@ const SettingsView = lazy(() =>
 const ToolsView = lazy(() =>
   import("./views/ToolsView").then((m) => ({
     default: m.ToolsView,
+  })),
+);
+const ProjectDetailSettingsView = lazy(() =>
+  import("./views/ProjectDetailSettingsView").then((m) => ({
+    default: m.ProjectDetailSettingsView,
   })),
 );
 const MachineSettingsView = lazy(() =>
@@ -215,23 +220,16 @@ function AppRoutes() {
           />
           <Route
             path={SETTINGS_PLUGINS_ROUTE_PATH}
-            element={
-              <PluginSettingsCompatibilityRoute>
-                <SettingsView />
-              </PluginSettingsCompatibilityRoute>
-            }
+            element={<SettingsView />}
           />
-          <Route
-            path={SETTINGS_PLUGIN_ROUTE_PATH}
-            element={
-              <PluginSettingsCompatibilityRoute>
-                <SettingsView />
-              </PluginSettingsCompatibilityRoute>
-            }
-          />
+          <Route path={SETTINGS_PLUGIN_ROUTE_PATH} element={<SettingsView />} />
           <Route
             path={SETTINGS_MACHINE_ROUTE_PATH}
             element={<MachineSettingsView />}
+          />
+          <Route
+            path={SETTINGS_PROJECT_ROUTE_PATH}
+            element={<ProjectDetailSettingsView />}
           />
           <Route
             path={PROJECT_SETTINGS_ROUTE_PATH}
@@ -295,7 +293,10 @@ function AppRoutes() {
             path={TOOLS_REGISTRY_SKILL_DETAIL_ROUTE_PATH}
             element={<ToolsView />}
           />
-          <Route path={TOOLS_PLUGINS_ROUTE_PATH} element={<ToolsView />} />
+          <Route
+            path={`${TOOLS_PLUGINS_ROUTE_PATH}/*`}
+            element={<ToolsPluginsRoute />}
+          />
           <Route
             path={TOOLS_PLUGIN_BROWSE_ROUTE_PATH}
             element={<ExtensionsLandingRedirect />}
@@ -326,6 +327,11 @@ function RouteContentPaintSignal() {
     markRouteContentPainted();
   }, []);
   return null;
+}
+
+function ToolsPluginsRoute() {
+  const { "*": pluginId } = useParams<"*">();
+  return <ToolsView pluginId={pluginId || undefined} />;
 }
 
 export function App() {

@@ -164,7 +164,7 @@ describe("plugin server build", () => {
       await expect(
         buildPluginServer(dir, "0.0.0-test", await testToolchain()),
       ).rejects.toThrow(
-        `"@get-bb/plugin-sdk/host" is installed for this plugin but its dist is not built: run the SDK build (${join(sdkDir, "dist", "host.js")} is missing)`,
+        `"@get-bb/plugin-sdk/host" is installed for this plugin but its dist is not built: run the SDK build (${join(await realpath(sdkDir), "dist", "host.js")} is missing)`,
       );
     });
   });

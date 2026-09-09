@@ -31,15 +31,19 @@ function makeEnvironment(overrides: EnvironmentOverrides = {}): Environment {
     projectId: "proj_test",
     hostId: "host_test",
     path: "/workspace",
-    managed: false,
     isGitRepo: true,
     isWorktree: false,
-    workspaceProvisionType: "unmanaged",
     baseBranch: null,
     branchName: null,
     defaultBranch: null,
     mergeBaseBranch: null,
     status: "ready",
+    environmentProviderId: null,
+    environmentProviderSelection: null,
+    environmentProviderInstanceKey: null,
+    lifecycle: { phase: "active", retireAt: null, teardown: null },
+    managed: false,
+    workspaceProvisionType: null,
     createdAt: 1,
     updatedAt: 2,
     ...overrides,
@@ -289,6 +293,38 @@ describe("@bb/sdk", () => {
         bodyText: JSON.stringify({ themeId: "nord", faviconColor: "purple" }),
         method: "PUT",
         url: "http://bb.test/api/v1/settings/appearance",
+      },
+    ]);
+  });
+
+  it("resolves a theme by id without touching the active appearance", async () => {
+    const resolved = {
+      themeId: "plugin:pack:ocean",
+      customCss: ":root { --canvas: black; }",
+      faviconColor: "purple" as const,
+      resolvedCodeTheme: {
+        dark: "github-dark",
+        light: "github-light",
+        files: {},
+      },
+    };
+    const queue = createFetchQueue([{ body: resolved }]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await expect(
+      sdk.theme.resolve({ themeId: "plugin:pack:ocean" }),
+    ).resolves.toEqual(resolved);
+    expect(queue.requests).toEqual([
+      {
+        bodyText: undefined,
+        method: "GET",
+        url: "http://bb.test/api/v1/settings/themes/plugin:pack:ocean",
       },
     ]);
   });
@@ -603,6 +639,49 @@ describe("@bb/sdk", () => {
         bodyText: undefined,
         method: "GET",
         url: "http://bb.test/api/v1/system/usage-limits?hostId=host_remote&providerId=codex",
+      },
+    ]);
+  });
+
+  it("lists environment providers as an array for a project and machine", async () => {
+    const providers = [
+      {
+        id: "project-checkout",
+        displayName: "Project checkout",
+        icon: null,
+        logoUrl: null,
+        pluginId: "environment-project-checkout",
+        requires: {
+          projectCheckout: true,
+          gitCheckout: false,
+          gitRemote: false,
+          projectless: false,
+        },
+        inputs: null,
+        acceptsEmptyInputs: true,
+        availability: { status: "available" as const },
+      },
+    ];
+    const queue = createFetchQueue([{ body: { providers } }]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await expect(
+      sdk.environments.listProviders({
+        projectId: "proj_test",
+        hostId: "host_test",
+      }),
+    ).resolves.toEqual(providers);
+    expect(queue.requests).toEqual([
+      {
+        bodyText: undefined,
+        method: "GET",
+        url: "http://bb.test/api/v1/system/environment-providers?projectId=proj_test&hostId=host_test",
       },
     ]);
   });
@@ -1017,7 +1096,7 @@ describe("@bb/sdk", () => {
     );
   });
 
-  it("fills thread fork defaults and preserves an agent-only context seed", async () => {
+  it("defaults thread forks to source-environment reuse and preserves an agent-only context seed", async () => {
     const queue = createFetchQueue([{ body: { id: "thr_fork" }, status: 201 }]);
     const sdk = createBbSdk({
       transport: createHttpTransport({
@@ -1055,7 +1134,6 @@ describe("@bb/sdk", () => {
       ],
       origin: "sdk",
       visibility: "visible",
-      workspace: "isolated",
     });
   });
 
@@ -1301,9 +1379,11 @@ describe("@bb/sdk", () => {
         body: {
           ok: true,
           delivery: "queued",
-          queuedMessageId: "qm_1",
-          waitingOn: { kind: "time" },
-          sendAt: 1750,
+          queuedMessage: {
+            id: "qm_1",
+            waitingOn: { kind: "time" },
+            sendAt: 1750,
+          },
         },
       },
     ]);
@@ -1329,9 +1409,11 @@ describe("@bb/sdk", () => {
     ).resolves.toEqual({
       ok: true,
       delivery: "queued",
-      queuedMessageId: "qm_1",
-      waitingOn: { kind: "time" },
-      sendAt: 1750,
+      queuedMessage: {
+        id: "qm_1",
+        waitingOn: { kind: "time" },
+        sendAt: 1750,
+      },
     });
 
     expect(queue.requests[0].url).toBe(
@@ -1492,6 +1574,8 @@ describe("@bb/sdk", () => {
       enabled: true,
       description: "Notes",
       name: "Notes",
+      screenshots: [],
+      collections: [],
       icon: null,
       iconUrl: null,
       status: "running" as const,
@@ -1567,6 +1651,13 @@ describe("@bb/sdk", () => {
               incompatibleReason: null,
             },
           ],
+          collections: [
+            {
+              id: "featured",
+              displayName: "Featured",
+              pluginIds: ["notes"],
+            },
+          ],
         },
       },
     ]);
@@ -1600,9 +1691,16 @@ describe("@bb/sdk", () => {
     await expect(sdk.plugins.catalog.status()).resolves.toEqual(catalog);
     await expect(
       sdk.plugins.catalog.search({ query: "notes" }),
-    ).resolves.toMatchObject([
-      { entryId: "notes", pluginId: "notes", compatible: true },
-    ]);
+    ).resolves.toMatchObject({
+      results: [{ entryId: "notes", pluginId: "notes", compatible: true }],
+      collections: [
+        {
+          id: "featured",
+          displayName: "Featured",
+          pluginIds: ["notes"],
+        },
+      ],
+    });
     expect(queue.requests).toEqual([
       {
         bodyText: undefined,

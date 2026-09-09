@@ -76,6 +76,7 @@ import {
   getClaudeProviderUsage,
 } from "./provider-maintenance.js";
 import {
+  buildChromeExtraArgs,
   buildReadonlyDenialMessage,
   buildMutableFlagSettings,
   buildSessionOptions,
@@ -200,14 +201,26 @@ interface ClaudeSessionPermissionGrantCoverageArgs {
   toolName: string;
 }
 
+type ClaudeSdkSessionState = Extract<
+  SDKMessage,
+  { type: "system"; subtype: "session_state_changed" }
+>["state"];
+
+interface ClaudeSessionRestart {
+  reason: string;
+  showRuntimeNote: boolean;
+}
+
 interface ThreadSession {
   session: SdkSession;
   attachment: ThreadAttachment;
   sessionSerial: number;
   closing: boolean;
   pendingForwardedToolCalls: number;
-  restartBeforeNextTurnReason: string | null;
+  pendingSessionCronIds: Set<string>;
+  restartBeforeNextTurn: ClaudeSessionRestart | null;
   recoveryHintRaisedThisTurn: "authRequired" | "rateLimited" | null;
+  sdkSessionState: ClaudeSdkSessionState | undefined;
   streamEnded: boolean;
   translator: ClaudeDeltaTranslator;
   pendingInteractiveRequests: Map<string | number, PendingInteractiveRequest>;
@@ -221,6 +234,7 @@ interface ThreadSession {
 }
 
 interface ThreadAttachment {
+  envSignature: string;
   sessionConstructionConfig: SessionConstructionConfig;
   sessionOptions: SdkSessionOptions;
   closing: boolean;
@@ -288,14 +302,14 @@ type SessionConstructionParams =
 interface ReplaceThreadSessionArgs {
   attachment: ThreadAttachment;
   providerThreadId: string;
-  reason: string;
+  restart: ClaudeSessionRestart;
   threadId: string;
   threadSession: ThreadSession;
 }
 
 interface ReplaceThreadSessionBeforeNextTurnArgs {
   attachment: ThreadAttachment;
-  reason: string;
+  restart: ClaudeSessionRestart;
   threadId: string;
   threadSession: ThreadSession;
 }
@@ -384,6 +398,7 @@ function requireSkillPluginsRoot(): string {
 
 const THREAD_STOP_CLOSE_TIMEOUT_MS = 4_000;
 export const CLAUDE_IDLE_QUERY_GRACE_MS = 30_000;
+const CLAUDE_CHROME_SETTING_RESTART_REASON = "Claude in Chrome setting changed";
 
 const { send, sendResult, sendError } = createBridgeIo<
   SdkMessageNotification | BridgeEventNotification | BridgeToolCallRequest
@@ -417,7 +432,10 @@ function isThreadSessionQuiescent(
   return (
     !threadSession.translator.hasOpenSessionWork(threadId) &&
     threadSession.pendingForwardedToolCalls === 0 &&
-    threadSession.pendingInteractiveRequests.size === 0
+    threadSession.pendingInteractiveRequests.size === 0 &&
+    threadSession.pendingSessionCronIds.size === 0 &&
+    (threadSession.sdkSessionState === undefined ||
+      threadSession.sdkSessionState === "idle")
   );
 }
 
@@ -480,6 +498,29 @@ function applyIdleQueryReleaseSetting(
   attachment.idleQueryReleaseEnabled = enabled;
   if (!enabled) {
     cancelIdleQueryRelease(attachment);
+  }
+}
+
+function applyChromeSetting(
+  attachment: ThreadAttachment,
+  enabled: boolean | undefined,
+): void {
+  const sessionOptions = attachment.sessionConstructionConfig.sessionOptions;
+  if (enabled === undefined || sessionOptions.chromeEnabled === enabled) {
+    return;
+  }
+  sessionOptions.chromeEnabled = enabled;
+  const extraArgs = buildChromeExtraArgs(enabled);
+  if (extraArgs) {
+    attachment.sessionOptions.extraArgs = extraArgs;
+  } else {
+    delete attachment.sessionOptions.extraArgs;
+  }
+  if (attachment.residentSession) {
+    attachment.residentSession.restartBeforeNextTurn = {
+      reason: CLAUDE_CHROME_SETTING_RESTART_REASON,
+      showRuntimeNote: false,
+    };
   }
 }
 
@@ -872,6 +913,7 @@ function emitSessionReplacement(args: {
   contextLost: boolean;
   providerThreadId: string | null;
   reason: string;
+  showRuntimeNote?: boolean;
   threadId: string;
   threadSession: ThreadSession;
 }): void {
@@ -887,6 +929,7 @@ function emitSessionReplacement(args: {
       providerThreadId: args.providerThreadId,
       reason: args.reason,
       contextLost: args.contextLost,
+      showRuntimeNote: args.showRuntimeNote ?? false,
     },
   });
 }
@@ -928,6 +971,7 @@ function toSessionConstructionConfig(
     sessionOptions: {
       additionalWorkspaceWriteRoots: params.additionalWorkspaceWriteRoots,
       baseInstructions: params.baseInstructions,
+      chromeEnabled: params.chromeEnabled,
       cwd: params.cwd,
       disallowedTools: params.disallowedTools,
       instructionMode: params.instructionMode,
@@ -1001,6 +1045,9 @@ function createThreadAttachment(
   args: CreateThreadAttachmentArgs,
 ): ThreadAttachment {
   const attachment: ThreadAttachment = {
+    envSignature: environmentSignature(
+      readConfigEnvOverrides(args.sessionConstructionConfig.config),
+    ),
     sessionConstructionConfig: args.sessionConstructionConfig,
     sessionOptions: args.sessionOptions,
     closing: false,
@@ -1039,6 +1086,7 @@ function createThreadSession(attachment: ThreadAttachment): ThreadSession {
 
   const translator = createClaudeDeltaTranslator({
     cwd: attachment.sessionConstructionConfig.sessionOptions.cwd,
+    sandboxEnabled: attachment.sessionOptions.sandbox?.enabled === true,
   });
   translator.configureInjectedTools(
     (attachment.sessionConstructionConfig.dynamicTools ?? []).map((tool) => ({
@@ -1054,8 +1102,10 @@ function createThreadSession(attachment: ThreadAttachment): ThreadSession {
     sessionSerial,
     closing: false,
     pendingForwardedToolCalls: 0,
-    restartBeforeNextTurnReason: null,
+    pendingSessionCronIds: new Set(),
+    restartBeforeNextTurn: null,
     recoveryHintRaisedThisTurn: null,
+    sdkSessionState: undefined,
     streamEnded: false,
     translator,
     pendingInteractiveRequests: new Map(),
@@ -1176,7 +1226,7 @@ function trackSdkAssistantPermissionEscalation(
   }
 }
 
-function buildPermissionEscalationTrackingHooks(
+function buildSessionTrackingHooks(
   threadIdRef: ThreadIdRef,
 ): NonNullable<SdkSessionOptions["hooks"]> {
   const trackPermissionRequest: HookCallback = async (input, toolUseId) => {
@@ -1306,23 +1356,40 @@ function buildPermissionEscalationTrackingHooks(
     return { continue: true };
   };
 
+  const trackSessionCrons: HookCallback = async (input) => {
+    if (input.hook_event_name !== "Stop" || input.session_crons === undefined) {
+      return { continue: true };
+    }
+    const threadSession = threadAttachments.get(
+      threadIdRef.current,
+    )?.residentSession;
+    if (threadSession) {
+      threadSession.pendingSessionCronIds = new Set(
+        input.session_crons.map((cron) => cron.id),
+      );
+      refreshIdleQueryRelease(threadSession, threadIdRef.current);
+    }
+    return { continue: true };
+  };
+
   return {
     PermissionDenied: [{ hooks: [clearToolUse] }],
     PermissionRequest: [{ hooks: [trackPermissionRequest] }],
     PostToolUse: [{ hooks: [clearToolUse] }],
     PostToolUseFailure: [{ hooks: [clearToolUse] }],
     PreToolUse: [{ hooks: [trackPreToolUse] }],
+    Stop: [{ hooks: [trackSessionCrons] }],
     SubagentStart: [{ hooks: [trackSubagentStart] }],
     SubagentStop: [{ hooks: [clearSubagent] }],
   };
 }
 
-function addPermissionEscalationTrackingHooks(
+function addSessionTrackingHooks(
   sessionOptions: SdkSessionOptions,
   threadIdRef: ThreadIdRef,
 ): void {
   const existingHooks = sessionOptions.hooks;
-  const trackingHooks = buildPermissionEscalationTrackingHooks(threadIdRef);
+  const trackingHooks = buildSessionTrackingHooks(threadIdRef);
   sessionOptions.hooks = {
     ...existingHooks,
     PermissionDenied: [
@@ -1345,6 +1412,7 @@ function addPermissionEscalationTrackingHooks(
       ...(trackingHooks.PreToolUse ?? []),
       ...(existingHooks?.PreToolUse ?? []),
     ],
+    Stop: [...(trackingHooks.Stop ?? []), ...(existingHooks?.Stop ?? [])],
     SubagentStart: [
       ...(trackingHooks.SubagentStart ?? []),
       ...(existingHooks?.SubagentStart ?? []),
@@ -1365,18 +1433,19 @@ function buildTrackedSessionOptions(
     withTrackedPermissionEscalation(params, threadIdRef),
     env,
   );
-  addPermissionEscalationTrackingHooks(sessionOptions, threadIdRef);
+  addSessionTrackingHooks(sessionOptions, threadIdRef);
   sessionOptions.recordThreadId = () => threadIdRef.current;
   return sessionOptions;
 }
 
 function replaceThreadSession(args: ReplaceThreadSessionArgs): ThreadSession {
   args.threadSession.closing = true;
-  resolvePendingSessionWork(args.threadSession, args.reason);
+  resolvePendingSessionWork(args.threadSession, args.restart.reason);
   emitSessionReplacement({
     contextLost: false,
     providerThreadId: args.providerThreadId,
-    reason: args.reason,
+    reason: args.restart.reason,
+    showRuntimeNote: args.restart.showRuntimeNote,
     threadId: args.threadId,
     threadSession: args.threadSession,
   });
@@ -1404,7 +1473,7 @@ function replaceThreadSessionBeforeNextTurn(
   return replaceThreadSession({
     attachment: args.attachment,
     providerThreadId,
-    reason: args.reason,
+    restart: args.restart,
     threadId: args.threadId,
     threadSession: args.threadSession,
   });
@@ -1426,14 +1495,20 @@ async function getWritableThreadSession(
   }
 
   const threadSession = attachment.residentSession;
-  const replacementReason = !threadSession
-    ? "Claude query resumed after idle release"
+  const replacement: ClaudeSessionRestart | null = !threadSession
+    ? {
+        reason: "Claude query resumed after idle release",
+        showRuntimeNote: false,
+      }
     : threadSession.streamEnded
-      ? "Thread session replaced after Claude SDK stream ended"
+      ? {
+          reason: "Thread session replaced after Claude SDK stream ended",
+          showRuntimeNote: false,
+        }
       : intent === "new-turn"
-        ? threadSession.restartBeforeNextTurnReason
+        ? threadSession.restartBeforeNextTurn
         : null;
-  if (threadSession && replacementReason === null) {
+  if (threadSession && replacement === null) {
     return threadSession;
   }
 
@@ -1448,16 +1523,20 @@ async function getWritableThreadSession(
 
     const currentSession = attachment.residentSession;
     if (currentSession) {
-      const currentReason = currentSession.streamEnded
-        ? "Thread session replaced after Claude SDK stream ended"
-        : intent === "new-turn"
-          ? currentSession.restartBeforeNextTurnReason
-          : null;
-      return currentReason === null
+      const currentRestart: ClaudeSessionRestart | null =
+        currentSession.streamEnded
+          ? {
+              reason: "Thread session replaced after Claude SDK stream ended",
+              showRuntimeNote: false,
+            }
+          : intent === "new-turn"
+            ? currentSession.restartBeforeNextTurn
+            : null;
+      return currentRestart === null
         ? currentSession
         : replaceThreadSessionBeforeNextTurn({
             attachment,
-            reason: currentReason,
+            restart: currentRestart,
             threadId,
             threadSession: currentSession,
           });
@@ -1544,10 +1623,18 @@ function createOnSdkMessage(
     const authenticationFailureRestartReason =
       getAuthenticationFailureRestartReason(message);
     if (authenticationFailureRestartReason !== null) {
-      threadSession.restartBeforeNextTurnReason =
-        authenticationFailureRestartReason;
+      threadSession.restartBeforeNextTurn = {
+        reason: authenticationFailureRestartReason,
+        showRuntimeNote: false,
+      };
     }
     trackSdkAssistantPermissionEscalation(threadSession, message);
+    if (
+      message.type === "system" &&
+      message.subtype === "session_state_changed"
+    ) {
+      threadSession.sdkSessionState = message.state;
+    }
     emitForSession(threadSession, args.threadIdRef.current, "sdk/message", {
       threadId: args.threadIdRef.current,
       message,
@@ -1647,6 +1734,39 @@ function readConfigEnvOverrides(
 ): Record<string, string> {
   const parsed = sessionConfigEnvVarsSchema.safeParse(config?.["envVars"]);
   return parsed.success ? parsed.data : {};
+}
+
+function environmentSignature(env: Readonly<Record<string, string>>): string {
+  return JSON.stringify(
+    Object.entries(env).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function applyTurnEnvironment(
+  attachment: ThreadAttachment,
+  config: TurnStartParams["config"],
+): void {
+  if (config === undefined) {
+    return;
+  }
+  const envOverrides = readConfigEnvOverrides(config);
+  const signature = environmentSignature(envOverrides);
+  if (attachment.envSignature === signature) {
+    return;
+  }
+  attachment.envSignature = signature;
+  attachment.sessionConstructionConfig = {
+    ...attachment.sessionConstructionConfig,
+    config,
+  };
+  attachment.sessionOptions.env = buildSessionEnv(envOverrides);
+  if (attachment.residentSession) {
+    attachment.residentSession.restartBeforeNextTurn = {
+      reason:
+        "Execution settings changed; the Claude session was rebuilt to apply them.",
+      showRuntimeNote: true,
+    };
+  }
 }
 
 function parseClaudeSuggestedPermissionUpdates(
@@ -2371,7 +2491,6 @@ async function handleThreadFork(
   let forkedProviderThreadId: string;
   try {
     const forkResult = await forkSession(params.sourceProviderThreadId, {
-      dir: params.cwd,
       ...(params.sourceProviderCheckpointId !== undefined
         ? { upToMessageId: params.sourceProviderCheckpointId }
         : {}),
@@ -2445,7 +2564,9 @@ async function runTurnStart(
 
   const attachment = threadAttachments.get(params.threadId);
   if (attachment) {
+    applyTurnEnvironment(attachment, params.config);
     applyIdleQueryReleaseSetting(attachment, params.idleQueryReleaseEnabled);
+    applyChromeSetting(attachment, params.chromeEnabled);
   }
 
   const threadSession = await getWritableThreadSession(
@@ -2530,6 +2651,7 @@ async function runTurnSteer(
   const attachment = threadAttachments.get(params.threadId);
   if (attachment) {
     applyIdleQueryReleaseSetting(attachment, params.idleQueryReleaseEnabled);
+    applyChromeSetting(attachment, params.chromeEnabled);
   }
 
   const threadSession = await getWritableThreadSession(

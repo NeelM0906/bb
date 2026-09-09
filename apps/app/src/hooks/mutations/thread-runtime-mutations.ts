@@ -19,8 +19,7 @@ import {
   applyCreateThreadResult,
   applyQueuedMessageCreateResult,
   applyQueuedMessageDeleteResult,
-  applyQueuedMessageGroupBoundaryResult,
-  applyQueuedMessageReorderResult,
+  applyQueuedMessagesResult,
   applyQueuedMessageSendResult,
   applyQueuedMessageUpdateResult,
   applySendThreadMessageSuccess,
@@ -206,10 +205,10 @@ export function useSendThreadMessage() {
     },
     onSuccess: (data, variables, context) => {
       applySendThreadMessageSuccess({
-        delivery: data.delivery,
         queryClient,
         realtimeConnected: wsManager.getConnectionState() === "connected",
         request: variables,
+        result: data,
         transaction: context,
       });
     },
@@ -360,10 +359,12 @@ export function useSendThreadQueuedMessage() {
         transaction: context,
       });
     },
-    onSuccess: (_data, variables) => {
+    onSuccess: (data, variables, transaction) => {
       applyQueuedMessageSendResult({
         queryClient,
-        threadId: variables.id,
+        request: variables,
+        result: data,
+        transaction,
       });
     },
   });
@@ -405,7 +406,7 @@ export function useReorderThreadQueuedMessage() {
       });
     },
     onSuccess: (queuedMessages, variables) => {
-      applyQueuedMessageReorderResult({
+      applyQueuedMessagesResult({
         queryClient,
         queuedMessages,
         request: variables,
@@ -451,7 +452,7 @@ export function useSetThreadQueuedMessageGroupBoundary() {
       });
     },
     onSuccess: (queuedMessages, variables) => {
-      applyQueuedMessageGroupBoundaryResult({
+      applyQueuedMessagesResult({
         queryClient,
         queuedMessages,
         request: variables,
