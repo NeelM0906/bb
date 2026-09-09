@@ -532,11 +532,11 @@ describe("builtin plugin reconciliation", () => {
     ]);
   });
 
-  it("ships Provider usage disabled on a fresh database", async () => {
+  it("ships Provider usage enabled on a fresh database", async () => {
     const providerUsage = BUILTIN_PLUGINS.find(
       (builtin) => builtin.name === "provider-usage",
     );
-    expect(providerUsage?.defaultEnabled).toBe(false);
+    expect(providerUsage?.defaultEnabled).toBe(true);
 
     service = createService({
       db,
@@ -551,8 +551,8 @@ describe("builtin plugin reconciliation", () => {
       {
         id: "provider-usage",
         source: "builtin:provider-usage",
-        enabled: false,
-        status: "disabled",
+        enabled: true,
+        status: "running",
       },
     ]);
   });
@@ -598,11 +598,11 @@ describe("builtin plugin reconciliation", () => {
     ]);
   });
 
-  it("ships Push notifications enabled on a fresh database", () => {
+  it("ships Push notifications disabled on a fresh database", () => {
     const pushPlugin = BUILTIN_PLUGINS.find(
       (builtin) => builtin.name === "push-notifications",
     );
-    expect(pushPlugin?.defaultEnabled).toBe(true);
+    expect(pushPlugin?.defaultEnabled).toBe(false);
   });
 
   it("loads the builtin connect plugin like other builtins", async () => {

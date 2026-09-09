@@ -29,6 +29,7 @@ function seedFixture(harness: TestAppHarness) {
   const environment = seedEnvironment(harness.deps, {
     hostId: host.id,
     projectId: project.id,
+    environmentProviderId: "project-checkout",
   });
   const thread = seedThread(harness.deps, {
     environmentId: environment.id,
@@ -68,6 +69,26 @@ function registerResponder(
           return { ok: true, result: { files: [], truncated: false } };
         case "host.read_file":
           return { ok: false, errorCode: "ENOENT", errorMessage: "Missing" };
+        case "host.admission.reserve":
+          return {
+            ok: true,
+            result: {
+              outcome: "reserved",
+              reservation: {
+                token: "test-reservation",
+                generation: 1,
+                hostId: fixture.host.id,
+                reason: command.reason,
+              },
+            },
+          };
+        case "host.admission.release":
+          return { ok: true, result: { released: true } };
+        case "project.inspect":
+          return {
+            ok: true,
+            result: { gitRemoteUrl: null, path: command.path },
+          };
         default:
           throw new Error(`Unexpected command: ${command.type}`);
       }
