@@ -450,7 +450,7 @@ describe("createHostDaemonApp", () => {
         },
       });
     } finally {
-      await app.daemon.shutdown("test");
+      await app.daemon.shutdown("test", 0);
     }
   });
 
