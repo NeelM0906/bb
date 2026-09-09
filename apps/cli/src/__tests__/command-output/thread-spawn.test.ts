@@ -89,6 +89,52 @@ describe("bb thread spawn command output", () => {
     });
   });
 
+  it("bb thread spawn --goal opens the thread with the composer's /goal command mention", async () => {
+    const thread: domain.Thread = fixtures.makeThread({
+      id: "thread-goal",
+      projectId: "proj-1",
+      providerId: "claude-code",
+    });
+    const post = vi.fn(async () => thread);
+    stubServerApi({ "v1.threads.$post": post });
+
+    await runCommand(
+      [
+        "thread",
+        "spawn",
+        "--project",
+        "proj-1",
+        "--prompt",
+        "ship the hybrid loop",
+        "--goal",
+      ],
+      register,
+    );
+
+    expect(post).toHaveBeenCalledWith({
+      json: expect.objectContaining({
+        input: [
+          {
+            type: "text",
+            text: "/goal ship the hybrid loop",
+            mentions: [
+              expect.objectContaining({
+                start: 0,
+                end: 5,
+                resource: expect.objectContaining({
+                  kind: "command",
+                  trigger: "/",
+                  name: "goal",
+                  origin: "builtin",
+                }),
+              }),
+            ],
+          },
+        ],
+      }),
+    });
+  });
+
   it("bb thread spawn --plan opens the thread with the composer's /plan command mention", async () => {
     const thread: domain.Thread = fixtures.makeThread({
       id: "thread-plan",

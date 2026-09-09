@@ -1,4 +1,5 @@
 import {
+  createBuiltinGoalCommandTextInput,
   createBuiltinPlanCommandTextInput,
   permissionModeInputSchema,
   type PermissionMode,
@@ -23,6 +24,8 @@ export const PERMISSION_MODE_HELP =
   "Permission mode: accept-edits, auto, or full";
 export const PLAN_HELP =
   "Send the message as the provider's /plan action so the agent proposes a plan for approval before executing";
+export const GOAL_HELP =
+  "Send the message as /goal so the agent keeps working until the objective is complete";
 
 export function collectOption(value: string, previous: string[]): string[] {
   return [...previous, value];
@@ -33,11 +36,17 @@ export function buildPromptInputs(args: {
   files?: readonly string[];
   images?: readonly string[];
   plan?: boolean;
+  goal?: boolean;
 }): PromptInput[] {
+  if (args.plan && args.goal) {
+    throw new Error("Cannot combine --plan with --goal.");
+  }
   return [
     args.plan
       ? createBuiltinPlanCommandTextInput(args.message)
-      : { type: "text", text: args.message, mentions: [] },
+      : args.goal
+        ? createBuiltinGoalCommandTextInput(args.message)
+        : { type: "text", text: args.message, mentions: [] },
     ...(args.files ?? []).map((path): PromptInput => ({
       type: "localFile",
       path,

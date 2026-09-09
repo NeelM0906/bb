@@ -26,6 +26,7 @@ import {
   parsePermissionMode,
   parseServiceTier,
   PERMISSION_MODE_HELP,
+  GOAL_HELP,
   PLAN_HELP,
   buildPromptInputs,
   collectOption,
@@ -74,6 +75,7 @@ interface ThreadTellCommandOptions {
   serviceTier?: string;
   mode?: string;
   plan?: boolean;
+  goal?: boolean;
   file?: string[];
   image?: string[];
   sendAt?: string;
@@ -112,6 +114,7 @@ interface PostThreadMessageArgs {
   serviceTier?: ServiceTier;
   senderThreadId?: string;
   plan?: boolean;
+  goal?: boolean;
   files?: readonly string[];
   images?: readonly string[];
   sendAt?: number;
@@ -447,6 +450,7 @@ export function registerActionsCommands(
     )
     .option("--send-at <when>", SEND_AT_HELP)
     .option("--plan", PLAN_HELP)
+    .option("--goal", GOAL_HELP)
     .option(
       "--file <path>",
       "Pass a host-readable absolute or uploaded attachment file path (repeatable)",
@@ -473,6 +477,7 @@ export function registerActionsCommands(
             serviceTier: parseServiceTier(opts.serviceTier),
             senderThreadId: resolveSenderThreadId(id),
             plan: opts.plan,
+            goal: opts.goal,
             files: opts.file,
             images: opts.image,
             ...(opts.sendAt === undefined
@@ -580,7 +585,7 @@ export function registerActionsCommands(
 
   parent
     .command("clear-goal [id]")
-    .description("Ask the provider to clear the active Goal")
+    .description("Clear the active Goal")
     .option("--self", "Target the current thread (from BB_THREAD_ID)")
     .option("--json", "Print machine-readable JSON output")
     .action(
@@ -603,6 +608,7 @@ async function postThreadMessage(
     input: buildPromptInputs({
       message: args.message,
       plan: args.plan,
+      goal: args.goal,
       files: args.files,
       images: args.images,
     }),
