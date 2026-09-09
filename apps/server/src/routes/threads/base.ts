@@ -331,7 +331,12 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
             },
             { signal: context.req.raw.signal },
           )
-        : listThreadsWithPendingInteractionState(deps.db, listOptions);
+        : toThreadListEntryResponses(deps, {
+            threads: listThreadsWithPendingInteractionState(
+              deps.db,
+              listOptions,
+            ),
+          });
     return context.json(
       overlayThreadListEntryLiveRuntime(
         deps,

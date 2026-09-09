@@ -351,7 +351,6 @@ describe("RuntimeManager", () => {
     const resident = await manager.ensureEnvironment({
       environmentId: "env-aliased-command",
       workspacePath: canonicalPath,
-      workspaceProvisionType: "unmanaged",
     });
 
     const resolved = await requireWorkspaceEnvironment(
@@ -359,7 +358,6 @@ describe("RuntimeManager", () => {
         environmentId: "env-aliased-command",
         workspaceContext: {
           workspacePath: aliasPath,
-          workspaceProvisionType: "unmanaged",
         },
       },
       manager,
@@ -418,7 +416,6 @@ describe("RuntimeManager", () => {
     const refreshed = await manager.refreshEnvironmentWorkspace({
       environmentId: "env-refresh-alias",
       provision: {
-        workspaceProvisionType: "unmanaged",
         path: "/legacy/env-refresh-alias",
       },
       workspacePath: "/legacy/env-refresh-alias",

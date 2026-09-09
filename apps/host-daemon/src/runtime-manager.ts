@@ -989,14 +989,6 @@ export class RuntimeManager {
         `Cannot refresh environment ${args.environmentId} at ${workspace.path}; it is bound to ${entry.path}`,
       );
     }
-    if (
-      args.provision.workspaceProvisionType !== "unmanaged" &&
-      workspace.path !== args.workspacePath
-    ) {
-      throw new Error(
-        `Workspace refresh for ${args.environmentId} returned ${workspace.path}, not ${args.workspacePath}`,
-      );
-    }
     if (entry) {
       entry.workspace = workspace;
     }

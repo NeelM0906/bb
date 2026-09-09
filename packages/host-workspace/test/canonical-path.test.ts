@@ -46,7 +46,6 @@ describe("canonical unmanaged workspace paths", () => {
     );
 
     const workspace = await provisionWorkspace({
-      workspaceProvisionType: "unmanaged",
       path: storedPath,
     });
 
@@ -70,7 +69,6 @@ describe("canonical unmanaged workspace paths", () => {
     );
 
     const workspace = await provisionWorkspace({
-      workspaceProvisionType: "unmanaged",
       path: storedPath,
     });
 
@@ -90,7 +88,6 @@ describe("canonical unmanaged workspace paths", () => {
 
     await expect(
       provisionWorkspace({
-        workspaceProvisionType: "unmanaged",
         path: workspacePath,
       }),
     ).rejects.toHaveProperty("code", "path_not_found");

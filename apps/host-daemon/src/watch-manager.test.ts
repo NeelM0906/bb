@@ -426,7 +426,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch-alias",
           workspaceContext: {
             workspacePath: "/legacy/env-watch-alias",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -443,7 +442,6 @@ describe("WatchManager", () => {
     expect(refreshWorkspace).toHaveBeenCalledWith({
       environmentId: "env-watch-alias",
       provision: {
-        workspaceProvisionType: "unmanaged",
         path: "/canonical/env-watch",
       },
       workspacePath: "/canonical/env-watch",
