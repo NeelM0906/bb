@@ -417,7 +417,7 @@ function insertStoredEventRow(
       ${args.type},
       ${args.itemId},
       ${args.itemKind},
-      ${args.parentToolCallId},
+      ${args.parentToolCallId ?? null},
       ${prepared.data},
       ${args.createdAt}
     )`);

@@ -41,7 +41,15 @@ function setup() {
     path: "/tmp/admission",
     projectId: project.id,
     status: "ready",
-    workspaceProvisionType: "unmanaged",
+    providerOwnsPath: false,
+    environmentProvider: {
+      environmentProviderId: "project-checkout",
+      instanceKey: null,
+      selection: {
+        machine: { type: "existing", hostId: host.id },
+        inputs: null,
+      },
+    },
   });
   return { db, environment, firstThread, host, secondThread };
 }

@@ -442,9 +442,7 @@ const legacyExperimentsMigrationWhen = 1781299832942;
 const eventLargeValuesMigrationWhen = 1781403656069;
 const environmentArchiveGraceMigrationWhen = 1786416023798;
 const threadSearchSourceSeqIndexMigrationWhen = 1786468375011;
-const workspaceSafetyMigrationWhen = requirePublishedMigrationWhen(
-  "0115_workspace_safety",
-);
+const workspaceSafetyMigrationWhen = 1788916859449;
 const environmentPathCanonicalizationMigrationWhen =
   workspaceSafetyMigrationWhen;
 const farFutureBranchMigrationWhen = 9_999_999_999_999;
