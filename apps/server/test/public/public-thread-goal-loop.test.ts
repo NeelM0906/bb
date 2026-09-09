@@ -2,7 +2,9 @@ import { getLatestThreadSequence, getThread, listEvents } from "@bb/db";
 import {
   FIRST_PARTY_GOAL_EXTENSION_KIND,
   createBuiltinGoalCommandTextInput,
+  encodeClientTurnRequestIdNumber,
   threadScope,
+  turnScope,
 } from "@bb/domain";
 import { describe, expect, it, vi } from "vitest";
 import { internalAuthHeaders } from "../helpers/commands.js";
@@ -11,6 +13,10 @@ import {
   type HostRpcHandlerResult,
 } from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
+import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
+import {
+  FIRST_PARTY_GOAL_CONTINUE_PROMPT,
+} from "../../src/services/threads/thread-first-party-goal-loop.js";
 import { resolveThreadRuntimeCommandConfig } from "../../src/services/threads/thread-runtime-config.js";
 import {
   seedEnvironment,
@@ -546,6 +552,165 @@ describe("first-party goal.complete tool", () => {
         success: false,
       });
       expect(firstPartyGoalEvents(harness, thread.id)).toEqual([]);
+    });
+  });
+});
+
+describe("first-party Goal auto-continue", () => {
+  it("continues an idle Claude thread while a first-party Goal is active", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, host, session, thread } = seedGoalThread(harness, {
+        providerId: "claude-code",
+        providerThreadId: "provider-thread-1",
+      });
+      seedActiveFirstPartyGoal(harness, {
+        environmentId: environment.id,
+        providerThreadId: "provider-thread-1",
+        threadId: thread.id,
+      });
+      const responder = registerSuccessfulTurnResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+      });
+
+      await runQueuedMessageDispatch(harness.deps, {
+        kind: "thread-ready",
+        threadId: thread.id,
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          responder.requests.some(
+            ({ command }) => command.type === "turn.submit",
+          ),
+        ).toBe(true);
+      });
+      const turnSubmit = responder.requests.find(
+        ({ command }) => command.type === "turn.submit",
+      );
+      expect(turnSubmit?.command).toMatchObject({
+        type: "turn.submit",
+        threadId: thread.id,
+        input: [
+          {
+            type: "text",
+            text: FIRST_PARTY_GOAL_CONTINUE_PROMPT,
+            mentions: [],
+          },
+        ],
+      });
+    });
+  });
+
+  it("does not auto-continue Codex native Goal", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, host, session, thread } = seedGoalThread(harness, {
+        providerId: "codex",
+        providerThreadId: "provider-thread-1",
+      });
+      seedActiveFirstPartyGoal(harness, {
+        environmentId: environment.id,
+        providerThreadId: "provider-thread-1",
+        threadId: thread.id,
+      });
+      const responder = registerSuccessfulTurnResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+      });
+
+      await runQueuedMessageDispatch(harness.deps, {
+        kind: "thread-ready",
+        threadId: thread.id,
+      });
+
+      expect(
+        responder.requests.some(({ command }) => command.type === "turn.submit"),
+      ).toBe(false);
+    });
+  });
+
+  it("pauses the Goal after consecutive continuation turns with no tools or patches", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, host, session, thread } = seedGoalThread(harness, {
+        providerId: "claude-code",
+        providerThreadId: "provider-thread-1",
+      });
+      seedActiveFirstPartyGoal(harness, {
+        environmentId: environment.id,
+        providerThreadId: "provider-thread-1",
+        threadId: thread.id,
+      });
+      let sequence = getLatestThreadSequence(harness.db, {
+        threadId: thread.id,
+      });
+      for (const turn of [1, 2]) {
+        const requestId = encodeClientTurnRequestIdNumber({ value: turn });
+        const turnId = `turn-stall-${turn}`;
+        sequence += 1;
+        seedEvent(harness.deps, {
+          threadId: thread.id,
+          environmentId: environment.id,
+          sequence,
+          type: "client/turn/requested",
+          scope: threadScope(),
+          data: {
+            direction: "outbound",
+            requestId,
+            input: [
+              {
+                type: "text",
+                text: FIRST_PARTY_GOAL_CONTINUE_PROMPT,
+                mentions: [],
+              },
+            ],
+            target: { kind: "new-turn" },
+            execution: {
+              model: "gpt-5",
+              serviceTier: "default",
+              reasoningLevel: "medium",
+              permissionMode: "full",
+              source: "client/turn/requested",
+            },
+            initiator: "system",
+            senderThreadId: null,
+            request: { method: "turn/start", params: {} },
+            source: "tell",
+          },
+        });
+        sequence += 1;
+        seedEvent(harness.deps, {
+          threadId: thread.id,
+          environmentId: environment.id,
+          providerThreadId: "provider-thread-1",
+          sequence,
+          type: "turn/completed",
+          scope: turnScope(turnId),
+          data: {
+            providerThreadId: "provider-thread-1",
+            status: "completed",
+          },
+        });
+      }
+      const responder = registerSuccessfulTurnResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+      });
+
+      await runQueuedMessageDispatch(harness.deps, {
+        kind: "thread-ready",
+        threadId: thread.id,
+      });
+
+      expect(
+        responder.requests.some(({ command }) => command.type === "turn.submit"),
+      ).toBe(false);
+      expect(firstPartyGoalEvents(harness, thread.id).at(-1)).toMatchObject({
+        kind: FIRST_PARTY_GOAL_EXTENSION_KIND,
+        payload: expect.objectContaining({
+          objective: "ship the hybrid loop",
+          status: "paused",
+        }),
+      });
     });
   });
 });

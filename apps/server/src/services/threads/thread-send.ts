@@ -100,6 +100,8 @@ interface SendThreadMessageArgs {
   payload: SendThreadMessagePayload;
   thread: Thread;
   trigger: SendThreadMessageTrigger;
+  /** When set, recorded as the turn initiator instead of user/agent inference. */
+  initiator?: ThreadTurnInitiator;
 }
 
 interface ResolveMessageSenderArgs {
@@ -535,7 +537,13 @@ async function sendThreadMessageWithoutContextClear(
   // counting it as a user message would inflate every "messages sent" figure by
   // however many times the provider happened to be rate limited.
   const initiator: ThreadTurnInitiator =
-    args.retryOf !== undefined ? "system" : senderThreadId ? "agent" : "user";
+    args.retryOf !== undefined
+      ? "system"
+      : args.initiator !== undefined
+        ? args.initiator
+        : senderThreadId
+          ? "agent"
+          : "user";
   const shouldCaptureUserMessageSent =
     args.trigger === "user" && initiator === "user" && input.length > 0;
   const expectedSteerTurnId =
@@ -545,7 +553,11 @@ async function sendThreadMessageWithoutContextClear(
   // A retry's model is provenance — the failed attempt's tuple, replayed —
   // not a fresh model choice, so it must not rewrite the thread's sticky
   // override the way an explicit user send's model does.
-  if (senderThreadId === null && args.retryOf === undefined) {
+  if (
+    senderThreadId === null &&
+    args.retryOf === undefined &&
+    args.initiator !== "system"
+  ) {
     await recoverThreadModelOverride(deps, {
       model: payload.model,
       modelSource:
