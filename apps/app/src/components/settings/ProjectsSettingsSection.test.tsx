@@ -293,6 +293,7 @@ describe("ProjectsSettingsSection", () => {
       kind: "standard",
       name: "bb-next",
       gitRemoteUrl: null,
+      protectUnmanagedWorkspace: true,
       createdAt: NOW,
       updatedAt: NOW,
       sources: [],

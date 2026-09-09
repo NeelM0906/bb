@@ -8,6 +8,7 @@ import {
   loadThreadTimelineGoal,
 } from "./thread-first-party-goal.js";
 import { sendThreadMessage } from "./thread-send.js";
+import { z } from "zod";
 
 export const FIRST_PARTY_GOAL_CONTINUE_PROMPT =
   "Continue the active Goal. Call goal.complete when the objective is fully done.";
@@ -28,7 +29,11 @@ const GOAL_PROGRESS_ITEM_KINDS = new Set([
 ]);
 
 function turnHadProgress(
-  events: readonly { itemKind: string | null; sequence: number; type: string }[],
+  events: readonly {
+    itemKind: string | null;
+    sequence: number;
+    type: string;
+  }[],
   turnStartSequence: number,
   turnEndSequence: number,
 ): boolean {
@@ -41,10 +46,14 @@ function turnHadProgress(
   );
 }
 
+const requestInitiatorSchema = z.object({
+  initiator: z.enum(["user", "agent", "system"]),
+});
+
 function requestInitiator(data: string): ThreadTurnInitiator | null {
   try {
-    const parsed = JSON.parse(data) as { initiator?: ThreadTurnInitiator };
-    return parsed.initiator ?? null;
+    const parsed = requestInitiatorSchema.safeParse(JSON.parse(data));
+    return parsed.success ? parsed.data.initiator : null;
   } catch {
     return null;
   }
@@ -54,9 +63,10 @@ function countTrailingContinuationStalls(
   deps: Pick<LoggedPendingInteractionWorkSessionDeps, "db">,
   args: { afterSequence: number; threadId: string },
 ): number {
-  const events = listEvents(deps.db, { threadId: args.threadId }).filter(
-    (event) => event.sequence > args.afterSequence,
-  );
+  const events = listEvents(deps.db, {
+    threadId: args.threadId,
+    afterSequence: args.afterSequence,
+  });
   const completedTurns = events.flatMap((event) => {
     if (event.type !== "turn/completed") return [];
     const request = [...events]

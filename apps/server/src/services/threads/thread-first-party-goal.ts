@@ -87,7 +87,7 @@ function buildFirstPartyGoalEventArgs(
       kind: FIRST_PARTY_GOAL_EXTENSION_KIND,
       payload: args.payload,
       providerThreadId: providerThreadId ?? "",
-    },
+    } as const,
   };
 }
 
