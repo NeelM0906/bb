@@ -277,6 +277,78 @@ export function isStandaloneBuiltinClearCommand(
   return isStandaloneBuiltinCommand(input, "clear");
 }
 
+const BUILTIN_GOAL_COMMAND_SELECTOR = {
+  trigger: "/" as const,
+  name: "goal",
+};
+
+export function parseBuiltinGoalCommand(
+  input: readonly PromptInput[],
+): { objective: string } | null {
+  const selected = input.flatMap((item) =>
+    item.type === "text"
+      ? item.mentions
+          .filter((mention) =>
+            isSelectedPromptCommandMention(
+              mention,
+              BUILTIN_GOAL_COMMAND_SELECTOR,
+            ),
+          )
+          .map((mention) => ({ mention, text: item.text }))
+      : [],
+  );
+  const standalone = selected[0];
+  if (
+    selected.length !== 1 ||
+    !standalone ||
+    input.some((item) => item.type !== "text")
+  ) {
+    return null;
+  }
+  const { mention, text } = standalone;
+  if (
+    mention.resource.kind !== "command" ||
+    mention.resource.source !== "command" ||
+    mention.resource.origin !== "builtin" ||
+    text.slice(mention.start, mention.end) !== "/goal"
+  ) {
+    return null;
+  }
+  const objective = removeCommandMentionsFromPromptInput(
+    input,
+    BUILTIN_GOAL_COMMAND_SELECTOR,
+  )
+    .flatMap((item) => (item.type === "text" ? [item.text] : []))
+    .join("")
+    .trim();
+  return { objective };
+}
+
+export function createBuiltinGoalCommandTextInput(
+  text: string,
+): TextPromptInput {
+  const commandText = "/goal";
+  return {
+    type: "text",
+    text: text.length > 0 ? `${commandText} ${text}` : commandText,
+    mentions: [
+      {
+        start: 0,
+        end: commandText.length,
+        resource: {
+          kind: "command",
+          trigger: "/",
+          name: "goal",
+          source: "command",
+          origin: "builtin",
+          label: "goal",
+          argumentHint: "<objective>",
+        },
+      },
+    ],
+  };
+}
+
 export function createStandaloneBuiltinCompactCommandInput(): PromptInput[] {
   return [
     {
