@@ -312,6 +312,7 @@ describe("public project command typeahead route", () => {
       const body = commandListResponseSchema.parse(await readJson(response));
       expect(body.commands.map((command) => command.name)).toEqual([
         "clear",
+        "goal",
         "vendor:review",
       ]);
       expect(stub.resolveRequests.map((request) => request.command)).toEqual([
@@ -398,6 +399,7 @@ describe("public project command typeahead route", () => {
       const body = commandListResponseSchema.parse(await readJson(response));
       expect(body.commands.map((command) => command.name)).toEqual([
         "clear",
+        "goal",
         "after-the-wait",
       ]);
       const resolverCommand = stub.resolveRequests[0]?.command;
@@ -570,6 +572,13 @@ describe("public project command typeahead route", () => {
           origin: "builtin",
           description: "Compact context",
           argumentHint: null,
+        },
+        {
+          name: "goal",
+          source: "command",
+          origin: "builtin",
+          description: "Keep working until this objective is complete",
+          argumentHint: "<objective>",
         },
         {
           name: "deploy",
@@ -807,6 +816,7 @@ describe("public project command typeahead route", () => {
       expect(body.commands.map((command) => command.name)).toEqual([
         "clear",
         "compact",
+        "goal",
         "bb-cli",
       ]);
       expect(stub.requests[0]?.command).toEqual({
@@ -843,6 +853,7 @@ describe("public project command typeahead route", () => {
       expect(body.commands.map((command) => command.name)).toEqual([
         "clear",
         "compact",
+        "goal",
         "user-only",
       ]);
       expect(stub.requests[0]?.command).toEqual({
@@ -888,6 +899,7 @@ describe("public project command typeahead route", () => {
       expect(body.commands.map((command) => command.name)).toEqual([
         "clear",
         "compact",
+        "goal",
         "user-only",
       ]);
       expect(stub.requests[0]?.command).toEqual({
@@ -928,6 +940,7 @@ describe("public project command typeahead route", () => {
       expect(body.commands.map((command) => command.name)).toEqual([
         "clear",
         "compact",
+        "goal",
         "user-only",
       ]);
       expect(stub.requests[0]?.command).toEqual({
@@ -1034,6 +1047,7 @@ describe("public project command typeahead route", () => {
       expect(full.commands.map((command) => command.name)).toEqual([
         "clear",
         "compact",
+        "goal",
         "alpha",
         "bravo",
         "charlie",

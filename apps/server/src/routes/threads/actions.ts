@@ -49,7 +49,9 @@ import {
   ensureThreadIsWritable,
   sendThreadMessage,
 } from "../../services/threads/thread-send.js";
+import { providerIdHasNativeGoal } from "../../services/threads/provider-command-typeahead.js";
 import { acceptThreadSendRequest } from "../../services/threads/thread-send-request.js";
+import { appendFirstPartyGoalSnapshot } from "../../services/threads/thread-first-party-goal.js";
 import { editThreadMessage } from "../../services/threads/thread-edit-message.js";
 import { clearThreadContext } from "../../services/threads/thread-context-clear.js";
 import {
@@ -432,6 +434,14 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     const activity = getThreadPromptBannerActivity(deps, thread);
     if (activity.activeGoalCount === 0) {
       throw new ApiError(409, "invalid_request", "No active Goal to clear");
+    }
+    if (!providerIdHasNativeGoal(deps.providerRegistry, thread.providerId)) {
+      appendFirstPartyGoalSnapshot(deps, {
+        environmentId: thread.environmentId,
+        payload: null,
+        threadId: thread.id,
+      });
+      return context.json({ ok: true });
     }
     const environment = await requireThreadCommandEnvironment(deps, {
       thread,

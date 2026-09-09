@@ -1,10 +1,16 @@
-import { isStandaloneBuiltinClearCommand, type Thread } from "@bb/domain";
+import {
+  isStandaloneBuiltinClearCommand,
+  parseBuiltinGoalCommand,
+  type Thread,
+} from "@bb/domain";
 import type {
   SendMessageRequest,
   SendMessageResponse,
 } from "@bb/server-contract";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
+import { ApiError } from "../../errors.js";
 import { attemptDispatch } from "./dispatch-attempt.js";
+import { providerIdHasNativeGoal } from "./provider-command-typeahead.js";
 import { requireThreadCommandEnvironment } from "./thread-command-environment.js";
 import { sendThreadMessage } from "./thread-send.js";
 
@@ -17,6 +23,14 @@ export async function acceptThreadSendRequest(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: AcceptThreadSendRequestArgs,
 ): Promise<SendMessageResponse> {
+  const parsedGoal = parseBuiltinGoalCommand(args.payload.input);
+  if (
+    parsedGoal !== null &&
+    parsedGoal.objective.length === 0 &&
+    !providerIdHasNativeGoal(deps.providerRegistry, args.thread.providerId)
+  ) {
+    throw new ApiError(400, "invalid_request", "Goal requires an objective");
+  }
   if (isStandaloneBuiltinClearCommand(args.payload.input)) {
     const environment = await requireThreadCommandEnvironment(deps, {
       thread: args.thread,

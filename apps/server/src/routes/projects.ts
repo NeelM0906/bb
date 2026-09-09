@@ -69,6 +69,7 @@ import { parseBoundedPositiveOptionalInteger } from "../services/lib/validation.
 import {
   buildCommandListResponse,
   providerHasCommandSurface,
+  providerHasNativeGoal,
 } from "../services/threads/provider-command-typeahead.js";
 import {
   beginProjectDeletion,
@@ -799,6 +800,7 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
         includeBuiltinCompact: deps.providerRegistry.supportsManualCompaction(
           query.provider,
         ),
+        includeBuiltinGoal: !providerHasNativeGoal(registration),
         skillCatalog,
       }),
     );

@@ -4,7 +4,10 @@ import {
   type ProviderCommand,
 } from "@bb/server-contract";
 import type { HostProviderCommand } from "@bb/host-daemon-contract";
-import type { ProviderRegistration } from "../providers/provider-registry.js";
+import type {
+  ProviderRegistration,
+  ProviderRegistryService,
+} from "../providers/provider-registry.js";
 import type { ResolvedSkillCatalogEntry } from "../skills/injected-skills.js";
 
 const BUILT_IN_PROVIDER_COMMANDS: ProviderCommand[] = [
@@ -22,12 +25,35 @@ const BUILT_IN_PROVIDER_COMMANDS: ProviderCommand[] = [
     description: "Compact context",
     argumentHint: null,
   },
+  {
+    name: "goal",
+    source: "command",
+    origin: "builtin",
+    description: "Keep working until this objective is complete",
+    argumentHint: "<objective>",
+  },
 ];
 
 function providerComposerHasSkillsAction(
   composerActions: readonly { kind: string }[],
 ): boolean {
   return composerActions.some((action) => action.kind === "skills");
+}
+
+export function providerHasNativeGoal(
+  registration: Pick<ProviderRegistration, "info">,
+): boolean {
+  return registration.info.composerActions.some(
+    (action) => action.kind === "goal",
+  );
+}
+
+export function providerIdHasNativeGoal(
+  registry: ProviderRegistryService,
+  providerId: string,
+): boolean {
+  const registration = registry.get(providerId);
+  return registration !== null && providerHasNativeGoal(registration);
 }
 
 export function providerHasCommandSurface(
@@ -93,7 +119,20 @@ function compareCommands(a: ProviderCommand, b: ProviderCommand): number {
 interface BuildCommandListResponseArgs {
   commands: HostProviderCommand[];
   includeBuiltinCompact: boolean;
+  includeBuiltinGoal: boolean;
   skillCatalog: readonly ResolvedSkillCatalogEntry[];
+}
+
+function includeBuiltInCommand(
+  command: ProviderCommand,
+  args: Pick<
+    BuildCommandListResponseArgs,
+    "includeBuiltinCompact" | "includeBuiltinGoal"
+  >,
+): boolean {
+  if (command.name === "compact") return args.includeBuiltinCompact;
+  if (command.name === "goal") return args.includeBuiltinGoal;
+  return true;
 }
 
 export function buildCommandListResponse(
@@ -101,8 +140,8 @@ export function buildCommandListResponse(
 ): CommandListResponse {
   return {
     commands: dedupeBySourceAndName([
-      ...BUILT_IN_PROVIDER_COMMANDS.filter(
-        (command) => command.name !== "compact" || args.includeBuiltinCompact,
+      ...BUILT_IN_PROVIDER_COMMANDS.filter((command) =>
+        includeBuiltInCommand(command, args),
       ),
       ...args.skillCatalog.map(toSkillCommand),
       ...args.commands.map(toProviderCommand),

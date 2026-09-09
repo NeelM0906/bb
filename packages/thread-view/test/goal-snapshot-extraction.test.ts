@@ -1,4 +1,5 @@
 import {
+  FIRST_PARTY_GOAL_EXTENSION_KIND,
   LEGACY_CODEX_GOAL_EXTENSION_KIND,
   parseStoredThreadEvent,
   threadScope,
@@ -8,9 +9,11 @@ import { extractThreadTimelineGoal } from "../src/goal-snapshot-extraction.js";
 import type { ThreadEventWithMeta } from "../src/build-event-projection.js";
 
 function goalUpdatedEvent({
+  kind = LEGACY_CODEX_GOAL_EXTENSION_KIND,
   objective,
   seq,
 }: {
+  kind?: typeof FIRST_PARTY_GOAL_EXTENSION_KIND | typeof LEGACY_CODEX_GOAL_EXTENSION_KIND;
   objective: string;
   seq: number;
 }): ThreadEventWithMeta {
@@ -20,7 +23,7 @@ function goalUpdatedEvent({
       threadId: "thread-1",
       providerThreadId: "provider-thread-1",
       scope: threadScope(),
-      kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
+      kind,
       payload: {
         objective,
         status: "active",
@@ -37,14 +40,19 @@ function goalUpdatedEvent({
   };
 }
 
-function goalClearedEvent(seq: number): ThreadEventWithMeta {
+function goalClearedEvent(
+  seq: number,
+  kind:
+    | typeof FIRST_PARTY_GOAL_EXTENSION_KIND
+    | typeof LEGACY_CODEX_GOAL_EXTENSION_KIND = LEGACY_CODEX_GOAL_EXTENSION_KIND,
+): ThreadEventWithMeta {
   return {
     event: {
       type: "thread/extensionState/updated",
       threadId: "thread-1",
       providerThreadId: "provider-thread-1",
       scope: threadScope(),
-      kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
+      kind,
       payload: null,
     },
     meta: {
@@ -149,5 +157,40 @@ describe("extractThreadTimelineGoal", () => {
         },
       ])?.objective,
     ).toBe("Goal");
+  });
+
+  it("reads first-party bb/goal snapshots and lets a later clear win across kinds", () => {
+    expect(
+      extractThreadTimelineGoal([
+        goalUpdatedEvent({
+          seq: 1,
+          objective: "Codex goal",
+          kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
+        }),
+        goalUpdatedEvent({
+          seq: 2,
+          objective: "Ship the hybrid loop",
+          kind: FIRST_PARTY_GOAL_EXTENSION_KIND,
+        }),
+      ]),
+    ).toEqual({
+      sourceSeq: 2,
+      updatedAt: 200,
+      objective: "Ship the hybrid loop",
+      status: "active",
+      tokenBudget: 10_000,
+      tokensUsed: 250,
+      timeUsedSeconds: 30,
+    });
+    expect(
+      extractThreadTimelineGoal([
+        goalUpdatedEvent({
+          seq: 1,
+          objective: "Ship the hybrid loop",
+          kind: FIRST_PARTY_GOAL_EXTENSION_KIND,
+        }),
+        goalClearedEvent(2, FIRST_PARTY_GOAL_EXTENSION_KIND),
+      ]),
+    ).toBeNull();
   });
 });

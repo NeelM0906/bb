@@ -12,7 +12,10 @@ import type {
   ThreadTurnInitiator,
   TurnRequestTarget,
 } from "@bb/domain";
-import { isStandaloneBuiltinClearCommand } from "@bb/domain";
+import {
+  isStandaloneBuiltinClearCommand,
+  parseBuiltinGoalCommand,
+} from "@bb/domain";
 import type { SendMessageRequest } from "@bb/server-contract";
 import { renderTemplate } from "@bb/templates";
 import type {
@@ -63,7 +66,9 @@ import {
 } from "../lib/lifecycle-api-errors.js";
 import { validatePromptAttachmentReferences } from "../projects/attachments.js";
 import { resolvePluginMentionContextInputs } from "../plugins/plugin-mentions.js";
+import { providerIdHasNativeGoal } from "./provider-command-typeahead.js";
 import { clearThreadContext } from "./thread-context-clear.js";
+import { appendFirstPartyGoalSnapshotInTransaction } from "./thread-first-party-goal.js";
 import { withThreadSendGuard } from "./thread-context-mutation-guard.js";
 import {
   prependDeferredFirstTurnContext,
@@ -398,6 +403,10 @@ function appendAndQueueSendThreadMessageInTransaction({
   };
 }
 
+function firstPartyGoalObjectiveInput(objective: string): PromptInput[] {
+  return [{ type: "text", text: objective, mentions: [] }];
+}
+
 export async function sendThreadMessage(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: SendThreadMessageArgs,
@@ -408,6 +417,40 @@ export async function sendThreadMessage(
       thread: args.thread,
     });
     return;
+  }
+  const parsedGoal = parseBuiltinGoalCommand(args.payload.input);
+  if (
+    parsedGoal !== null &&
+    !providerIdHasNativeGoal(deps.providerRegistry, args.thread.providerId)
+  ) {
+    if (parsedGoal.objective.length === 0) {
+      throw new ApiError(400, "invalid_request", "Goal requires an objective");
+    }
+    const objective = parsedGoal.objective;
+    const { inputGroups: _inputGroups, ...payload } = args.payload;
+    return withThreadSendGuard(args.thread.id, () =>
+      sendThreadMessageWithoutContextClear(deps, {
+        ...args,
+        payload: {
+          ...payload,
+          input: firstPartyGoalObjectiveInput(objective),
+        },
+        beforeAppendInTransaction: ({ tx }) => {
+          appendFirstPartyGoalSnapshotInTransaction(tx, {
+            environmentId: args.thread.environmentId,
+            payload: {
+              objective,
+              status: "active",
+              tokenBudget: null,
+              tokensUsed: 0,
+              timeUsedSeconds: 0,
+            },
+            threadId: args.thread.id,
+          });
+          args.beforeAppendInTransaction?.({ tx });
+        },
+      }),
+    );
   }
   return withThreadSendGuard(args.thread.id, () =>
     sendThreadMessageWithoutContextClear(deps, args),
