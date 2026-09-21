@@ -42,14 +42,6 @@ export interface FakeSdkHarness {
   stub(path: string, implementation: (...args: never[]) => unknown): void;
 }
 
-/**
- * Mirrors the server's `wrapSdkForPlugin` attribution for `threads.spawn` and
- * `threads.fork`. A `pluginMetadata` seed is validated like the real SDK does
- * and always attributes the new thread to the plugin, overriding `origin` and
- * `originPluginId`. Without a seed, `origin` defaults to "plugin" and, for that
- * origin, `originPluginId` defaults to the plugin's id. Throws when the seed is
- * invalid.
- */
 function withThreadAttribution(pluginId: string, args: unknown[]): unknown[] {
   const [first, ...rest] = args;
   if (typeof first !== "object" || first === null) return args;
@@ -82,12 +74,6 @@ function withThreadAttribution(pluginId: string, args: unknown[]): unknown[] {
   ];
 }
 
-/**
- * Mirrors the server's `wrapSdkForPlugin` for `threads.getPluginMetadata` and
- * `threads.updatePluginMetadata`: `pluginId` defaults to the plugin's id. When
- * `validateSet` is true, `set` is validated like the real SDK does. Throws
- * when `set` is invalid.
- */
 function withPluginMetadataTarget(
   pluginId: string,
   args: unknown[],

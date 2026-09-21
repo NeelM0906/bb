@@ -247,15 +247,6 @@ export async function createQueuedMessageForThread(
           reasoningLevel: execution.reasoningLevel,
           permissionMode: execution.permissionMode,
           serviceTier: execution.serviceTier,
-          // An explicit "queue this" is a message waiting for the running turn
-          // to end, which is exactly `thread-busy`. Naming it rather than
-          // leaving the wait null keeps every row on one vocabulary, and the
-          // idle drain treats the two identically anyway.
-          //
-          // Queued while the thread is stopping, it is instead a message the
-          // user composed AFTER asking for the stop, so it carries `stopping`
-          // and runs when the stop lands rather than joining the rows the
-          // manual-stop pause holds back.
           waitingOn:
             currentThread.status === "stopping"
               ? { kind: "stopping" }
@@ -727,15 +718,6 @@ async function sendClaimedQueuedMessageForThread(
     outcome.kind === "queued" &&
     outcome.entry.waitingOn?.kind !== "stopping"
   ) {
-    // "Send now" overrides every plugin wait and the row's own schedule, but
-    // not a core wait — those guard invariants rather than express a policy.
-    // The row is back on the queue with its new reason; say so rather than
-    // returning a success the caller would read as "it went".
-    //
-    // `stopping` is the one core wait Send-now does clear, because pressing it
-    // is what clears it: the row leaves the manual-stop pause behind and
-    // dispatches when the stop lands. Refusing would leave the user no way to
-    // express that intent until the stop finished.
     throw new ApiError(
       409,
       "queued_message_still_waiting",

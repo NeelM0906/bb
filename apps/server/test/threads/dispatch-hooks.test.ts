@@ -809,8 +809,6 @@ describe("message.dispatch hook message author", () => {
 
       await runQueuedMessageDispatch(harness.deps, { kind: "plugin-recheck" });
 
-      // The re-attempt is the same logical dispatch, so a policy keyed on the
-      // sender must not see it change identity between passes.
       expect(seen).toEqual([
         { initiator: "agent", senderThreadId: sender.id },
         { initiator: "agent", senderThreadId: sender.id },

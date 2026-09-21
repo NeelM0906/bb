@@ -259,27 +259,6 @@ export function resolveDispatchAttemptKind(
     : "start-turn";
 }
 
-/**
- * THE dispatch checkpoint.
- *
- * Every message on its way to a provider passes through here exactly once per
- * attempt, whether it was just sent, was queued and became eligible again, or
- * is a retry of a turn that failed. Two named exceptions skip the plugin pass
- * by design: a user's Send-now (an explicit override of policy waits), and the
- * conversation operations — compaction, an edit's re-send — that never come
- * through here at all. The shape is the plan's three steps:
- *
- * 1. **Plugin policy.** One hook pass decides whether the submission may
- *    proceed before operational state can defer it.
- * 2. **Core waits.** Scheduling, thread, workspace, host, and interaction
- *    state queue an admitted message until it can physically run.
- * 3. **Dispatch.** A cleared first attempt moves a `pending` thread to
- *    `starting` and rides the cold-start command; every other cleared attempt
- *    sends or steers exactly as it does today.
- *
- * When nothing blocks it, no queued row is ever created and the path is the
- * one that existed before the queue did.
- */
 export function attemptDispatch(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: DispatchAttemptArgs,
@@ -293,10 +272,6 @@ async function runDispatchAttempt(
   reattempted: boolean,
 ): Promise<DispatchAttemptOutcome> {
   const { payload, thread } = args;
-  // A stopping thread is writable HERE and nowhere upstream: the checkpoint
-  // below turns it into a core wait, which is a truthful "not yet" the row can
-  // recover from, rather than the 409 that used to make a stop a dead end for
-  // everything the user lined up behind it.
   ensureThreadIsWritable(thread, true);
   if (args.trigger === "user" && args.source.kind === "inline") {
     // Reject what can never deliver while the sender is still listening; a
@@ -379,7 +354,6 @@ async function runDispatchAttempt(
     return { kind: "queued", entry };
   };
 
-  // --- 1. plugin policy ---------------------------------------------------
 
   const admitted: { value: PendingThreadAdmission | null } = {
     value: null,
@@ -567,7 +541,6 @@ async function runDispatchAttempt(
     );
   }
 
-  // --- 2. dispatch --------------------------------------------------------
 
   if (firstDispatch) {
     const admission = admitted.value;

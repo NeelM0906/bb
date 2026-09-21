@@ -19,38 +19,6 @@ import {
  * nothing here re-encodes it.
  */
 
-/**
- * Why a queued row is not dispatching yet.
- *
- * - `time` — the row has a future `sendAt`. The instant lives in the row's
- *   own `sendAt` field, which is what the due sweep indexes, so this arm
- *   carries no payload of its own.
- * - `thread-busy` — the thread is running a turn and the message asked to
- *   wait for idle rather than steer.
- * - `stopping` — the user asked the thread to stop and the stop has not
- *   landed yet. Distinct from `thread-busy` because the manual-stop queue
- *   pause deliberately holds back the rows that were merely waiting for the
- *   turn to end, while a row carrying this wait is one the user asked for
- *   AFTER requesting the stop — by sending it, queueing it, or pressing Send
- *   now — and so dispatches as soon as the thread reaches idle.
- * - `provisioning` — the thread's workspace is being (re)provisioned. Only
- *   follow-ups and steers wait on this: a thread's first message rides the
- *   cold-start command instead.
- * - `host-offline` — the thread's workspace exists, but the machine it runs on
- *   is disconnected or pausing/resuming, so execution waits for readiness. Distinct
- *   from `provisioning` because the two are cleared by different events and
- *   read differently to a user: a provisioning workspace is being built and
- *   will finish on its own, while an offline host is waiting on a machine that
- *   may be shut, asleep, or off the network. It carries the host's display
- *   name for the same reason the `plugin` arm carries its reason — the
- *   renderers that word this wait (the timeline projection in `thread-view`,
- *   `bb thread queue`) have no database to resolve an id against.
- * - `interaction` — the thread has a pending interaction the user has not
- *   settled.
- * - `plugin` — a plugin's dispatch gate returned `wait(reason)`. This is the
- *   only arm with an authored reason, because it is the only arm whose reason
- *   is not derivable from the kind (plus `sendAt`) by the renderer.
- */
 export const queuedMessageWaitingOnKindValues = [
   "time",
   "thread-busy",

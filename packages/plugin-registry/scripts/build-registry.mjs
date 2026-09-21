@@ -1,26 +1,3 @@
-// Builds the BB plugin component registry (plugin design §5.5): shadcn
-// registry-item JSONs generated from the shared UI kit's component source, so
-// the registry can never drift from the UI the app and builtin plugins ship.
-//
-//   node packages/plugin-registry/scripts/build-registry.mjs [--check]
-//
-// Inputs:
-// - registry.json — the item list (uiItems).
-// - packages/shared-ui/src/components/ui/*.tsx — component source, verbatim.
-//   @bb/shared-ui is itself the plugin/registry flavor: its portal-scope and
-//   useBrowserDimmingModal leaves are already the no-op/plugin variants (the
-//   app injects its own flavors at build time).
-//
-// Every file in an item's transitive @/-import closure becomes its own
-// registry item (named from its basename), referenced via
-// registryDependencies — `npx shadcn add @bb/dialog` pulls the closure
-// automatically. Bare npm imports become item `dependencies` (react and
-// react-dom excluded: the plugin runtime provides them; the shimmed
-// radix/sonner/vaul packages are KEPT as dependencies — the build shims them
-// at bundle time, but plugin authors need their types to typecheck).
-//
-// Output: r/<item>.json + r/index.json, checked in; `--check` exits 1 on any
-// drift (wired into this package's typecheck/test like @bb/templates).
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";

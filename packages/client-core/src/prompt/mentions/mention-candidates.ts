@@ -64,12 +64,6 @@ function normalizeMentionTerm(term: string): string {
   return term.trim().toLowerCase();
 }
 
-/**
- * How strongly a query hits a candidate's own identities. Sources rank their
- * own rows with this before handing them over so that a source-level result
- * limit keeps the strongest matches, and so that whatever order a source
- * chooses inside one rank survives {@link orderMentionCandidates}.
- */
 export function mentionIdentityMatchRank(
   identities: readonly string[],
   query: string,

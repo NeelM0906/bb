@@ -19,9 +19,6 @@ run_step() {
   fi
 }
 
-# Hash of the inputs that decide what `pnpm install` would do. Stored inside
-# node_modules so it travels with an installed tree (copy-on-write
-# environments) and disappears with it (fresh worktrees).
 INSTALL_STAMP="node_modules/.bb-env-setup-install-hash"
 INSTALL_INPUTS="pnpm-lock.yaml pnpm-workspace.yaml package.json .npmrc"
 

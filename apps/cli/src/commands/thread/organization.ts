@@ -320,9 +320,6 @@ export function registerOrganizationCommands(
     .action(
       action(async (threadId: string | undefined, opts: QueueListOptions) => {
         const sdk = createCliBbSdk(getUrl());
-        // A thread argument keeps the thread-scoped route, which is the one
-        // that returns queue ORDER; the cross-thread route answers "what is
-        // queued anywhere" and is ordered by age instead.
         const result =
           threadId === undefined
             ? await sdk.threads.queue.list({

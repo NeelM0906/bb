@@ -4,12 +4,6 @@ import type { PluginRowPresentation } from "@get-bb/plugin-sdk";
 
 export const GENERIC_PLUGIN_GLYPH = "Toolbox";
 
-/**
- * One complete row presentation from what a plugin declared, filled with the
- * plugin's branding glyph and the given labels where it left fields out. Used
- * for native tool rows and for the row a plugin form leaves in the timeline,
- * so both read the same way.
- */
 export function fillPluginPresentation(args: {
   declared: PluginRowPresentation | null;
   brandingIcon: string | undefined;

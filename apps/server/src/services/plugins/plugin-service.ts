@@ -280,19 +280,6 @@ export interface PluginService {
   ): Promise<InstalledPlugin | undefined>;
   reload(id?: string): Promise<PluginReloadOutcome>;
   getApi(id: string): BbPluginApi | undefined;
-  /**
-   * Whether this server still means to run this plugin, which is what decides
-   * a `plugin:<id>` queue wait's fate: core clears a wait whose owner is gone
-   * rather than stranding the user's turn.
-   *
-   * Loaded is the obvious case and not the only one. A plugin the current load
-   * pass has not reached yet counts, because nothing is loaded while the server
-   * boots and holds released then are released seconds before their plugin
-   * could restate them. So does one paused for a server move, which resumes on
-   * rollback or on the target. Everything else — uninstalled, disabled, failed,
-   * incompatible, or never reached by a pass that has since ended — does not,
-   * and its waits clear.
-   */
   isPluginExpectedToRun(id: string): boolean;
   /**
    * On-disk asset backing GET /plugins/:id/assets/app.{js,css}: file path

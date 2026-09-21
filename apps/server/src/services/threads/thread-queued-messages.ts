@@ -98,12 +98,6 @@ export function parseStoredQueuedThreadMessageWaitingOn(
   return parsed.data;
 }
 
-/**
- * The requester a queued dispatch was written with, so a drained re-attempt
- * resolves the same author its first attempt did. The two columns are written
- * together; half a pair would silently demote an agent's dispatch to a user's,
- * so it fails rather than degrading to null.
- */
 export function storedQueuedThreadMessageRequestedBy(
   row: Pick<
     StoredQueuedThreadMessageRow,

@@ -64,10 +64,6 @@ export interface QueuedDispatchMessage {
   input: PromptInput[];
   execution: ResolvedThreadExecutionOptions;
   senderThreadId: string | null;
-  /**
-   * The provenance of the dispatch being queued, written onto the row so the
-   * drain re-decides on what the first attempt saw rather than on null.
-   */
   origin: ThreadCreateOrigin | null;
   originPluginId: string | null;
   requestedBy: StartedOnBehalfOf | null;

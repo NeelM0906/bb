@@ -181,10 +181,6 @@
       var(--bb-sidebar-sticky-stack-padding);
   }
 
-  /* The stack's top padding is inside the scrollport, so rows stay visible as
-     they scroll through it. A sticky label hides that strip behind its own top
-     shield; a pinned row with no label above it has nothing to hide it, so the
-     stack caps the strip for every tier. */
   [data-sidebar-sticky-stack]::before {
     content: "";
     position: sticky;
@@ -401,10 +397,6 @@
     margin-top: var(--bb-sidebar-sticky-row-gap);
   }
 
-  /* A section header that scrolls with its contents (Pinned) pins no label, so
-     every tier below it moves up by the slot the label would have held. The
-     label slot is the origin both deeper offsets derive from, so collapsing it
-     here covers the project tier and every parent level at once. */
   [data-sidebar-sticky-stack] [data-sidebar-sticky-header="false"] {
     --bb-sidebar-sticky-project-top: var(--bb-sidebar-sticky-stack-padding-top);
   }
@@ -947,24 +939,6 @@ body.sidebar-resizing [data-sidebar="panel"] {
     max-width: max-content;
   }
 
-  /*
-   * The working sweep is an animated image used as a mask: `shine-sweep.png`
-   * is a 128x2 APNG whose alpha band travels left to right once a second,
-   * stretched over the label or glyph (`apps/app/scripts/generate-shine-sweep.mjs`
-   * writes it). Chromium advances animated images on the compositor, with no
-   * style, paint, or commit on the main thread, so an agent working costs the
-   * main thread nothing; an engine that animates images on the main thread
-   * repaints this one small layer at the file's 30 fps.
-   * A `background-position` / `mask-position` keyframe sweep looks the same but
-   * cannot leave the main thread: at 60 fps it cost a full rendering pass per
-   * frame, growing with the weight of the page around the label. The mask only
-   * carries alpha, so one file serves every theme, label, and icon;
-   * `-webkit-text-fill-color` keeps labels at full `--foreground` strength at
-   * the peak whatever text color utility they carry. `will-change: transform`
-   * gives the element its own layer while the class is present, so each frame
-   * re-rasters the small label instead of the scroller tile it sits in. The
-   * file stays under Vite's 4 KB inline limit, so production CSS embeds it.
-   */
   .animate-shine,
   .animate-shine-icon {
     -webkit-mask-image: url("./shine-sweep.png");
@@ -981,13 +955,6 @@ body.sidebar-resizing [data-sidebar="panel"] {
     -webkit-text-fill-color: var(--foreground);
   }
 
-  /*
-   * Hidden hosts keep shimmering rows mounted: the closed sidebar drawer's
-   * inert panel, a collapsed `aria-hidden` banner body, a retained overlay.
-   * Drop the mask and release the layer there so nothing off-screen draws.
-   * The rightmost compound is a class, so toggling `inert` or
-   * `aria-hidden` on the host invalidates only these elements.
-   */
   [inert] .animate-shine,
   [inert] .animate-shine-icon,
   [aria-hidden="true"] .animate-shine,
@@ -1007,8 +974,6 @@ body.sidebar-resizing [data-sidebar="panel"] {
     animation: indeterminate-progress 1.5s ease-in-out infinite;
   }
 
-  /* Reduced motion: drop the sweep and render the active cue as plain
-     full-strength text/glyph. */
   @media (prefers-reduced-motion: reduce) {
     /* A static half-width fill still reads as "busy" without the sweep. */
     .animate-indeterminate-progress {

@@ -166,21 +166,6 @@ export function hasMessageDispatchHooks(): boolean {
   );
 }
 
-/**
- * Server-wide evaluation lock.
- *
- * A handler that limits concurrency is only correct if no two passes
- * interleave, so every pass runs to completion before the next starts — AND,
- * via `continueAfterHooks`, a cleared attempt's thread-status flip commits
- * before the lock releases. Those two together are what let a handler ask the
- * server what is running (`sdk.threads.listRunning()`) instead of maintaining
- * its own tally of in-flight `proceed`s: the fact is already true by the time
- * the next handler reads it.
- *
- * The cost is real — a slow handler delays other dispatches up to its box — and is
- * accepted deliberately; scoping the lock per project or host is the fix if it
- * bites.
- */
 let evaluationLock: Promise<unknown> = Promise.resolve();
 
 function withEvaluationLock<T>(run: () => Promise<T>): Promise<T> {
@@ -280,24 +265,11 @@ export function dispatchInputText(input: readonly PromptInput[]): string {
     .join("\n");
 }
 
-/**
- * Fields no longer in `MessageDispatchHookContext` that core still puts on the
- * object, so a handler compiled against an older SDK keeps reading them.
- * `startedOnBehalfOf` said why the THREAD was started, never who sent the
- * message being decided about; `initiator` and `senderThreadId` answer that.
- */
 interface DroppedFromContractStillEmitted {
   startedOnBehalfOf: StartedOnBehalfOf | null;
   queuedMessage: ThreadQueuedMessage | null;
 }
 
-/**
- * The author a whole dispatch reports, which a group of queued rows may not
- * agree on: the drain sends them as one turn and the hook decides once for all
- * of them. `mixed` says the rows differ, so a handler that cares reads
- * `queuedMessages` for each row's own author. An inline attempt has no rows and
- * reports the author the dispatch was requested with.
- */
 function summarizeDispatchProvenance(
   request: MessageDispatchHookPassRequest,
 ): Pick<

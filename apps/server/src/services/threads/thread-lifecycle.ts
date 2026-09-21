@@ -1142,16 +1142,6 @@ export function requestThreadStorageDeletion(
     });
 }
 
-/**
- * The drain a settled stop owes the rows that were waiting on it.
- *
- * A completed turn wakes the queue; a stopped one never did, because the
- * manual-stop pause meant there was nothing for the drain to find. Rows
- * carrying a `stopping` wait are outside that pause — the user asked for them
- * after requesting the stop — so the moment the stop lands is the moment they
- * become dispatchable, and nothing else would tell the queue about it before
- * the next recovery sweep.
- */
 function drainQueuedMessagesAfterStopAction(
   threadId: string,
 ): CommandResultPostCommitAction {

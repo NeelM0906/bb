@@ -1,23 +1,3 @@
-/**
- * Builds the Monaco bundle this plugin serves, into `dist/monaco`.
- *
- * Monaco cannot go through `bb plugin build` with everything else: that
- * config emits one file with no code splitting, so Monaco would parse at app
- * boot for every user — including everyone who never opens a file — and its
- * worker could not be emitted at all. Building it here instead keeps it
- * lazy: `lib/monaco-loader.ts` imports these files from a
- * `files.createPreview` URL the first time a file tab opens.
- *
- * Building rather than copying Monaco's prebuilt AMD bundle is what keeps
- * this small. esbuild proves which modules are reachable from the entry, so
- * the language services this plugin does not use are dropped by construction
- * — 3.3 MB against 24 MB for the AMD tree — with no risk that something we
- * pruned is requested later at runtime.
- *
- * Packaging ships only a builtin's `dist/` and `skills/`
- * (`bb-plugin-build prepare-bundled`, which runs this), so
- * `dist/` is the only place these files can live.
- */
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";

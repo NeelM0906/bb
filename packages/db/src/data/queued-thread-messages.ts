@@ -57,18 +57,8 @@ export interface CreateQueuedThreadMessageInput {
   threadId: string;
   content: PromptInput[];
   senderThreadId?: string | null;
-  /**
-   * How the dispatch this row is queued from was requested, and the plugin
-   * that requested it, so a drained re-attempt carries the provenance its
-   * first attempt had. Both null for everything but a thread's first dispatch.
-   */
   origin?: ThreadCreateOrigin | null;
   originPluginId?: string | null;
-  /**
-   * The thread that asked for this dispatch, when one did. Distinct from
-   * `senderThreadId`, which is the sender of a message TO an existing thread:
-   * a thread-start has a requester and no message sender.
-   */
   requestedBy?: StartedOnBehalfOf | null;
   model: string;
   reasoningLevel: string;
@@ -275,21 +265,8 @@ function partitionQueuedMessageGroups(
   return groups;
 }
 
-/**
- * The waits that mean "this row is only behind the turn that is running". The
- * manual-stop queue pause exists to hold exactly these back, because a user
- * who stopped a thread did not thereby ask for whatever was lined up behind
- * it.
- */
 const ORDINARY_TURN_END_WAIT_KINDS = ["thread-busy", "turn-starting"] as const;
 
-/**
- * Every wait an idle thread clears by being idle. `stopping` joins the
- * ordinary two rather than replacing them: it is drainable for the same
- * reason, and deliberately outside {@link ORDINARY_TURN_END_WAIT_KINDS} so the
- * manual-stop pause lets it through — a row acquires it only from an action
- * the user took after requesting the stop.
- */
 const IDLE_DRAINABLE_WAIT_KINDS = [
   ...ORDINARY_TURN_END_WAIT_KINDS,
   "stopping",
@@ -803,11 +780,6 @@ export function isThreadQueueAutoSendPaused(
   return manuallyStoppedQueuePauseQuery(db, threadId).get() !== undefined;
 }
 
-/**
- * The SQL mirror of {@link isOrdinaryTurnEndQueuedMessage}, negated: the rows
- * the manual-stop queue pause does not apply to. Kept beside the JS predicate
- * it mirrors so the two cannot drift silently.
- */
 function notOrdinaryTurnEndQueuedThreadMessage() {
   return or(
     isNotNull(queuedThreadMessages.systemNotice),

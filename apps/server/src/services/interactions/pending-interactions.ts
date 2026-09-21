@@ -400,12 +400,6 @@ export class PendingInteractionLifecycle {
     return interaction;
   }
 
-  /**
-   * Whether a pending interaction holds this thread's turn. A provider's
-   * question or approval does: the provider is blocked on it, so nothing
-   * else can be sent until it settles. A plugin's card has no turn and never
-   * blocks a send; whatever answers it later steers or starts a turn.
-   */
   hasTurnBoundPendingThreadInteraction(threadId: string): boolean {
     const active = getActivePendingInteractionForThread(this.deps.db, threadId);
     return active !== null && active.turnId !== null;

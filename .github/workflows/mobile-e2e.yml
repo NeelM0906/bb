@@ -53,10 +53,6 @@ env:
 jobs:
   ios:
     name: iOS simulator flows
-    # Scheduled (nightly) runs are restricted to the canonical repository so
-    # that forks, on which GitHub happily runs cron workflows, do not burn
-    # macOS runner time they do not have. Label gating and manual dispatch
-    # keep working in forks.
     if: >-
       github.repository == 'get-bb/bb'
       && (github.event_name != 'pull_request'

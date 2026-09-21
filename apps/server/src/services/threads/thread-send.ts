@@ -194,16 +194,6 @@ export function ensureThreadIsWritable(
   }
 }
 
-/**
- * The queue's own writability, which a requested stop does not revoke.
- *
- * Everything else a stopping thread rejects is work against the run that is
- * being torn down. The queue is the opposite: it holds what the user wants to
- * happen NEXT, and the seconds a stop takes to land are exactly when they
- * reach for it. Rows still cannot dispatch mid-stop — the dispatch checkpoint
- * queues them on a `stopping` wait — but composing, editing, reordering and
- * asking for one to go first all stay available.
- */
 export function ensureThreadQueueIsWritable(thread: Thread): void {
   ensureThreadIsWritable(thread, true);
 }

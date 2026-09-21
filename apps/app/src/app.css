@@ -807,11 +807,6 @@
   }
 }
 
-/* Browse hero (Plugins → Browse plugins): the archetype chips orbiting the mini bb
- * window drift slowly so the hero reads as alive without competing with the
- * composer sitting in the middle of it. Duration and delay are per-chip custom
- * properties so each chip drifts out of phase with its neighbours from one
- * shared rule. */
 @keyframes bb-hero-drift {
   0%,
   100% {
