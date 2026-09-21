@@ -84,6 +84,11 @@ describe("internal session protocol version", () => {
       });
 
       expect(response.status).toBe(201);
+      expect(await response.json()).toMatchObject({
+        sessionId: expect.any(String),
+        heartbeatIntervalMs: expect.any(Number),
+        leaseTimeoutMs: expect.any(Number),
+      });
     } finally {
       await server.close();
     }
@@ -298,6 +303,9 @@ describe("internal session protocol version", () => {
         },
       });
       expect(accepted.status).toBe(201);
+      expect(await accepted.json()).toMatchObject({
+        sessionId: expect.any(String),
+      });
       expect(
         getHost(server.db, "host-protocol")?.lastRejectedProtocolVersion,
       ).toBeNull();

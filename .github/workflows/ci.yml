@@ -114,9 +114,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - shard: server
+          - shard: server-1
             filter: --filter=@bb/server
-            args: ""
+            args: -- --shard=1/3
+          - shard: server-2
+            filter: --filter=@bb/server
+            args: -- --shard=2/3
+          - shard: server-3
+            filter: --filter=@bb/server
+            args: -- --shard=3/3
           # @bb/app is by far the largest suite (365 files) and was the critical
           # path once the macOS smoke leg was fixed. Vitest splits by file, and
           # Turbo hashes passthrough args, so each leg is a distinct cache entry
