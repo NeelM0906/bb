@@ -315,6 +315,21 @@ describe("provider session ownership on dispatch", () => {
         sessionId: session.id,
         handle: ({ command }) => {
           switch (command.type) {
+            case "host.admission.reserve":
+              return {
+                ok: true,
+                result: {
+                  outcome: "reserved",
+                  reservation: {
+                    hostId: command.hostId,
+                    token: `reservation-${command.threadId}`,
+                    generation: 1,
+                    reason: command.reason,
+                  },
+                },
+              };
+            case "host.admission.release":
+              return { ok: true, result: { released: true } };
             case "thread.stop":
               return { ok: true, result: { providerCheckpointId: null } };
             case "thread.start":

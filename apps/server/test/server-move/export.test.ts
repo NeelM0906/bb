@@ -102,6 +102,7 @@ describe("server archive export", () => {
         expect(archive.oldCopyEntries).toEqual([
           "attachments",
           "auth-secret",
+          "bb.db",
           "plugins/tasks/data.db",
           "plugins/tasks/secrets",
           "skills",
@@ -139,6 +140,8 @@ describe("server archive export", () => {
         for (const hostOwned of [
           "host-id",
           "auth.json",
+          "bb.db-wal",
+          "bb.db-shm",
           "thread-storage/thr_1/notes.md",
           "worktrees/wt/file.txt",
           "plugins/tasks/host-data/cache.txt",

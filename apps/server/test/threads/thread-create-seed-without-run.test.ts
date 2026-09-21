@@ -267,7 +267,7 @@ describe("thread creation with startedOnBehalfOf (seed-without-run)", () => {
       });
       const forkEvents = listEvents(harness.db, { threadId: fork.id });
       expect(
-        forkEvents.map(({ sequence, type, providerThreadId }) => ({
+        forkEvents.slice(0, 4).map(({ sequence, type, providerThreadId }) => ({
           sequence,
           type,
           providerThreadId,
@@ -294,6 +294,16 @@ describe("thread creation with startedOnBehalfOf (seed-without-run)", () => {
           providerThreadId: null,
         },
       ]);
+      const provisioningEvents = forkEvents.slice(4);
+      expect(provisioningEvents.length).toBeGreaterThan(0);
+      for (const [index, event] of provisioningEvents.entries()) {
+        expect(event).toMatchObject({
+          sequence: index + 5,
+          type: "system/thread-provisioning",
+          providerThreadId: null,
+          threadId: fork.id,
+        });
+      }
       expect(forkEvents[0]?.id).not.toBe(sourceEvents[0]?.id);
     });
   });

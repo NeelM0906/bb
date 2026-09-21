@@ -907,7 +907,7 @@ describe("latest timeline selection memo", () => {
     });
   });
 
-  it("rebuilds and reorders rows when a parented excluded row extends a delegating span past a user request", () => {
+  it("rebuilds selection while preserving prose order when a parented excluded row extends a delegating span past a user request", () => {
     withTestThread((testThread) => {
       const state = initialState();
       const args = latestArgs("default");
@@ -942,7 +942,14 @@ describe("latest timeline selection memo", () => {
       ]);
       const before = expectWarmEqualsCold(testThread, args, "before");
       expect(boundary(beforeSeq)).toBe(requestSeq);
-      expect(rowStarts(before)).toEqual([1, 4, 5, 8, 7, 9, 10]);
+      expect(rowStarts(before)).toEqual([1, 4, 5, 7, 8, 9, 10]);
+      expect(
+        before.response.rows
+          .filter(
+            (row) => row.kind === "conversation" && row.role === "assistant",
+          )
+          .map((row) => (row.kind === "conversation" ? row.text : null)),
+      ).toEqual(["message-1", "message-2"]);
 
       const maxSeq = append(testThread, [
         contextUsage("turn-1", 42, "agent-1"),

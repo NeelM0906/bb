@@ -399,6 +399,11 @@ describe("startup queue waits", () => {
       });
 
       expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
+      await vi.waitFor(() => {
+        expect(
+          listQueuedThreadCommands(harness, "turn.submit", thread.id),
+        ).toHaveLength(2);
+      });
       expect(
         listQueuedThreadCommands(harness, "turn.submit", thread.id),
       ).toMatchObject([
@@ -1550,6 +1555,11 @@ describe("service tier execution lifecycle", () => {
         await expect(
           buildExecutionOptions(harness.deps, {}, { threadId: thread.id }),
         ).resolves.toMatchObject({ serviceTier });
+        await waitForQueuedCommand(
+          harness,
+          ({ command }) =>
+            command.type === "turn.submit" && command.threadId === thread.id,
+        );
         expect(
           listQueuedThreadCommands(harness, "turn.submit", thread.id),
         ).toContainEqual(
@@ -1607,6 +1617,11 @@ describe("service tier execution lifecycle", () => {
       expect(listQueuedThreadMessages(harness.db, thread.id)).toMatchObject([
         { id: newer.id, serviceTier: "fast" },
       ]);
+      await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "turn.submit" && command.threadId === thread.id,
+      );
       expect(
         listQueuedThreadCommands(harness, "turn.submit", thread.id),
       ).toContainEqual(

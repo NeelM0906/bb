@@ -49,7 +49,7 @@ function buildColdLatestRows(
   harness: TestAppHarness,
   thread: Thread,
 ): TimelineRow[] {
-  const clone = createConnection(harness.deps.db.$client.serialize());
+  const clone = createConnection(harness.deps.db.$client.name);
   try {
     return buildRouteTimelinePage({
       db: clone,
@@ -336,7 +336,7 @@ describe("GET /threads/:id/timeline?afterSequence (row-patch delta)", () => {
       }
       expect(
         countTimelineSelectionMemoEntries(harness.deps.db),
-      ).toBeGreaterThan(0);
+      ).toBe(0);
     });
   });
 

@@ -134,6 +134,7 @@ describe("finished turn display per provider", () => {
         "conversation:assistant",
       ]);
       expect(codex.rows.map(rowSignature)).toEqual([
+        "conversation:assistant",
         "turn",
         "conversation:assistant",
       ]);
@@ -159,6 +160,7 @@ describe("finished turn display per provider", () => {
       const collapsed = await getTimeline(harness, threadId);
       expect(collapsed.maxSeq).toBe(flat.maxSeq);
       expect(collapsed.rows.map(rowSignature)).toEqual([
+        "conversation:assistant",
         "turn",
         "conversation:assistant",
       ]);
@@ -171,11 +173,9 @@ describe("finished turn display per provider", () => {
       const details = timelineTurnSummaryDetailsResponseSchema.parse(
         await readJson(detailsResponse),
       );
-      expect(details.rows.map(rowSignature)).toEqual([
-        "conversation:assistant",
-        "work:tool",
-      ]);
+      expect(details.rows.map(rowSignature)).toEqual(["work:tool"]);
       expect(await getOutlinePreviews(harness, threadId)).toEqual([
+        "Let me read the entry point.",
         "The entry point wires the daemon.",
       ]);
 
