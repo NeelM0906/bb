@@ -784,8 +784,13 @@ describe("server move coordinator", () => {
         });
         const { events } = base;
         const never = createDeferredPromise<void>();
+        const retired = createDeferredPromise<void>();
         const coordinator = createServerMoveCoordinator({
           ...base.environment,
+          retireProcess() {
+            base.environment.retireProcess();
+            retired.resolve();
+          },
           plugins: {
             ...base.environment.plugins,
             [hung]: async () => {
@@ -811,17 +816,20 @@ describe("server move coordinator", () => {
           handle: targetReply,
         });
 
-        await coordinator.start(START_DIRECT);
-        await expect.poll(() => events.includes("retire")).toBe(true);
+        try {
+          await coordinator.start(START_DIRECT);
+          await retired.promise;
 
-        expect(coordinator.getStatus()?.state).toBe("completed");
-        expect(events).toContain(`plugins:${hung}:hung`);
-        expect(events).toContain(`server.moved:${OLD}`);
-        expect(warn).toHaveBeenCalledWith(
-          expect.objectContaining({ timeoutMs: 50 }),
-          `Server move plugin ${warning} did not finish in time; continuing`,
-        );
-        never.resolve();
+          expect(coordinator.getStatus()?.state).toBe("completed");
+          expect(events).toContain(`plugins:${hung}:hung`);
+          expect(events).toContain(`server.moved:${OLD}`);
+          expect(warn).toHaveBeenCalledWith(
+            expect.objectContaining({ timeoutMs: 50 }),
+            `Server move plugin ${warning} did not finish in time; continuing`,
+          );
+        } finally {
+          never.resolve();
+        }
       }),
   );
 
