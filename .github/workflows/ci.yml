@@ -168,7 +168,7 @@ jobs:
           ELECTRON_RUN_AS_NODE=1 pnpm --filter @bb/desktop exec electron --version
 
       - name: Test
-        run: pnpm exec turbo run test ${{ matrix.filter }} --cache-dir=.turbo/cache --output-logs=new-only --concurrency=4 ${{ matrix.args }}
+        run: pnpm exec turbo run test ${{ matrix.filter }} --cache-dir=.turbo/cache --output-logs=new-only --concurrency=${{ matrix.shard == 'packages' && 2 || 4 }} ${{ matrix.args }}
 
   # The macOS legs run without the Turbo cache. Restoring and saving a ~2 GB
   # cache over GitHub's service is slow and blows past the repository quota.

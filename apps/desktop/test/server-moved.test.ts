@@ -442,13 +442,15 @@ describe("createServerMovedWatcher", () => {
 
   function createManualSchedule() {
     const pending = new Set<() => void>();
+    function runPending() {
+      const callbacks = [...pending];
+      pending.clear();
+      for (const callback of callbacks) callback();
+    }
     return {
+      runPending,
       async flush() {
-        const callbacks = [...pending];
-        pending.clear();
-        for (const callback of callbacks) {
-          callback();
-        }
+        runPending();
         await settle();
       },
       pendingCount: () => pending.size,
@@ -558,19 +560,35 @@ describe("createServerMovedWatcher", () => {
   });
 
   it("does not act on a lock whose move is not committed", async () => {
-    const harness = await createHarness({ confirmMove: async () => false });
+    const confirmation = createDeferred<boolean>();
+    const harness = await createHarness({
+      confirmMove: () => confirmation.promise,
+    });
     await writeServerMovedFile(harness.dataDir, movedFile());
     harness.watcher.start();
-    await harness.timers.flush();
+    try {
+      harness.timers.runPending();
+      await vi.waitFor(() =>
+        expect(harness.confirmMove).toHaveBeenCalledOnce(),
+      );
 
-    expect(harness.confirmMove).toHaveBeenCalledOnce();
-    expect(harness.onMove).not.toHaveBeenCalled();
+      harness.fakeWatch.emit(SERVER_MOVED_FILE_NAME);
+      harness.timers.runPending();
+      expect(harness.timers.pendingCount()).toBe(0);
+      confirmation.resolve(false);
+      await vi.waitFor(() => expect(harness.timers.pendingCount()).toBe(1));
+      expect(harness.onMove).not.toHaveBeenCalled();
 
-    harness.confirmMove.mockImplementation(async () => true);
-    harness.fakeWatch.emit(SERVER_MOVED_FILE_NAME);
-    await harness.timers.flush();
-    expect(harness.onMove).toHaveBeenCalledExactlyOnceWith(CONNECT_MOVE);
-    harness.watcher.stop();
+      harness.confirmMove.mockImplementation(async () => true);
+      harness.timers.runPending();
+      await vi.waitFor(() =>
+        expect(harness.onMove).toHaveBeenCalledExactlyOnceWith(CONNECT_MOVE),
+      );
+      expect(harness.confirmMove).toHaveBeenCalledTimes(2);
+    } finally {
+      confirmation.resolve(false);
+      harness.watcher.stop();
+    }
   });
 
   it("checks again when the lock changes during a confirmation", async () => {
