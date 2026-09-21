@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -25,6 +26,7 @@ import { appToast } from "@/components/ui/app-toast";
 import { serverMoveStatusQueryKey } from "@/hooks/queries/query-keys";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { ServerMoveOverlayView } from "./ServerMoveOverlayView";
 import { ServerMoveOverlay } from "./ServerMoveOverlay";
 import { fetchServerMoveDestinationHealth } from "./server-move-destination";
 
@@ -148,6 +150,44 @@ afterEach(() => {
 });
 
 describe("ServerMoveOverlay", () => {
+  it("blocks immediately and keeps recovery available before deferred details realize", async () => {
+    vi.useFakeTimers();
+    const onCancel = vi.fn();
+    try {
+      render(
+        <ServerMoveOverlayView
+          content={{
+            kind: "recovery",
+            move: move({ state: "recovery_required", cancellable: false }),
+          }}
+          cancelPending={false}
+          cancelError={null}
+          onCancel={onCancel}
+          onClose={vi.fn()}
+        />,
+      );
+      const overlay = screen.getByRole("dialog");
+      expect(document.activeElement).toBe(overlay);
+      expect(within(overlay).queryByRole("list")).toBeNull();
+      fireEvent.click(
+        within(overlay).getByRole("button", { name: "Abandon move…" }),
+      );
+      fireEvent.click(
+        within(overlay).getByRole("button", { name: "Abandon move" }),
+      );
+      expect(onCancel).toHaveBeenCalledOnce();
+      await act(async () => {
+        vi.runAllTimers();
+      });
+      await act(async () => {
+        await vi.dynamicImportSettled();
+      });
+      expect(within(overlay).getByRole("list")).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("renders nothing when no move is running", async () => {
     vi.mocked(sdk.experimental_server.moveStatus).mockResolvedValue({
       move: null,
@@ -198,6 +238,7 @@ describe("ServerMoveOverlay", () => {
     expect(overlay.getAttribute("aria-modal")).toBe("true");
     expect(overlay.className).toContain("fixed");
     expect(overlay.className).toContain("inset-0");
+    await within(overlay).findByRole("list");
     expect(stepStatus(overlay, "Stopping running work")).toBe("done");
     expect(stepStatus(overlay, "Updating bb on desk")).toBe("skipped");
     expect(stepStatus(overlay, "Exporting server data")).toBe("running");
@@ -287,6 +328,7 @@ describe("ServerMoveOverlay", () => {
         "If desk isn't running the server, abandon the move to keep the server here. If this server stops, run bb server unlock on this computer.",
       ),
     ).toBeDefined();
+    await within(overlay).findByRole("list");
     expect(stepStatus(overlay, "Switching machines over")).toBe("running");
 
     fireEvent.click(
@@ -349,6 +391,7 @@ describe("ServerMoveOverlay", () => {
     const overlay = await screen.findByRole("dialog", {
       name: "Moving server to desk",
     });
+    await within(overlay).findByRole("list");
     expect(stepStatus(overlay, "Switching machines over")).toBe("running");
     expect(within(overlay).queryByRole("button")).toBeNull();
   });
@@ -477,6 +520,7 @@ describe("ServerMoveOverlay", () => {
     expect(
       within(overlay).getByText("The server keeps running where it was."),
     ).toBeDefined();
+    await within(overlay).findByRole("list");
     expect(stepStatus(overlay, "Sending data to desk")).toBe("failed");
 
     fireEvent.click(within(overlay).getByRole("button", { name: "Close" }));

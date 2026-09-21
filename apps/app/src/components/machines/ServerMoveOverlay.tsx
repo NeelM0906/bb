@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ServerMoveHealth } from "@bb/host-daemon-contract";
@@ -21,12 +21,7 @@ import {
   serverMoveOverlayPollIntervalMs,
 } from "./server-move";
 import { fetchServerMoveDestinationHealth } from "./server-move-destination";
-
-const ServerMoveOverlayView = lazy(() =>
-  import("./ServerMoveOverlayView").then((module) => ({
-    default: module.ServerMoveOverlayView,
-  })),
-);
+import { ServerMoveOverlayView } from "./ServerMoveOverlayView";
 
 function assignWindowLocation(url: string): void {
   window.location.assign(url);
@@ -187,24 +182,22 @@ export function ServerMoveOverlay({
   }
 
   return (
-    <Suspense fallback={null}>
-      <ServerMoveOverlayView
-        content={content}
-        cancelPending={cancelMove.isPending}
-        cancelError={
-          cancelMove.isError
-            ? getMutationErrorMessage({
-                error: cancelMove.error,
-                fallbackMessage: "Couldn't cancel the move.",
-              })
-            : null
-        }
-        onCancel={() => cancelMove.mutate()}
-        onClose={() => {
-          cancelMove.reset();
-          setDismissedMoveId(content.move.moveId);
-        }}
-      />
-    </Suspense>
+    <ServerMoveOverlayView
+      content={content}
+      cancelPending={cancelMove.isPending}
+      cancelError={
+        cancelMove.isError
+          ? getMutationErrorMessage({
+              error: cancelMove.error,
+              fallbackMessage: "Couldn't cancel the move.",
+            })
+          : null
+      }
+      onCancel={() => cancelMove.mutate()}
+      onClose={() => {
+        cancelMove.reset();
+        setDismissedMoveId(content.move.moveId);
+      }}
+    />
   );
 }

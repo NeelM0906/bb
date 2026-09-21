@@ -57,6 +57,10 @@ it("keeps notification details open when dismissing the toast restores composer 
   expect(getNotificationCenterState().open).toBe(true);
   await act(async () => {
     await vi.advanceTimersByTimeAsync(5000);
+    await vi.dynamicImportSettled();
+  });
+  await act(async () => {
+    await vi.dynamicImportSettled();
   });
   expect(document.querySelector("[data-sonner-toast]")).toBeNull();
   expect(document.activeElement).toBe(composer);
@@ -86,6 +90,7 @@ it.each([false, true])(
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
+      await vi.dynamicImportSettled();
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
@@ -119,6 +124,7 @@ it.each([false, true])(
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
+      await vi.dynamicImportSettled();
     });
     fireEvent.keyDown(document, { key: "Escape" });
     expect(getNotificationCenterState().open).toBe(false);

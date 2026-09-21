@@ -1,52 +1,32 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import type {
-  ServerMoveStatus,
-  ServerMoveStep,
-  ServerMoveStepStatus,
-} from "@bb/server-contract";
-import { Button } from "@bb/shared-ui/button";
-import { Icon, type IconName } from "@bb/shared-ui/icon";
-import { cn } from "@bb/shared-ui/lib/utils";
 import {
-  serverMoveStepLabel,
-  type ServerMoveOverlayContent,
-} from "./server-move";
+  lazy,
+  Suspense,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import type { ServerMoveStatus } from "@bb/server-contract";
+import { useResponsiveDrawerRealization } from "@bb/shared-ui/responsive-overlay";
+import { Button } from "@bb/shared-ui/button";
+import { cn } from "@bb/shared-ui/lib/utils";
+import { type ServerMoveOverlayContent } from "./server-move";
 
 type VisibleServerMoveOverlayContent = Exclude<
   ServerMoveOverlayContent,
   { kind: "arrived" }
 >;
 
-const STEP_STATUS_PRESENTATION: Record<
-  ServerMoveStepStatus,
-  { icon: IconName; iconClassName: string; label: string }
-> = {
-  pending: {
-    icon: "Circle",
-    iconClassName: "text-subtle-foreground/60",
-    label: "Waiting",
-  },
-  running: {
-    icon: "Spinner",
-    iconClassName: "animate-spin text-foreground",
-    label: "In progress",
-  },
-  done: {
-    icon: "CircleCheck",
-    iconClassName: "text-foreground",
-    label: "Done",
-  },
-  failed: {
-    icon: "CircleX",
-    iconClassName: "text-destructive-text",
-    label: "Failed",
-  },
-  skipped: {
-    icon: "Circle",
-    iconClassName: "text-subtle-foreground/40",
-    label: "Skipped",
-  },
-};
+const ServerMoveStepList = lazy(() =>
+  import("./ServerMoveStepList").catch(() => ({
+    default: () => (
+      <p role="status" className="text-sm text-muted-foreground">
+        Move step details are unavailable.
+      </p>
+    ),
+  })),
+);
 
 export interface ServerMoveOverlayViewProps {
   content: VisibleServerMoveOverlayContent;
@@ -65,6 +45,10 @@ export function ServerMoveOverlayView({
   onClose,
   presentation = "overlay",
 }: ServerMoveOverlayViewProps) {
+  const { isContentRealized } = useResponsiveDrawerRealization({
+    open: true,
+    enabled: presentation === "overlay",
+  });
   const titleId = useId();
   const descriptionId = useId();
   const { move } = content;
@@ -93,11 +77,20 @@ export function ServerMoveOverlayView({
           <p className="text-sm text-muted-foreground">{note}</p>
         )}
       </div>
-      {move.steps.length === 0 ? null : (
-        <ServerMoveStepList
-          steps={move.steps}
-          targetHostName={move.targetHostName}
-        />
+      {move.steps.length === 0 ||
+      (presentation === "overlay" && !isContentRealized) ? null : (
+        <Suspense
+          fallback={
+            <p role="status" className="text-sm text-muted-foreground">
+              Loading move steps…
+            </p>
+          }
+        >
+          <ServerMoveStepList
+            steps={move.steps}
+            targetHostName={move.targetHostName}
+          />
+        </Suspense>
       )}
       {cancelError === null ? null : (
         <p role="alert" className="text-sm text-destructive-text">
@@ -335,59 +328,4 @@ function overlayNote(content: VisibleServerMoveOverlayContent): string | null {
     return "The server keeps running where it was.";
   }
   return null;
-}
-
-export function ServerMoveStepList({
-  steps,
-  targetHostName,
-}: {
-  steps: readonly ServerMoveStep[];
-  targetHostName: string;
-}) {
-  return (
-    <ol className="space-y-2" aria-label="Move steps">
-      {steps.map((step) => {
-        const presentation = STEP_STATUS_PRESENTATION[step.status];
-        return (
-          <li
-            key={step.id}
-            data-step={step.id}
-            data-status={step.status}
-            className="flex items-start gap-2.5"
-          >
-            <Icon
-              name={presentation.icon}
-              aria-hidden
-              className={cn(
-                "mt-0.5 size-4 shrink-0",
-                presentation.iconClassName,
-              )}
-            />
-            <div className="min-w-0 flex-1">
-              <p
-                className={cn(
-                  "text-sm",
-                  step.status === "failed"
-                    ? "text-destructive-text"
-                    : step.status === "pending" || step.status === "skipped"
-                      ? "text-muted-foreground"
-                      : "text-foreground",
-                )}
-              >
-                <span>{serverMoveStepLabel(step.id, targetHostName)}</span>
-                <span className="sr-only">{`, ${presentation.label}`}</span>
-              </p>
-              {step.status === "skipped" ? (
-                <p className="text-xs text-subtle-foreground">Skipped</p>
-              ) : step.message === null ? null : (
-                <p className="text-xs break-words text-subtle-foreground">
-                  {step.message}
-                </p>
-              )}
-            </div>
-          </li>
-        );
-      })}
-    </ol>
-  );
 }

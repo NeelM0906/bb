@@ -1,5 +1,5 @@
 import { toRecord } from "@bb/core-ui";
-import type { Host, LastServerMove, ServerMoveStepId } from "@bb/domain";
+import type { Host, LastServerMove } from "@bb/domain";
 import {
   SERVER_MOVED_ERROR_CODE,
   serverMovedErrorDetailsSchema,
@@ -58,28 +58,6 @@ export function canMoveServerHere({
     host.id !== primaryHostId &&
     !isServerMoveUnderway(move)
   );
-}
-
-export function serverMoveStepLabel(
-  stepId: ServerMoveStepId,
-  targetHostName: string,
-): string {
-  switch (stepId) {
-    case "stop-work":
-      return "Stopping running work";
-    case "update-target":
-      return `Updating bb on ${targetHostName}`;
-    case "export":
-      return "Exporting server data";
-    case "transfer":
-      return `Sending data to ${targetHostName}`;
-    case "start-target":
-      return "Starting the new server";
-    case "verify-address":
-      return "Checking the new address";
-    case "switch":
-      return "Switching machines over";
-  }
 }
 
 export function groupServerMoveCheckItems(

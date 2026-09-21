@@ -1,14 +1,28 @@
-import { useId, useState, type FormEvent, type RefObject } from "react";
-import { Button } from "@bb/shared-ui/button";
-import {
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@bb/shared-ui/dialog";
-import { Input } from "@bb/shared-ui/input";
+import { lazy, Suspense } from "react";
+import { DialogTitle } from "@bb/shared-ui/dialog";
 import { RenameDialog } from "./RenameDialog";
-import { useNameValidation } from "./useNameValidation.js";
+
+const sectionTitle = <DialogTitle>New section</DialogTitle>;
+const loadingSection = (
+  <>
+    {sectionTitle}
+    <p role="status">Loading section form…</p>
+  </>
+);
+
+const ThreadSectionDialogContent = lazy(() =>
+  import("./ThreadSectionDialogContent").catch(() => ({
+    default: () => (
+      <>
+        {sectionTitle}
+        <p role="alert">
+          Couldn't load the section form. Close this dialog and reload bb to try
+          again.
+        </p>
+      </>
+    ),
+  })),
+);
 
 interface ThreadSectionCreateDialogProps {
   errorMessage?: string | null;
@@ -16,13 +30,6 @@ interface ThreadSectionCreateDialogProps {
   pending?: boolean;
   onOpenChange: (open: boolean) => void;
   onCreate: (name: string) => void;
-}
-
-interface ThreadSectionDialogContentProps {
-  errorMessage?: string | null;
-  pending: boolean;
-  onSubmit: (name: string) => void;
-  inputRef: RefObject<HTMLInputElement | null>;
 }
 
 export function ThreadSectionCreateDialog({
@@ -36,80 +43,16 @@ export function ThreadSectionCreateDialog({
     <RenameDialog open={open} onOpenChange={onOpenChange}>
       {(inputRef) =>
         open ? (
-          <ThreadSectionDialogContent
-            errorMessage={errorMessage}
-            pending={pending}
-            onSubmit={onCreate}
-            inputRef={inputRef}
-          />
+          <Suspense fallback={loadingSection}>
+            <ThreadSectionDialogContent
+              errorMessage={errorMessage}
+              pending={pending}
+              onSubmit={onCreate}
+              inputRef={inputRef}
+            />
+          </Suspense>
         ) : null
       }
     </RenameDialog>
-  );
-}
-
-function ThreadSectionDialogContent({
-  errorMessage,
-  pending,
-  onSubmit,
-  inputRef,
-}: ThreadSectionDialogContentProps) {
-  const inputId = useId();
-  const [name, setName] = useState("");
-  const [hiddenErrorMessage, setHiddenErrorMessage] = useState<string | null>(
-    null,
-  );
-  const { validationMessage, validate, clearMessage } = useNameValidation({
-    emptyMessage: "Section name cannot be empty.",
-  });
-
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (pending) return;
-
-    const trimmedName = validate(name);
-    if (trimmedName === null) return;
-
-    setHiddenErrorMessage(null);
-    onSubmit(trimmedName);
-  };
-  const displayedServerMessage =
-    errorMessage && hiddenErrorMessage !== errorMessage ? errorMessage : null;
-  const displayedMessage = validationMessage ?? displayedServerMessage;
-
-  return (
-    <>
-      <DialogHeader>
-        <DialogTitle>New section</DialogTitle>
-        <DialogDescription>Create a section for threads.</DialogDescription>
-      </DialogHeader>
-      <form className="space-y-4" onSubmit={handleSubmit}>
-        <div className="space-y-2">
-          <Input
-            ref={inputRef}
-            id={inputId}
-            aria-label="Section name"
-            value={name}
-            autoCapitalize="sentences"
-            autoCorrect="off"
-            spellCheck={false}
-            disabled={pending}
-            onChange={(event) => {
-              setName(event.target.value);
-              setHiddenErrorMessage(errorMessage ?? null);
-              clearMessage();
-            }}
-          />
-          {displayedMessage ? (
-            <p className="text-sm text-destructive">{displayedMessage}</p>
-          ) : null}
-        </div>
-        <DialogFooter>
-          <Button type="submit" disabled={pending}>
-            Create section
-          </Button>
-        </DialogFooter>
-      </form>
-    </>
   );
 }
