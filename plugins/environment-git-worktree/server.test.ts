@@ -30,6 +30,7 @@ const PROJECT: Project = {
   kind: "standard",
   name: "bb",
   gitRemoteUrl: null,
+  protectUnmanagedWorkspace: false,
   createdAt: 1,
   updatedAt: 1,
 };

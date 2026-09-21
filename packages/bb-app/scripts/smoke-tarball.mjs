@@ -13,6 +13,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isExpectedFreshBuiltinPluginState } from "./builtin-plugin-smoke-state.mjs";
 import { createManagedProcessStop } from "./managed-process.mjs";
 
 const HTTP_WAIT_TIMEOUT_MS = 60_000;
@@ -20,11 +21,7 @@ const HTTP_WAIT_INTERVAL_MS = 250;
 const PLUGIN_LOAD_TIMEOUT_MS = 60_000;
 const PLUGIN_LOAD_INTERVAL_MS = 1_000;
 const HOST_PLUGIN_WORKER_TIMEOUT_MS = 60_000;
-// Auto-installed, default-enabled builtins (apps/server/src/services/plugins/
-// builtin-registry.ts). Each must reach "running" in the packed tarball —
-// bundles that pass health checks can still fail to load (0.0.31 shipped with
-// every builtin unable to resolve @get-bb/plugin-sdk at import time).
-const EXPECTED_RUNNING_BUILTIN_PLUGINS = [
+const EXPECTED_BUILTIN_PLUGINS = [
   "account-pool",
   "automations",
   "concurrency-limit",
@@ -918,11 +915,9 @@ async function smokeInstalledRepack(installedPackageDir) {
   }
 }
 
-async function smokeBuiltinPluginsRunning({ binDir, cliEnv }) {
+async function smokeBuiltinPluginFreshStates({ binDir, cliEnv }) {
   const deadline = Date.now() + PLUGIN_LOAD_TIMEOUT_MS;
   let lastSummary = "no plugin list output yet";
-  // Plugins load after the HTTP server starts listening, so poll until every
-  // expected builtin settles into "running".
   while (Date.now() <= deadline) {
     const stdout = await runCommand({
       ...createInstalledBinInvocation(binDir, "bb", [
@@ -952,19 +947,22 @@ async function smokeBuiltinPluginsRunning({ binDir, cliEnv }) {
           .join("\n")}`,
       );
     }
-    const pending = EXPECTED_RUNNING_BUILTIN_PLUGINS.filter(
-      (id) => byId.get(id)?.status !== "running",
+    const pending = EXPECTED_BUILTIN_PLUGINS.filter(
+      (id) => !isExpectedFreshBuiltinPluginState(byId.get(id)),
     );
     if (pending.length === 0) {
       return;
     }
     lastSummary = pending
-      .map((id) => `${id}=${byId.get(id)?.status ?? "missing"}`)
+      .map(
+        (id) =>
+          `${id}=${byId.get(id)?.status ?? "missing"} (enabled=${byId.get(id)?.enabled ?? "missing"}, detail=${byId.get(id)?.statusDetail ?? "none"})`,
+      )
       .join(", ");
     await delay(PLUGIN_LOAD_INTERVAL_MS);
   }
   throw new Error(
-    `Timed out waiting for builtin plugins to run: ${lastSummary}`,
+    `Timed out waiting for expected fresh builtin plugin states: ${lastSummary}`,
   );
 }
 
@@ -1033,7 +1031,7 @@ async function smokeFullStackAttempt(binDir, sdkDir, attempt) {
       env: cliEnv,
       label: "bb cli status",
     });
-    await smokeBuiltinPluginsRunning({ binDir, cliEnv });
+    await smokeBuiltinPluginFreshStates({ binDir, cliEnv });
     // Keep Awake reconciles even its default disabled state, so reaching this
     // log proves the packed daemon found its companion worker, downloaded the
     // plugin artifact, and started the worker for a host RPC call.
@@ -1178,7 +1176,7 @@ async function smokeDaemonJoinAttempt(binDir, attempt) {
       BB_HOST_DAEMON_PORT: String(firstDaemonReservation.port),
       BB_SERVER_URL: serverUrl,
     };
-    await smokeBuiltinPluginsRunning({ binDir, cliEnv });
+    await smokeBuiltinPluginFreshStates({ binDir, cliEnv });
     // Both daemons joined a server in a different process and data directory.
     // Ready workers on both prove host-plugin artifacts and calls fan out to
     // enrolled machines instead of assuming server-local paths.
