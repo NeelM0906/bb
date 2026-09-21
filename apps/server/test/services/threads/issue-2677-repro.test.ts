@@ -5,7 +5,7 @@ import {
   groupHostDaemonEvents,
   type HostDaemonEventEnvelope,
 } from "@bb/host-daemon-contract";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { queueChildThreadTurnNotificationBestEffort } from "../../../src/services/threads/child-thread-notifications.js";
 import { sendThreadMessage } from "../../../src/services/threads/thread-send.js";
 import {
@@ -137,63 +137,79 @@ describe("child outcome reconciliation", () => {
         throw new Error("Expected a turn submission");
       }
 
-      await reportQueuedCommandError(harness, queued, {
-        errorCode: "command_timeout",
-        errorMessage: "Timed out waiting for command result",
-      });
-      expect(getThread(harness.db, fixture.child.id)?.status).toBe("active");
-      const turnId = "turn-late-acceptance";
-      const response = await postEventBatch({
-        harness,
-        sessionId: fixture.sessionId,
-        events: [
-          {
-            threadId: fixture.child.id,
-            event: {
-              type: "turn/started",
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        await reportQueuedCommandError(harness, queued, {
+          errorCode: "command_timeout",
+          errorMessage: "Timed out waiting for command result",
+        });
+        expect(getThread(harness.db, fixture.child.id)?.status).toBe("active");
+        const turnId = "turn-late-acceptance";
+        const response = await postEventBatch({
+          harness,
+          sessionId: fixture.sessionId,
+          events: [
+            {
               threadId: fixture.child.id,
-              providerThreadId: `provider-child-late-acceptance`,
-              scope: turnScope(turnId),
+              event: {
+                type: "turn/started",
+                threadId: fixture.child.id,
+                providerThreadId: `provider-child-late-acceptance`,
+                scope: turnScope(turnId),
+              },
             },
-          },
-          {
-            threadId: fixture.child.id,
-            event: {
-              type: "turn/input/accepted",
+            {
               threadId: fixture.child.id,
-              providerThreadId: `provider-child-late-acceptance`,
-              scope: turnScope(turnId),
-              clientRequestId: queued.command.requestId,
+              event: {
+                type: "turn/input/accepted",
+                threadId: fixture.child.id,
+                providerThreadId: `provider-child-late-acceptance`,
+                scope: turnScope(turnId),
+                clientRequestId: queued.command.requestId,
+              },
             },
-          },
-        ],
-      });
-      expect(response.status).toBe(200);
-      expect(getThread(harness.db, fixture.child.id)?.status).toBe("active");
+          ],
+        });
+        expect(response.status).toBe(200);
+        expect(getThread(harness.db, fixture.child.id)?.status).toBe("active");
 
-      await new Promise((resolve) => setTimeout(resolve, 2_100));
+        await vi.advanceTimersByTimeAsync(2_100);
 
-      expect(getThread(harness.db, fixture.child.id)?.status).toBe("active");
-      expect(parentSystemMessageKinds(harness, fixture.parent.id)).toEqual([]);
+        expect(getThread(harness.db, fixture.child.id)?.status).toBe("active");
+        expect(parentSystemMessageKinds(harness, fixture.parent.id)).toEqual(
+          [],
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
   it("keeps one outcome when the same child is queued twice", async () => {
     await withTestHarness(async (harness) => {
       const fixture = seedFamily(harness, "duplicate");
-      for (let index = 0; index < 2; index += 1) {
-        await queueChildThreadTurnNotificationBestEffort(harness.deps, {
-          childThread: fixture.child,
-          parentThreadId: fixture.parent.id,
-          turnStatus: "failed",
-        });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        for (let index = 0; index < 2; index += 1) {
+          await queueChildThreadTurnNotificationBestEffort(harness.deps, {
+            childThread: fixture.child,
+            parentThreadId: fixture.parent.id,
+            turnStatus: "failed",
+          });
+        }
+
+        await vi.advanceTimersByTimeAsync(1_999);
+        expect(parentSystemMessageKinds(harness, fixture.parent.id)).toEqual(
+          [],
+        );
+        await vi.advanceTimersByTimeAsync(101);
+
+        expect(parentSystemMessageKinds(harness, fixture.parent.id)).toEqual([
+          "child-failed",
+        ]);
+      } finally {
+        vi.useRealTimers();
       }
-
-      await new Promise((resolve) => setTimeout(resolve, 2_100));
-
-      expect(parentSystemMessageKinds(harness, fixture.parent.id)).toEqual([
-        "child-failed",
-      ]);
     });
   });
 });
