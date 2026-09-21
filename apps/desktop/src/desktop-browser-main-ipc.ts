@@ -1,4 +1,9 @@
-import { BrowserWindow, ipcMain, type IpcMainEvent } from "electron";
+import {
+  BrowserWindow,
+  ipcMain,
+  type IpcMainEvent,
+  type IpcMainInvokeEvent,
+} from "electron";
 import type { z } from "zod";
 import {
   bbDesktopBrowserAttachRequestSchema,
@@ -38,9 +43,11 @@ function hostWindowFromBrowserIpcEvent(
 function registerRequestCommand<T>(
   channel: string,
   schema: z.ZodType<T>,
+  isTrustedEvent: (event: IpcMainEvent | IpcMainInvokeEvent) => boolean,
   run: (args: { hostWindow: BrowserWindow; request: T }) => void,
 ): void {
   ipcMain.on(channel, (event, payload: unknown) => {
+    if (!isTrustedEvent(event)) return;
     const hostWindow = hostWindowFromBrowserIpcEvent(event);
     if (hostWindow === null) {
       return;
@@ -55,75 +62,89 @@ function registerRequestCommand<T>(
 
 export function registerDesktopBrowserIpc(
   manager: DesktopBrowserViewManager,
+  isTrustedEvent: (event: IpcMainEvent | IpcMainInvokeEvent) => boolean,
 ): void {
   registerRequestCommand(
     BB_DESKTOP_BROWSER_ATTACH_CHANNEL,
     bbDesktopBrowserAttachRequestSchema,
+    isTrustedEvent,
     (args) => manager.attach(args),
   );
   registerRequestCommand(
     BB_DESKTOP_BROWSER_NAVIGATE_CHANNEL,
     bbDesktopBrowserNavigateRequestSchema,
+    isTrustedEvent,
     (args) => manager.navigate(args),
   );
   registerRequestCommand(
     BB_DESKTOP_BROWSER_SET_BOUNDS_CHANNEL,
     bbDesktopBrowserSetBoundsRequestSchema,
+    isTrustedEvent,
     (args) => manager.setBounds(args),
   );
   registerRequestCommand(
     BB_DESKTOP_BROWSER_SET_VISIBLE_CHANNEL,
     bbDesktopBrowserSetVisibleRequestSchema,
+    isTrustedEvent,
     (args) => manager.setVisible(args),
   );
   registerRequestCommand(
     BB_DESKTOP_BROWSER_SET_VISIBLE_WITHOUT_FOCUS_CHANNEL,
     bbDesktopBrowserSetVisibleRequestSchema,
+    isTrustedEvent,
     (args) => manager.setVisibleWithoutFocus(args),
   );
   registerRequestCommand(
     BB_DESKTOP_BROWSER_FIND_IN_PAGE_CHANNEL,
     bbDesktopBrowserFindInPageRequestSchema,
+    isTrustedEvent,
     (args) => manager.findInPage(args),
   );
   registerRequestCommand(
     BB_DESKTOP_BROWSER_STOP_FIND_IN_PAGE_CHANNEL,
     bbDesktopBrowserStopFindInPageRequestSchema,
+    isTrustedEvent,
     (args) => manager.stopFindInPage(args),
   );
   registerRequestCommand(
     BB_DESKTOP_BROWSER_DETACH_CHANNEL,
     bbDesktopBrowserTabRefSchema,
+    isTrustedEvent,
     ({ hostWindow, request }) =>
       manager.detach({ hostWindow, tabId: request.tabId }),
   );
   registerRequestCommand(
     BB_DESKTOP_BROWSER_FOCUS_CHANNEL,
     bbDesktopBrowserTabRefSchema,
+    isTrustedEvent,
     ({ hostWindow, request }) =>
       manager.focus({ hostWindow, tabId: request.tabId }),
   );
   registerRequestCommand(
     BB_DESKTOP_BROWSER_GO_BACK_CHANNEL,
     bbDesktopBrowserTabRefSchema,
+    isTrustedEvent,
     ({ hostWindow, request }) =>
       manager.goBack({ hostWindow, tabId: request.tabId }),
   );
   registerRequestCommand(
     BB_DESKTOP_BROWSER_GO_FORWARD_CHANNEL,
     bbDesktopBrowserTabRefSchema,
+    isTrustedEvent,
     ({ hostWindow, request }) =>
       manager.goForward({ hostWindow, tabId: request.tabId }),
   );
   registerRequestCommand(
     BB_DESKTOP_BROWSER_RELOAD_CHANNEL,
     bbDesktopBrowserTabRefSchema,
+    isTrustedEvent,
     ({ hostWindow, request }) =>
       manager.reload({ hostWindow, tabId: request.tabId }),
   );
   registerRequestCommand(
     BB_DESKTOP_BROWSER_STOP_CHANNEL,
     bbDesktopBrowserTabRefSchema,
+    isTrustedEvent,
     ({ hostWindow, request }) =>
       manager.stop({ hostWindow, tabId: request.tabId }),
   );
@@ -133,7 +154,9 @@ export function registerDesktopBrowserIpc(
       event,
       payload: unknown,
     ): Promise<BbDesktopBrowserEvaluateResult> => {
-      const hostWindow = BrowserWindow.fromWebContents(event.sender);
+      const hostWindow = isTrustedEvent(event)
+        ? BrowserWindow.fromWebContents(event.sender)
+        : null;
       if (hostWindow === null) {
         return { ok: false, error: "Browser host window is not available" };
       }

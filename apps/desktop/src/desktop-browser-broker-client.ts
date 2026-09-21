@@ -61,7 +61,7 @@ export function createDesktopBrowserBrokerClient(args: {
   broker: DesktopBrowserBroker;
   dataDir: string;
   homeDir: string;
-  getServerUrl(): string;
+  getServerUrl(): string | null;
 }) {
   let socket: WebSocket | null = null;
   let retry: ReturnType<typeof setTimeout> | null = null;
@@ -91,6 +91,10 @@ export function createDesktopBrowserBrokerClient(args: {
     const currentGeneration = generation;
     try {
       const serverUrl = args.getServerUrl();
+      if (serverUrl === null) {
+        schedule();
+        return;
+      }
       const serverOrigin = new URL(serverUrl).origin;
       if (
         registryServerOrigin !== null &&
@@ -104,7 +108,7 @@ export function createDesktopBrowserBrokerClient(args: {
         serverOrigin,
       });
       if (stopped || generation !== currentGeneration) return;
-      if (new URL(args.getServerUrl()).origin !== serverOrigin) {
+      if (args.getServerUrl() !== serverUrl) {
         schedule();
         return;
       }
@@ -136,7 +140,7 @@ export function createDesktopBrowserBrokerClient(args: {
         if (
           stopped ||
           generation !== currentGeneration ||
-          new URL(args.getServerUrl()).origin !== serverOrigin
+          args.getServerUrl() !== serverUrl
         ) {
           connection.terminate();
           return;
@@ -161,12 +165,21 @@ export function createDesktopBrowserBrokerClient(args: {
         }
         const parsed = request;
         requests = requests.then(async () => {
-          if (connection.readyState !== WebSocket.OPEN) return;
+          if (
+            connection.readyState !== WebSocket.OPEN ||
+            generation !== currentGeneration ||
+            args.getServerUrl() !== serverUrl
+          )
+            return;
           try {
             const result = desktopBrowserResultSchemas[
               parsed.command.type
             ].parse(await args.broker.execute(parsed.command));
-            if (connection.readyState === WebSocket.OPEN)
+            if (
+              connection.readyState === WebSocket.OPEN &&
+              generation === currentGeneration &&
+              args.getServerUrl() === serverUrl
+            )
               connection.send(
                 JSON.stringify({
                   type: "result",
@@ -175,7 +188,11 @@ export function createDesktopBrowserBrokerClient(args: {
                 }),
               );
           } catch (error) {
-            if (connection.readyState === WebSocket.OPEN)
+            if (
+              connection.readyState === WebSocket.OPEN &&
+              generation === currentGeneration &&
+              args.getServerUrl() === serverUrl
+            )
               connection.send(
                 JSON.stringify({
                   type: "error",

@@ -28,13 +28,18 @@ async function main() {
     "data:text/html,<title>Broker smoke host</title>Trusted host sentinel",
   );
   const manager = createDesktopBrowserViewManager({
+    canSendToHost: () => true,
     partition: "broker-smoke-personal",
     dispatchAppCommand: () => {},
     focusHostWebContents: () => {},
     pagePreloadPath: null,
     resolveAppCommand: () => null,
   });
-  const broker = createDesktopBrowserBroker({ manager, product: "BB smoke" });
+  const broker = createDesktopBrowserBroker({
+    isTrustedWindow: () => true,
+    manager,
+    product: "BB smoke",
+  });
   broker.registerWindow(window);
   const client = createDesktopBrowserBrokerClient({
     broker,

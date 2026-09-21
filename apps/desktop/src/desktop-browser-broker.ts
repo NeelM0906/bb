@@ -48,6 +48,11 @@ interface ControlLease {
 export function createDesktopBrowserBroker(args: {
   manager: DesktopBrowserViewManager;
   product: string;
+  isTrustedWindow: (window: DesktopBrowserHostWindow) => boolean;
+  importCookies?: (
+    window: DesktopBrowserHostWindow,
+    request: import("@bb/desktop-contract").BbDesktopBrowserImportCookiesRequest,
+  ) => Promise<import("@bb/host-daemon-contract").DesktopBrowserImportOutcome>;
   browserImport?: BrowserImportService;
 }) {
   const instances = new Map<string, InstanceEntry>();
@@ -98,6 +103,7 @@ export function createDesktopBrowserBroker(args: {
   }
 
   function publish(instance: InstanceEntry, threadId: string): void {
+    if (!args.isTrustedWindow(instance.window)) return;
     instance.threads.add(threadId);
     const tabs = tabsFor(instance, threadId).map((tab) =>
       wireTab(instance, tab),
@@ -168,7 +174,8 @@ export function createDesktopBrowserBroker(args: {
     if (
       !instance ||
       instance.descriptor.generation !== target.generation ||
-      instance.window.isDestroyed()
+      instance.window.isDestroyed() ||
+      !args.isTrustedWindow(instance.window)
     )
       throw new Error("Desktop instance is unavailable or has reconnected");
     return instance;
@@ -212,7 +219,8 @@ export function createDesktopBrowserBroker(args: {
     const ensureLease = () => {
       if (
         leases.get(lease.metadata.leaseId) !== lease ||
-        lease.metadata.expiresAt <= Date.now()
+        lease.metadata.expiresAt <= Date.now() ||
+        !args.isTrustedWindow(lease.instance.window)
       )
         throw new Error("Browser control lease has expired");
     };
@@ -266,7 +274,11 @@ export function createDesktopBrowserBroker(args: {
     const adapter: DesktopBrowserCdpAdapter = {
       ...nativeAdapter,
       listTabs(requestedScope) {
-        if (leases.get(lease.metadata.leaseId) !== lease) return [];
+        if (
+          leases.get(lease.metadata.leaseId) !== lease ||
+          !args.isTrustedWindow(lease.instance.window)
+        )
+          return [];
         return nativeAdapter
           .listTabs(requestedScope)
           .filter((tab) => lease.tabs.has(tab.tabId));
@@ -308,6 +320,18 @@ export function createDesktopBrowserBroker(args: {
       for (const listener of registryListeners) listener();
       changed();
     },
+    revokeWindow(webContentsId: number) {
+      const instance = instanceForWindow(webContentsId);
+      if (!instance) return;
+      for (const lease of [...leases.values()])
+        if (lease.instance === instance) revoke(lease);
+      args.manager.prepareWindowReload(instance.window);
+      instance.descriptor.generation = randomUUID();
+      for (const listener of registryListeners) listener();
+    },
+    refreshInstances() {
+      for (const listener of registryListeners) listener();
+    },
     releaseWindow(webContentsId: number) {
       const instance = instanceForWindow(webContentsId);
       if (!instance) return;
@@ -317,7 +341,9 @@ export function createDesktopBrowserBroker(args: {
       for (const listener of registryListeners) listener();
     },
     listInstances(): DesktopBrowserInstance[] {
-      return [...instances.values()].map((entry) => ({ ...entry.descriptor }));
+      return [...instances.values()]
+        .filter((entry) => args.isTrustedWindow(entry.window))
+        .map((entry) => ({ ...entry.descriptor }));
     },
     setHostId(value: string | null) {
       hostId = value;
@@ -340,7 +366,9 @@ export function createDesktopBrowserBroker(args: {
     },
     getTarget(webContentsId: number): BbDesktopBrowserTarget | null {
       const instance = instanceForWindow(webContentsId);
-      return instance && hostId !== null
+      return instance &&
+        args.isTrustedWindow(instance.window) &&
+        hostId !== null
         ? {
             hostId,
             instanceId: instance.descriptor.instanceId,
@@ -392,18 +420,20 @@ export function createDesktopBrowserBroker(args: {
       if (command.type === "desktop.browser.list_import_sources") {
         if (!args.browserImport)
           throw new Error("Browser cookie import is unavailable");
-        return { sources: await args.browserImport.listSources() };
+        const sources = await args.browserImport.listSources();
+        requireInstance(command);
+        return { sources };
       }
       if (command.type === "desktop.browser.import_cookies") {
         if (!args.browserImport)
           throw new Error("Browser cookie import is unavailable");
-        return args.browserImport.importCookies(
-          {
-            sourceId: command.sourceId,
-            sourceProfileDirectory: command.sourceProfileDirectory,
-          },
-          args.manager.profileSession(command.profile),
-        );
+        if (!args.importCookies)
+          throw new Error("Browser cookie import requires native approval");
+        return args.importCookies(instance.window, {
+          sourceId: command.sourceId,
+          sourceProfileDirectory: command.sourceProfileDirectory,
+          profile: command.profile,
+        });
       }
       const scope = {
         hostWebContentsId: instance.webContentsId,

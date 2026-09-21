@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BrowserWindowConstructorOptions } from "electron";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDesktopWindowFactory,
   type DesktopBrowserWindow,
@@ -212,7 +212,13 @@ describe("desktop window factory", () => {
         return browserWindow;
       },
     };
+    const onWindowCreated = vi.fn((window: DesktopBrowserWindow) => {
+      expect(
+        createdWindows.find((candidate) => candidate === window)?.loadedUrls,
+      ).toEqual([]);
+    });
     const factory = createDesktopWindowFactory({
+      onWindowCreated,
       browserWindowCreator,
       createWindowStateKey() {
         return generatedStateKeys.shift() ?? "window-fallback";
@@ -247,6 +253,10 @@ describe("desktop window factory", () => {
       stateKey: null,
     });
 
+    expect(onWindowCreated.mock.calls.map(([window]) => window)).toEqual([
+      firstWindow,
+      secondWindow,
+    ]);
     expect(firstWindow).not.toBe(secondWindow);
     expect(createdWindows).toHaveLength(2);
     expect(createdWindows[0]?.options.frame).toBe(false);

@@ -232,6 +232,7 @@ interface DispatchDesktopBrowserAppCommandArgs {
 }
 
 export interface CreateDesktopBrowserViewManagerArgs {
+  canSendToHost: (webContentsId: number) => boolean;
   dispatchAppCommand: (args: DispatchDesktopBrowserAppCommandArgs) => void;
   focusHostWebContents: (hostWebContentsId: number) => void;
   pagePreloadPath: string | null;
@@ -359,17 +360,6 @@ export function browserPageEvaluationSource(
   ].join("\n");
 }
 
-function send(
-  hostWindow: DesktopBrowserHostWindow,
-  channel: string,
-  payload: DesktopBrowserHostWebContentsPayload,
-): void {
-  if (hostWindow.isDestroyed() || hostWindow.webContents.isDestroyed()) {
-    return;
-  }
-  hostWindow.webContents.send(channel, payload);
-}
-
 function hostWindowViewportBounds(
   args: HostWindowViewportBoundsArgs,
 ): BbDesktopBrowserViewportBounds {
@@ -436,6 +426,21 @@ export function createDesktopBrowserViewManager(
   const popupWindows = new Set<BrowserWindow>();
   const resizingHostIds = new Set<number>();
   const hardenedSessions = new Map<string, Session>();
+
+  function send(
+    hostWindow: DesktopBrowserHostWindow,
+    channel: string,
+    payload: DesktopBrowserHostWebContentsPayload,
+  ): void {
+    if (
+      !args.canSendToHost(hostWindow.webContents.id) ||
+      hostWindow.isDestroyed() ||
+      hostWindow.webContents.isDestroyed()
+    ) {
+      return;
+    }
+    hostWindow.webContents.send(channel, payload);
+  }
 
   function notifyAutomationTabs(): void {
     for (const listener of automationTabListeners) {

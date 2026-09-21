@@ -75,6 +75,7 @@ describe("desktop browser broker snapshots", () => {
       destroyAll: () => undefined,
     };
     const broker = createDesktopBrowserBroker({
+      isTrustedWindow: () => true,
       manager: manager as DesktopBrowserViewManager,
       product: "Chrome/1",
     });
@@ -109,6 +110,7 @@ describe("desktop browser broker window cleanup", () => {
       subscribeAutomationTabs: () => () => undefined,
     };
     const broker = createDesktopBrowserBroker({
+      isTrustedWindow: () => true,
       manager: manager as DesktopBrowserViewManager,
       product: "Chrome/1",
     });

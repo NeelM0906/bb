@@ -274,7 +274,7 @@ function oversizedBrowserUrl(): string {
 describe("registerDesktopBrowserIpc", () => {
   it("evaluates page expressions only for valid requests from BrowserWindow-owned senders", async () => {
     const manager = new RecordingDesktopBrowserViewManager();
-    registerDesktopBrowserIpc(manager);
+    registerDesktopBrowserIpc(manager, () => true);
     const renderer = createTrustedRenderer("main-window");
     const handler = electronMock.handlers.get(
       BB_DESKTOP_BROWSER_EVALUATE_CHANNEL,
@@ -311,7 +311,7 @@ describe("registerDesktopBrowserIpc", () => {
 
   it("dispatches valid browser commands only from BrowserWindow-owned senders", () => {
     const manager = new RecordingDesktopBrowserViewManager();
-    registerDesktopBrowserIpc(manager);
+    registerDesktopBrowserIpc(manager, () => true);
     const renderer = createTrustedRenderer("main-window");
     const untrustedSender = createUntrustedSender();
     const attachRequest: BbDesktopBrowserAttachRequest = {
@@ -368,7 +368,7 @@ describe("registerDesktopBrowserIpc", () => {
 
   it("dispatches validated find-in-page requests and rejects malformed ones", () => {
     const manager = new RecordingDesktopBrowserViewManager();
-    registerDesktopBrowserIpc(manager);
+    registerDesktopBrowserIpc(manager, () => true);
     const renderer = createTrustedRenderer("main-window");
     const untrustedSender = createUntrustedSender();
     const findRequest: BbDesktopBrowserFindInPageRequest = {
@@ -426,7 +426,7 @@ describe("registerDesktopBrowserIpc", () => {
 
   it("rejects malformed attach and navigate payloads before manager dispatch", () => {
     const manager = new RecordingDesktopBrowserViewManager();
-    registerDesktopBrowserIpc(manager);
+    registerDesktopBrowserIpc(manager, () => true);
     const renderer = createTrustedRenderer("main-window");
     const validAttachRequest: BbDesktopBrowserAttachRequest = {
       threadId: "thread-1",
@@ -467,7 +467,7 @@ describe("registerDesktopBrowserIpc", () => {
 
   it("rejects malformed bounds, visibility, and tab-command payloads", () => {
     const manager = new RecordingDesktopBrowserViewManager();
-    registerDesktopBrowserIpc(manager);
+    registerDesktopBrowserIpc(manager, () => true);
     const renderer = createTrustedRenderer("main-window");
     const boundsRequest: BbDesktopBrowserSetBoundsRequest = {
       tabId: "browser:a",
@@ -565,4 +565,31 @@ describe("registerDesktopBrowserIpc", () => {
       { hostWindow: renderer.hostWindow, tabId: "browser:a" },
     ]);
   });
+});
+
+it("rejects browser commands and evaluation when shell authorization is denied", async () => {
+  const manager = new RecordingDesktopBrowserViewManager();
+  registerDesktopBrowserIpc(manager, () => false);
+  const renderer = createTrustedRenderer("remote-window");
+  sendBrowserIpc({
+    channel: BB_DESKTOP_BROWSER_RELOAD_CHANNEL,
+    payload: { tabId: "browser:a" },
+    sender: renderer.sender,
+  });
+  const handler = electronMock.handlers.get(
+    BB_DESKTOP_BROWSER_EVALUATE_CHANNEL,
+  )!;
+  await expect(
+    handler(
+      { sender: renderer.sender },
+      {
+        tabId: "browser:a",
+        expression: "document.cookie",
+        world: "main",
+        channel: "agent-annotations",
+      },
+    ),
+  ).resolves.toMatchObject({ ok: false });
+  expect(manager.reloadCalls).toEqual([]);
+  expect(manager.evaluateCalls).toEqual([]);
 });

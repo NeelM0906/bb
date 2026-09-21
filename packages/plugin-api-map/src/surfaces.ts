@@ -1123,14 +1123,14 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
         title: "Desktop browser control",
         tagline: "Use your automation tool on BB-owned tabs",
         summary:
-          "Controls a selected desktop window through bb.sdk.experimental_desktopBrowsers. With this, a plugin can:",
+          "Controls a selected desktop window using its built-in local server through bb.sdk.experimental_desktopBrowsers. Custom and Connect servers cannot access desktop browser profiles. With this, a plugin can:",
         bullets: [
           "Discover instances on an explicit host and create thread-owned tabs with separate automation profiles",
           "Acquire expiring control; reveal the first tab and new CDP pages only in the already focused thread, without activating the desktop window. Personal tabs require an explicit handoff",
           "Give a worker on that host a private, scoped CDP WebSocket connection for DevBrowser or agent-browser",
           "Capture or reveal a tab and release control while preserving the tab and its login",
           "Observe changed tab and control state with a disposable two-second polling subscription; report disconnect errors",
-          "List browsers installed on the desktop host and copy a profile's signed-in cookies into the personal BB browser or an automation profile",
+          "List browsers installed on the desktop host and, after native desktop approval for each source and destination, copy a profile's signed-in cookies into the personal BB browser or an automation profile",
         ],
         apiSymbols: [
           "ExperimentalDesktopBrowsersArea",

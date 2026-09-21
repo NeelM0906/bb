@@ -16,6 +16,7 @@ import {
   shell,
   type Event,
   type IpcMainInvokeEvent,
+  type IpcMainEvent,
   type MessageBoxOptions,
   type WebContents,
 } from "electron";
@@ -193,6 +194,11 @@ import {
   type DesktopBrowserViewManager,
 } from "./desktop-browser-view.js";
 import { resolveDesktopBrowserAppCommand } from "./desktop-browser-shortcuts.js";
+import {
+  isTrustedDesktopBrowserOrigin,
+  isTrustedDesktopBrowserFrame,
+  importDesktopBrowserCookiesWithConsent,
+} from "./desktop-browser-security.js";
 import { registerDesktopBrowserIpc } from "./desktop-browser-main-ipc.js";
 import { createBrowserImportService } from "./browser-import/browser-import.js";
 import { readMacAppIcon } from "./browser-import/mac-app-icon.js";
@@ -1038,16 +1044,69 @@ function startRemoteSystemConfigSync(serverUrl: string): void {
   systemConfigSync = createRemoteSystemConfigSync(serverUrl);
 }
 
+const browserDocumentGenerations = new Map<number, number>();
+const browserNavigatingWebContentsIds = new Set<number>();
+
+function trustedBrowserRuntimeUrl(): string | null {
+  return serverTargetStore?.getTarget().kind === "builtin"
+    ? (currentRuntime?.serverUrl ?? null)
+    : null;
+}
+
+function browserWindowAuthorization(webContentsId: number): string | null {
+  const window = BrowserWindow.getAllWindows().find(
+    (window) => window.webContents.id === webContentsId,
+  );
+  if (
+    !window ||
+    window.isDestroyed() ||
+    window.webContents.isDestroyed() ||
+    !applicationWindowWebContentsIds.has(webContentsId) ||
+    browserNavigatingWebContentsIds.has(webContentsId) ||
+    !isTrustedDesktopBrowserOrigin(
+      window.webContents.getURL(),
+      trustedBrowserRuntimeUrl(),
+    )
+  )
+    return null;
+  return `${serverTargetGeneration}:${webContentsId}:${browserDocumentGenerations.get(webContentsId) ?? 0}`;
+}
+
+function isTrustedBrowserIpcEvent(
+  event: IpcMainEvent | IpcMainInvokeEvent,
+): boolean {
+  return (
+    isTrustedDesktopBrowserFrame({
+      senderFrame: event.senderFrame,
+      mainFrame: event.sender.mainFrame,
+      builtinRuntimeUrl: trustedBrowserRuntimeUrl(),
+    }) && browserWindowAuthorization(event.sender.id) !== null
+  );
+}
+
 function registerApplicationWindow(browserWindow: DesktopBrowserWindow): void {
   const webContentsId = browserWindow.webContents.id;
   applicationWindowWebContentsIds.add(webContentsId);
   const nativeWindow = BrowserWindow.fromId(browserWindow.id);
   if (nativeWindow !== null) {
     desktopBrowserBroker?.registerWindow(nativeWindow);
+    nativeWindow.webContents.on("did-navigate", () => {
+      browserNavigatingWebContentsIds.delete(webContentsId);
+      desktopBrowserBroker?.refreshInstances();
+    });
+    nativeWindow.webContents.on("did-finish-load", () => {
+      desktopBrowserBroker?.refreshInstances();
+    });
     nativeWindow.webContents.on(
       "did-start-navigation",
       (_event, _url, isInPlace, isMainFrame) => {
         if (isMainFrame && !isInPlace) {
+          browserNavigatingWebContentsIds.add(webContentsId);
+          browserDocumentGenerations.set(
+            webContentsId,
+            (browserDocumentGenerations.get(webContentsId) ?? 0) + 1,
+          );
+          desktopBrowserBroker?.revokeWindow(webContentsId);
           splitNavigationEnabledWebContentsIds.delete(webContentsId);
           splitNavigationCommandsByWebContentsId.delete(webContentsId);
         }
@@ -1067,6 +1126,8 @@ function registerApplicationWindow(browserWindow: DesktopBrowserWindow): void {
   browserWindow.on("closed", () => {
     desktopBrowserBroker?.releaseWindow(webContentsId);
     applicationWindowWebContentsIds.delete(webContentsId);
+    browserDocumentGenerations.delete(webContentsId);
+    browserNavigatingWebContentsIds.delete(webContentsId);
     splitNavigationEnabledWebContentsIds.delete(webContentsId);
     splitNavigationCommandsByWebContentsId.delete(webContentsId);
   });
@@ -1812,7 +1873,6 @@ async function createApplicationWindow(
     initialUrl: args.initialUrl,
     stateKey: args.stateKey,
   });
-  registerApplicationWindow(browserWindow);
   if (bbAppLoaded && shouldOpenDevTools()) {
     browserWindow.webContents.openDevTools({ mode: "detach" });
   }
@@ -2564,6 +2624,8 @@ async function runDesktopApp(): Promise<void> {
   });
   registerDesktopUpdateIpc();
   desktopBrowserViewManager = createDesktopBrowserViewManager({
+    canSendToHost: (webContentsId) =>
+      browserWindowAuthorization(webContentsId) !== null,
     pagePreloadPath: browserPagePreloadPath,
     dispatchAppCommand({ command, hostWebContentsId }) {
       const browserWindow = BrowserWindow.getAllWindows().find(
@@ -2598,7 +2660,10 @@ async function runDesktopApp(): Promise<void> {
       });
     },
   });
-  registerDesktopBrowserIpc(desktopBrowserViewManager);
+  registerDesktopBrowserIpc(
+    desktopBrowserViewManager,
+    isTrustedBrowserIpcEvent,
+  );
   const browserImportService = createBrowserImportService({
     context: { platform: process.platform, home: homedir() },
     resolveIcon: (appPath) => readMacAppIcon(appPath),
@@ -2608,15 +2673,58 @@ async function runDesktopApp(): Promise<void> {
       );
     },
   });
+  const importBrowserCookies = async (
+    webContentsId: number,
+    request: import("@bb/desktop-contract").BbDesktopBrowserImportCookiesRequest,
+  ) => {
+    const window = BrowserWindow.getAllWindows().find(
+      (window) => window.webContents.id === webContentsId,
+    );
+    if (!window) throw new Error("Browser host window is unavailable");
+    return importDesktopBrowserCookiesWithConsent({
+      request,
+      service: browserImportService,
+      authorization: () => browserWindowAuthorization(webContentsId),
+      confirm: async (detail) => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10_000);
+        try {
+          const result = await dialog.showMessageBox(window, {
+            type: "warning",
+            title: "Import browser sign-ins",
+            message: "Allow browser cookie import?",
+            detail: `${detail}\n\nThis approval expires after 10 seconds.`,
+            buttons: ["Cancel", "Import sign-ins"],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true,
+            signal: controller.signal,
+          });
+          return !controller.signal.aborted && result.response === 1;
+        } finally {
+          clearTimeout(timeout);
+        }
+      },
+      session: () => {
+        if (!desktopBrowserViewManager)
+          throw new Error("Browser manager is unavailable");
+        return desktopBrowserViewManager.profileSession(request.profile);
+      },
+    });
+  };
   desktopBrowserBroker = createDesktopBrowserBroker({
     manager: desktopBrowserViewManager,
     product: `Chrome/${process.versions.chrome}`,
     browserImport: browserImportService,
+    isTrustedWindow: (window) =>
+      browserWindowAuthorization(window.webContents.id) !== null,
+    importCookies: (window, request) =>
+      importBrowserCookies(window.webContents.id, request),
   });
   ipcMain.handle(
     BB_DESKTOP_BROWSER_LIST_IMPORT_SOURCES_CHANNEL,
     async (event) => {
-      if (!applicationWindowWebContentsIds.has(event.sender.id)) return null;
+      if (!isTrustedBrowserIpcEvent(event)) return null;
       return { sources: await browserImportService.listSources() };
     },
   );
@@ -2625,29 +2733,16 @@ async function runDesktopApp(): Promise<void> {
     async (event, payload: unknown) => {
       const parsed =
         bbDesktopBrowserImportCookiesRequestSchema.safeParse(payload);
-      if (
-        !parsed.success ||
-        !applicationWindowWebContentsIds.has(event.sender.id)
-      )
-        return null;
+      if (!parsed.success || !isTrustedBrowserIpcEvent(event)) return null;
       const manager = desktopBrowserViewManager;
       if (!manager) return null;
-      return browserImportService.importCookies(
-        {
-          sourceId: parsed.data.sourceId,
-          sourceProfileDirectory: parsed.data.sourceProfileDirectory,
-        },
-        manager.profileSession(parsed.data.profile),
-      );
+      return importBrowserCookies(event.sender.id, parsed.data);
     },
   );
   ipcMain.on(
     BB_DESKTOP_BROWSER_OPEN_FULL_DISK_ACCESS_SETTINGS_CHANNEL,
     (event) => {
-      if (
-        !applicationWindowWebContentsIds.has(event.sender.id) ||
-        process.platform !== "darwin"
-      )
+      if (!isTrustedBrowserIpcEvent(event) || process.platform !== "darwin")
         return;
       void shell.openExternal(
         "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
@@ -2655,7 +2750,7 @@ async function runDesktopApp(): Promise<void> {
     },
   );
   ipcMain.handle(BB_DESKTOP_BROWSER_TARGET_CHANNEL, (event) => {
-    return applicationWindowWebContentsIds.has(event.sender.id)
+    return isTrustedBrowserIpcEvent(event)
       ? (desktopBrowserBroker?.getTarget(event.sender.id) ?? null)
       : null;
   });
@@ -2663,8 +2758,7 @@ async function runDesktopApp(): Promise<void> {
     BB_DESKTOP_BROWSER_GET_CONTROL_CHANNEL,
     (event, payload: unknown) => {
       const parsed = bbDesktopBrowserTabRefSchema.safeParse(payload);
-      return parsed.success &&
-        applicationWindowWebContentsIds.has(event.sender.id)
+      return parsed.success && isTrustedBrowserIpcEvent(event)
         ? (desktopBrowserBroker?.getControl(
             event.sender.id,
             parsed.data.tabId,
@@ -2676,10 +2770,7 @@ async function runDesktopApp(): Promise<void> {
     BB_DESKTOP_BROWSER_RELEASE_CONTROL_CHANNEL,
     (event, payload: unknown) => {
       const parsed = bbDesktopBrowserTabRefSchema.safeParse(payload);
-      if (
-        parsed.success &&
-        applicationWindowWebContentsIds.has(event.sender.id)
-      )
+      if (parsed.success && isTrustedBrowserIpcEvent(event))
         desktopBrowserBroker?.takeOver(event.sender.id, parsed.data.tabId);
     },
   );
@@ -2688,10 +2779,7 @@ async function runDesktopApp(): Promise<void> {
     dataDir,
     homeDir: homedir(),
     getServerUrl() {
-      const target = serverTargetStore?.getTarget();
-      if (target?.kind === "connect") return target.server.url;
-      if (target?.kind === "custom") return target.url;
-      return currentRuntime?.serverUrl ?? builtinServerUrl;
+      return trustedBrowserRuntimeUrl();
     },
   });
   if (desktopUpdateSupport.versionCheck) {
@@ -2715,6 +2803,7 @@ async function runDesktopApp(): Promise<void> {
   existingServerDialogPreloadPath = resolvedExistingServerDialogPreloadPath;
   desktopWindowFactory = createDesktopWindowFactory({
     browserWindowCreator,
+    onWindowCreated: registerApplicationWindow,
     createWindowStateKey() {
       return `window-${randomUUID()}`;
     },
@@ -2744,12 +2833,9 @@ async function runDesktopApp(): Promise<void> {
 
   refreshApplicationMenu();
   await loadLoadingView();
-  const restoredWindows = await desktopWindowFactory.restoreSavedWindows({
+  await desktopWindowFactory.restoreSavedWindows({
     initialUrl: currentWindowUrl,
   });
-  for (const browserWindow of restoredWindows) {
-    registerApplicationWindow(browserWindow);
-  }
   await activateLocalServerMoveIfLocked();
   if (serverTargetStore.getTarget().kind === "builtin") {
     startServerMovedWatcher();

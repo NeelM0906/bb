@@ -41,6 +41,7 @@ function createDesktopBrowserViewManager(
   args: Partial<CreateDesktopBrowserViewManagerArgs> = {},
 ): DesktopBrowserViewManager {
   return createProductionDesktopBrowserViewManager({
+    canSendToHost: () => true,
     dispatchAppCommand: () => undefined,
     focusHostWebContents: () => undefined,
     pagePreloadPath: null,
@@ -1053,8 +1054,10 @@ describe("browser page scripts", () => {
     ).resolves.toEqual({ ok: false, error: "Browser tab is not available" });
   });
 
-  it("forwards only well-formed guest messages to the owning host window", () => {
+  it("forwards guest messages only while the retained tab has a trusted host", () => {
+    let trusted = true;
     const manager = createDesktopBrowserViewManager({
+      canSendToHost: () => trusted,
       pagePreloadPath: "/app/dist/browser-page-preload.cjs",
     });
     const hostWindow = new FakeHostWindow({
@@ -1080,6 +1083,13 @@ describe("browser page scripts", () => {
     view.webContents.emitIpc(BB_DESKTOP_BROWSER_GUEST_MESSAGE_CHANNEL, {
       channel: "agent-annotations",
       data: { text: "a".repeat(1_000_001) },
+    });
+
+    trusted = false;
+    manager.prepareWindowReload(hostWindow);
+    view.webContents.emitIpc(BB_DESKTOP_BROWSER_GUEST_MESSAGE_CHANNEL, {
+      channel: "agent-annotations",
+      data: { secret: "retained signed-in page" },
     });
 
     const pushes = hostWindow.webContents.sentChannels.flatMap(
@@ -1657,6 +1667,7 @@ describe("DesktopBrowserViewManager", () => {
         threadId,
       );
       const broker = createDesktopBrowserBroker({
+        isTrustedWindow: () => true,
         manager,
         product: "Chrome/test",
       });
@@ -1857,6 +1868,7 @@ describe("DesktopBrowserViewManager", () => {
     const show = vi.fn();
     const restore = vi.fn();
     const broker = createDesktopBrowserBroker({
+      isTrustedWindow: () => true,
       manager,
       product: "Chrome/test",
     });
@@ -1950,6 +1962,7 @@ describe("DesktopBrowserViewManager", () => {
   it("revokes native debugger control synchronously on takeover and fences reconnect generations", async () => {
     const { manager, hostWindow, view } = createRendererRecoveryFixture(91);
     const broker = createDesktopBrowserBroker({
+      isTrustedWindow: () => true,
       manager,
       product: "Chrome/test",
     });

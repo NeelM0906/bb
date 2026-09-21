@@ -75,6 +75,7 @@ interface OpenExternalUrlArgs {
 
 interface CreateDesktopWindowFactoryArgs {
   browserWindowCreator: DesktopBrowserWindowCreator;
+  onWindowCreated?: (window: DesktopBrowserWindow) => void;
   createWindowStateKey(): WindowStateKey;
   displayWorkAreas: DisplayWorkArea[] | null;
   icon: DesktopWindowIcon;
@@ -264,6 +265,7 @@ export function createDesktopWindowFactory(
         return { action: "deny" };
       });
 
+      args.onWindowCreated?.(browserWindow);
       if (createArgs.initialUrl !== null) {
         await loadUrlIntoWindow({
           browserWindow,

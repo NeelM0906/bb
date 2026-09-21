@@ -18,12 +18,17 @@ function createFakeManager(
 ) {
   const manager: Pick<
     DesktopBrowserViewManager,
-    "listTabs" | "subscribeAutomationTabs" | "profileSession" | "destroyAll"
+    | "listTabs"
+    | "subscribeAutomationTabs"
+    | "profileSession"
+    | "destroyAll"
+    | "prepareWindowReload"
   > = {
     listTabs,
     subscribeAutomationTabs: () => () => undefined,
     profileSession,
     destroyAll: () => undefined,
+    prepareWindowReload: () => undefined,
   };
   return manager as DesktopBrowserViewManager;
 }
@@ -67,9 +72,18 @@ describe("desktop browser broker cookie import commands", () => {
       })),
     };
     const broker = createDesktopBrowserBroker({
+      isTrustedWindow: () => true,
       manager: createFakeManager(profileSession),
       product: "Chrome/1",
       browserImport,
+      importCookies: (_window, request) =>
+        browserImport.importCookies(
+          {
+            sourceId: request.sourceId,
+            sourceProfileDirectory: request.sourceProfileDirectory,
+          },
+          profileSession(request.profile),
+        ),
     });
     const window = createFakeWindow();
     broker.registerWindow(window as never);
@@ -117,6 +131,7 @@ describe("desktop browser broker cookie import commands", () => {
 
   it("rejects import commands when no import service is wired", async () => {
     const broker = createDesktopBrowserBroker({
+      isTrustedWindow: () => true,
       manager: createFakeManager(() => {
         throw new Error("unused");
       }),
@@ -138,6 +153,7 @@ describe("desktop browser broker cookie import commands", () => {
 describe("desktop browser reveal", () => {
   it("sends the tab request without restoring, showing, or focusing the window", async () => {
     const broker = createDesktopBrowserBroker({
+      isTrustedWindow: () => true,
       manager: createFakeManager(
         () => {
           throw new Error("unused");
@@ -195,4 +211,70 @@ describe("desktop browser reveal", () => {
       broker.dispose();
     }
   });
+});
+
+it("rejects broker imports and hides instances when a window becomes remote", async () => {
+  let trusted = true;
+  const importCookies = vi.fn();
+  const broker = createDesktopBrowserBroker({
+    manager: createFakeManager(() => {
+      throw new Error("unused");
+    }),
+    product: "test",
+    isTrustedWindow: () => trusted,
+    importCookies,
+  });
+  broker.registerWindow(createFakeWindow() as never);
+  const [instance] = broker.listInstances();
+  trusted = false;
+  expect(broker.listInstances()).toEqual([]);
+  await expect(
+    broker.execute({
+      type: "desktop.browser.import_cookies",
+      instanceId: instance.instanceId,
+      generation: instance.generation,
+      sourceId: "firefox",
+      sourceProfileDirectory: "Profiles/p1",
+      profile: { kind: "personal" },
+    }),
+  ).rejects.toThrow("unavailable");
+  expect(importCookies).not.toHaveBeenCalled();
+  broker.dispose();
+});
+it("publishes a new instance generation after navigation and rejects the old target", async () => {
+  const manager = createFakeManager(() => {
+    throw new Error("unused");
+  });
+  const hide = vi.spyOn(manager, "prepareWindowReload");
+  const broker = createDesktopBrowserBroker({
+    manager,
+    product: "test",
+    isTrustedWindow: () => true,
+  });
+  broker.registerWindow(createFakeWindow() as never);
+  const [before] = broker.listInstances();
+  const changed = vi.fn();
+  broker.subscribeInstances(changed);
+  broker.revokeWindow(7);
+  expect(hide).toHaveBeenCalledOnce();
+  const [after] = broker.listInstances();
+  expect(after.generation).not.toBe(before.generation);
+  expect(changed).toHaveBeenCalledOnce();
+  await expect(
+    broker.execute({
+      type: "desktop.browser.list_tabs",
+      instanceId: before.instanceId,
+      generation: before.generation,
+      threadId: "thread-a",
+    }),
+  ).rejects.toThrow("unavailable");
+  await expect(
+    broker.execute({
+      type: "desktop.browser.list_tabs",
+      instanceId: after.instanceId,
+      generation: after.generation,
+      threadId: "thread-a",
+    }),
+  ).resolves.toEqual({ tabs: [] });
+  broker.dispose();
 });
