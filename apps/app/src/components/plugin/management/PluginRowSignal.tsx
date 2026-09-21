@@ -19,7 +19,7 @@ export function PluginSignalLogo({
 }: {
   children: ReactNode;
   signal: Extract<PluginRowSignal, { kind: "status" }> | null;
-  onStatusClick: () => void;
+  onStatusClick: (trigger: HTMLButtonElement) => void;
 }) {
   return (
     <span className="relative flex size-6 items-center justify-center">
@@ -46,7 +46,7 @@ export function PluginRowSignalView({
 }: {
   signal: PluginRowSignal;
   onUpdateClick: () => void;
-  onStatusClick: () => void;
+  onStatusClick: (trigger: HTMLButtonElement) => void;
   statusPresentation?: "standalone" | "badge";
 }) {
   if (signal.kind === "update") {
@@ -97,10 +97,12 @@ export function PluginRowSignalView({
                 : "size-7",
               signal.tone === "error"
                 ? "text-destructive hover:text-destructive"
-                : "text-warning-text hover:text-warning-text",
+                : signal.tone === "warning"
+                  ? "text-warning-text hover:text-warning-text"
+                  : "text-muted-foreground hover:text-muted-foreground",
             )}
             aria-label={statusDescription}
-            onClick={onStatusClick}
+            onClick={(event) => onStatusClick(event.currentTarget)}
           >
             <Icon
               name={signal.icon}

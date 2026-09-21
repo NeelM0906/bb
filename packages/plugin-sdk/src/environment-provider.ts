@@ -14,8 +14,8 @@ export type PluginEnvironmentProviderInputsSchema =
 type Fact<R, K extends PropertyKey, T> =
   R extends Record<K, true> ? T : T | null;
 type Checkout<R> = R extends { projectCheckout: true } | { gitCheckout: true }
-  ? { path: string }
-  : { path: string } | null;
+  ? { path: string; experimental_ownsPath: boolean }
+  : { path: string; experimental_ownsPath: boolean } | null;
 type InputsValue<S> = S extends StandardSchemaV1
   ? StandardSchemaV1InferOutput<S>
   : null;
@@ -41,7 +41,7 @@ export interface PluginEnvironmentProviderValidateContext<
 
 export interface PluginEnvironmentProviderAvailabilityContext {
   project: Project;
-  host: Host | null;
+  host: Host;
   projectCheckout: { path: string } | null;
   gitRemote: string | null;
 }
@@ -77,7 +77,7 @@ export type PluginEnvironmentProviderCreateResult =
       mergeBaseBranch?: string;
       resource?: JsonValue;
     }
-  | { status: "failed"; failure: "transient" | "terminal"; message: string };
+  | { status: "failed"; message: string };
 
 export interface PluginEnvironmentProviderRemoveContext {
   environment: Environment | null;
@@ -111,12 +111,14 @@ export interface PluginEnvironmentProviderDefinition<
 > {
   id: string;
   displayName: string;
+  /** Short explanation shown in environment choices. */
+  description: string;
   /** Host glyph, plugin-relative icon path, or this plugin’s declared namespaced icon. */
-  icon?: string;
+  icon: string;
   requires?: R;
   inputs?: S;
   policy?: Partial<PluginEnvironmentProviderPolicy>;
-  /** Experimental: see docs/api_to_audit.md. */
+  /** Experimental per-machine availability, probed in the background for pickers and again at thread creation: see docs/api_to_audit.md. */
   availability?(
     context: PluginEnvironmentProviderAvailabilityContext,
   ):
@@ -127,6 +129,8 @@ export interface PluginEnvironmentProviderDefinition<
   ):
     | PluginEnvironmentValidateDecision
     | Promise<PluginEnvironmentValidateDecision>;
+  /** Pure path selection from parsed inputs. Core reuses a recorded environment on the selected host before calling create; null requests normal creation. */
+  experimental_existingPath?(inputs: InputsValue<S>): string | null;
   create(
     context: PluginEnvironmentProviderCreateContext<R, S>,
   ): Promise<PluginEnvironmentProviderCreateResult>;

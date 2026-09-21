@@ -133,7 +133,6 @@ function setup(): SetupResult {
   const host = upsertHost(db, noopNotifier, {
     id: "host-runtime-display",
     name: "Runtime Display Host",
-    type: "persistent",
   });
   return { db, hostId: host.id, hub };
 }
@@ -153,7 +152,6 @@ function openTestSession(args: OpenTestSessionArgs) {
     hostId: args.hostId,
     instanceId: `instance-${randomUUID()}`,
     hostName: "Runtime Display Host",
-    hostType: "persistent",
     dataDir: `/tmp/${args.hostId}`,
     protocolVersion: 1,
     heartbeatIntervalMs: 5_000,
@@ -228,6 +226,7 @@ function createThreadListEntry(
     ...args.thread,
     modelOverride: null,
     reasoningLevelOverride: null,
+    storageDeletedAt: null,
     environmentBranchName: null,
     environmentPath: null,
     environmentProviderId: null,
@@ -237,7 +236,7 @@ function createThreadListEntry(
     hasPendingInteraction: false,
     // Only a `pending` thread whose first message queued carries one, and
     // these fixtures are all threads that already started.
-    pendingStartContext: null,
+    startupContext: null,
   };
 }
 

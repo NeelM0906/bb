@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import type {
@@ -9,6 +15,8 @@ import type {
 } from "@/hooks/queries/plugin-catalog-queries";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { BrowsePluginsTab } from "./BrowsePluginsTab";
+import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { PLUGINS_BROWSE_DESCRIPTION } from "../plugins-collection-copy";
 
 vi.mock("@/components/plugin/PluginNewThreadComposer", () => ({
   PluginNewThreadComposer: ({ initialPrompt }: { initialPrompt?: string }) => (
@@ -101,7 +109,7 @@ function LocationProbe() {
 
 function renderBrowse(
   data: PluginCatalogSearchData,
-  initialEntry = "/extensions/plugins",
+  initialEntry = "/plugins",
   onInstall = vi.fn(),
   onOpenPlugin = vi.fn(),
 ) {
@@ -136,6 +144,40 @@ afterEach(() => {
 });
 
 describe("BrowsePluginsTab", () => {
+  it("puts the shared create action in the compact toolbar and keeps the page description", async () => {
+    stubCatalog({ entries: [MEMORY_ENTRY], collections: [] });
+    const { wrapper } = createQueryClientTestHarness();
+    render(
+      <CompactViewportOverrideProvider isCompactViewport>
+        <MemoryRouter initialEntries={["/plugins?query=Memory"]}>
+          <BrowsePluginsTab
+            onInstall={() => undefined}
+            onOpenPlugin={() => undefined}
+            onInstallFromSource={() => undefined}
+          />
+          <LocationProbe />
+        </MemoryRouter>
+      </CompactViewportOverrideProvider>,
+      { wrapper },
+    );
+    const create = await screen.findByRole("button", { name: "New plugin" });
+    expect(create.closest("[data-resource-toolbar]")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("button", { name: "New plugin options" })
+        .closest("[data-resource-toolbar]"),
+    ).toBe(create.closest("[data-resource-toolbar]"));
+    expect(
+      screen.getAllByText(PLUGINS_BROWSE_DESCRIPTION).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Plugin Guide" })).toBeNull();
+    fireEvent.click(create);
+    expect(await screen.findByTestId("inline-composer")).toBeTruthy();
+    expect(screen.getByTestId("location-search").textContent).toContain(
+      "query=Memory&view=create",
+    );
+  });
+
   it("shows collection shelves before category shelves", async () => {
     renderBrowse({
       entries: [
@@ -175,31 +217,36 @@ describe("BrowsePluginsTab", () => {
   it("round trips the search parameter", async () => {
     renderBrowse(
       { entries: [MEMORY_ENTRY], collections: [] },
-      "/extensions/plugins?query=Mem",
+      "/plugins?query=Mem",
     );
 
     const search = await screen.findByRole("textbox", {
       name: "Search plugins",
     });
     expect((search as HTMLInputElement).value).toBe("Mem");
+    expect(screen.queryByTestId("plugin-browse-shelves")).toBeNull();
     fireEvent.change(search, { target: { value: "Memory" } });
 
     const params = new URLSearchParams(
       screen.getByTestId("location-search").textContent ?? "",
     );
     expect(params.get("query")).toBe("Memory");
+    fireEvent.change(search, { target: { value: "" } });
+    await waitFor(() =>
+      expect(screen.getByTestId("plugin-browse-shelves")).toBeTruthy(),
+    );
   });
 
   it("routes the card author name and preserves the Browse filters", async () => {
     const onOpenPlugin = vi.fn();
     renderBrowse(
       { entries: [MEMORY_ENTRY], collections: [] },
-      "/extensions/plugins?category=memory-and-context&sort=recently-added",
+      "/plugins?category=memory-and-context&sort=recently-added",
       vi.fn(),
       onOpenPlugin,
     );
 
-    fireEvent.click(await screen.findByRole("link", { name: "BB" }));
+    fireEvent.click(await screen.findByRole("link", { name: "BB Official" }));
     const params = new URLSearchParams(
       screen.getByTestId("location-search").textContent ?? "",
     );
@@ -212,13 +259,13 @@ describe("BrowsePluginsTab", () => {
   it("round trips repeatable category parameters", async () => {
     renderBrowse(
       { entries: [MEMORY_ENTRY, SECURITY_ENTRY, TASKS_ENTRY], collections: [] },
-      "/extensions/plugins?category=memory-and-context&category=security",
+      "/plugins?category=memory-and-context&category=security",
     );
 
     const trigger = await screen.findByRole("button", {
       name: "Filter plugins by category: Memory & Context, Security",
     });
-    expect(trigger.textContent).toContain("2 categories");
+    expect(screen.queryByTestId("plugin-browse-shelves")).toBeNull();
     fireEvent.click(trigger);
     fireEvent.click(
       await screen.findByRole("option", { name: /Tasks & Workflows/u }),
@@ -240,9 +287,11 @@ describe("BrowsePluginsTab", () => {
       "memory-and-context",
       "tasks-and-workflows",
     ]);
+    fireEvent.click(screen.getByRole("button", { name: "Clear filter" }));
+    expect(screen.getByTestId("plugin-browse-shelves")).toBeTruthy();
   });
 
-  it("orders category options by the shelf category order", async () => {
+  it("orders category options by shelf order and omits missing categories", async () => {
     renderBrowse({
       entries: [
         TASKS_ENTRY,
@@ -282,7 +331,6 @@ describe("BrowsePluginsTab", () => {
       expect.stringContaining("Security"),
       expect.stringContaining("Tasks & Workflows"),
       expect.stringContaining("Unknown Category"),
-      expect.stringContaining("Uncategorized"),
     ]);
   });
 
@@ -296,12 +344,12 @@ describe("BrowsePluginsTab", () => {
     });
 
     const sortTrigger = await screen.findByRole("button", {
-      name: "Sort: Featured",
+      name: "Sort: Default",
     });
     fireEvent.pointerDown(sortTrigger);
     expect(
       screen
-        .getByRole("menuitemradio", { name: "Most installed" })
+        .getByRole("menuitemradio", { name: "Installs" })
         .getAttribute("aria-disabled"),
     ).toBe("true");
   });
@@ -309,7 +357,7 @@ describe("BrowsePluginsTab", () => {
   it("sorts by install count and sinks uncounted entries in both directions", async () => {
     renderBrowse(
       { entries: [MEMORY_ENTRY, SECURITY_ENTRY, TASKS_ENTRY], collections: [] },
-      "/extensions/plugins?sort=most-installed",
+      "/plugins?sort=most-installed",
     );
 
     await screen.findByText("Memory");
@@ -319,12 +367,10 @@ describe("BrowsePluginsTab", () => {
       "Open Tasks details",
     ]);
     const trigger = screen.getByRole("button", {
-      name: "Sort: Most installed, descending",
+      name: "Sort: Installs, descending",
     });
     fireEvent.pointerDown(trigger);
-    fireEvent.click(
-      screen.getByRole("menuitemradio", { name: "Most installed" }),
-    );
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Installs" }));
     expect(cardOrder()).toEqual([
       "Open Security details",
       "Open Memory details",
@@ -336,7 +382,7 @@ describe("BrowsePluginsTab", () => {
   it("puts entries without a published date last in both directions", async () => {
     renderBrowse(
       { entries: [MEMORY_ENTRY, SECURITY_ENTRY, TASKS_ENTRY], collections: [] },
-      "/extensions/plugins?sort=recently-added",
+      "/plugins?sort=recently-added",
     );
 
     await screen.findByText("Memory");
@@ -346,12 +392,10 @@ describe("BrowsePluginsTab", () => {
       "Open Security details",
     ]);
     const trigger = screen.getByRole("button", {
-      name: "Sort: Recently added, descending",
+      name: "Sort: Published, descending",
     });
     fireEvent.pointerDown(trigger);
-    fireEvent.click(
-      screen.getByRole("menuitemradio", { name: "Recently added" }),
-    );
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Published" }));
     expect(cardOrder()).toEqual([
       "Open Memory details",
       "Open Tasks details",
@@ -362,15 +406,15 @@ describe("BrowsePluginsTab", () => {
   it("clears a flat sort and restores the shelves", async () => {
     renderBrowse(
       { entries: [MEMORY_ENTRY, SECURITY_ENTRY], collections: [] },
-      "/extensions/plugins?sort=most-installed",
+      "/plugins?sort=most-installed",
     );
 
     const trigger = await screen.findByRole("button", {
-      name: "Sort: Most installed, descending",
+      name: "Sort: Installs, descending",
     });
     expect(screen.queryByTestId("plugin-browse-shelves")).toBeNull();
     fireEvent.pointerDown(trigger);
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "Featured" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Clear sort" }));
     expect(await screen.findByTestId("plugin-browse-shelves")).toBeTruthy();
     const params = new URLSearchParams(
       screen.getByTestId("location-search").textContent ?? "",
@@ -379,7 +423,7 @@ describe("BrowsePluginsTab", () => {
     expect(params.has("direction")).toBe(false);
   });
 
-  it("expands a shelf beyond the six-entry limit", async () => {
+  it("opens a category shelf route and returns to Browse", async () => {
     const entries = Array.from({ length: 8 }, (_, index) => ({
       ...MEMORY_ENTRY,
       entryId: `memory-${index}`,
@@ -390,31 +434,85 @@ describe("BrowsePluginsTab", () => {
 
     await screen.findByTestId("plugin-browse-shelves");
     expect(cardOrder()).toHaveLength(6);
-    fireEvent.click(screen.getByRole("button", { name: "See all" }));
+    fireEvent.click(
+      screen.getAllByRole("link", { name: "See all Memory & Context" })[0]!,
+    );
     expect(cardOrder()).toHaveLength(8);
+    expect(screen.getByTestId("location-search").textContent).toBe(
+      "?shelf=category%3Amemory-and-context",
+    );
+    expect(
+      screen.getByRole("heading", { name: "Memory & Context 8 plugins" }),
+    ).toBeTruthy();
+    expect(screen.queryByTestId("plugin-browse-shelves")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /^Filter plugins by category:/ }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("link", { name: "Browse plugins" }));
+    expect(await screen.findByTestId("plugin-browse-shelves")).toBeTruthy();
+    expect(cardOrder()).toHaveLength(6);
+    expect(
+      screen.getByRole("button", {
+        name: "Filter plugins by category: All categories",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByTestId("location-search").textContent).toBe("");
   });
 
-  it("shows all five cards in a narrow shelf", async () => {
-    const originalWidth = window.innerWidth;
-    Object.defineProperty(window, "innerWidth", {
-      configurable: true,
-      value: 700,
-    });
+  it("loads a curated shelf directly and preserves its order", async () => {
     const entries = Array.from({ length: 5 }, (_, index) => ({
       ...MEMORY_ENTRY,
       entryId: `memory-${index}`,
       pluginId: `memory-${index}`,
       displayName: `Memory ${index}`,
+      collections: [{ id: "new-and-notable", rank: 4 - index }],
     }));
-    renderBrowse({ entries, collections: [] });
+    renderBrowse(
+      {
+        entries: [...entries, SECURITY_ENTRY],
+        collections: [
+          {
+            id: "new-and-notable",
+            displayName: "New & notable",
+            pluginIds: [...entries].reverse().map((entry) => entry.entryId),
+          },
+        ],
+      },
+      "/plugins?shelf=collection%3Anew-and-notable",
+    );
 
-    await screen.findByTestId("plugin-browse-shelves");
-    expect(cardOrder()).toHaveLength(5);
-    expect(screen.queryByRole("button", { name: "See all" })).toBeNull();
-    Object.defineProperty(window, "innerWidth", {
-      configurable: true,
-      value: originalWidth,
-    });
+    await screen.findByRole("heading", { name: "New & notable 5 plugins" });
+    expect(cardOrder()).toEqual(
+      [...entries]
+        .reverse()
+        .map((entry) => `Open ${entry.displayName} details`),
+    );
+    expect(screen.queryByText("Security")).toBeNull();
+    expect(screen.queryByTestId("plugin-browse-shelves")).toBeNull();
+  });
+
+  it("scopes a category page to its category and restores Browse filters on return", async () => {
+    renderBrowse(
+      { entries: [MEMORY_ENTRY, SECURITY_ENTRY], collections: [] },
+      "/plugins?shelf=category%3Amemory-and-context&category=security",
+    );
+    await screen.findByRole("heading", { name: "Memory & Context 1 plugin" });
+    expect(cardOrder()).toEqual(["Open Memory details"]);
+    fireEvent.click(screen.getByRole("link", { name: "Browse plugins" }));
+    expect(screen.getByTestId("location-search").textContent).toBe(
+      "?category=security",
+    );
+  });
+
+  it("offers Browse when a shelf address does not exist", async () => {
+    renderBrowse(
+      { entries: [MEMORY_ENTRY], collections: [] },
+      "/plugins?shelf=collection%3Amissing",
+    );
+    await screen.findByText("Shelf not found.");
+    expect(
+      screen.getByRole("link", { name: "Browse plugins" }).getAttribute("href"),
+    ).toBe("/plugins");
   });
 
   it("uses the shared error state and retries catalog searches", async () => {
@@ -457,11 +555,12 @@ describe("BrowsePluginsTab", () => {
       collections: [],
     });
 
-    const installed = await screen.findByLabelText("Installed");
-    expect(installed.textContent).toContain("Installed");
-    expect(installed.querySelector('[data-icon="Check"]')).toBeTruthy();
-    expect(screen.getByLabelText("4,210 installs")).toBeTruthy();
-    expect(installed.tagName).toBe("SPAN");
+    const installed = await screen.findByRole("button", {
+      name: "Memory installed — 4,210 installs",
+    });
+    expect(installed.querySelector('[data-icon="Download"]')).toBeTruthy();
+    expect(installed.textContent).toContain("4.2K");
+    expect(installed.getAttribute("aria-disabled")).toBe("true");
     expect(
       screen.queryByRole("button", { name: /Install Memory/u }),
     ).toBeNull();
@@ -473,7 +572,7 @@ describe("BrowsePluginsTab", () => {
     expect(
       await screen.findByRole("button", { name: "Open Memory details" }),
     ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Create a plugin" }));
+    fireEvent.click(screen.getByRole("button", { name: "New plugin" }));
     expect(await screen.findByText("Start from an example")).toBeTruthy();
     expect(screen.getByText("Explore plugin capabilities")).toBeTruthy();
     expect(
@@ -487,9 +586,7 @@ describe("BrowsePluginsTab", () => {
   it("routes every create affordance into the inline composer", async () => {
     renderBrowse({ entries: [MEMORY_ENTRY], collections: [] });
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Create a plugin" }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: "New plugin" }));
     expect((await screen.findByTestId("inline-composer")).textContent).toBe(
       "Create a new bb plugin that ",
     );
@@ -512,7 +609,7 @@ describe("BrowsePluginsTab", () => {
     const onOpenPlugin = vi.fn();
     renderBrowse(
       { entries: [MEMORY_ENTRY], collections: [] },
-      "/extensions/plugins?sort=most-installed",
+      "/plugins?sort=most-installed",
       onInstall,
       onOpenPlugin,
     );
@@ -522,17 +619,19 @@ describe("BrowsePluginsTab", () => {
     });
     expect(install.textContent).toContain("4.2K");
     fireEvent.click(install);
-    expect(onInstall).toHaveBeenCalledWith({
-      entryId: "memory",
-      pluginId: "memory",
-      marketplace: "bb-official",
-      publisherLabel: "BB Official",
-      displayName: "Memory",
-      icon: "Brain",
-      iconUrl: null,
-      iconTinted: false,
-      source: "builtin:memory",
-    });
+    expect(onInstall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entryId: "memory",
+        pluginId: "memory",
+        marketplace: "bb-official",
+        publisherLabel: "BB Official",
+        displayName: "Memory",
+        icon: "Brain",
+        iconUrl: null,
+        iconTinted: false,
+        source: "builtin:memory",
+      }),
+    );
     const open = screen.getByRole("button", {
       name: "Open Memory details",
     });

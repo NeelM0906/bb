@@ -32,6 +32,8 @@ export function isQueuedMessageSendNowAllowed(
     case "interaction":
     case "turn-starting":
       return false;
+    case "stopping":
+      return false;
     case "time":
     case "plugin":
     case "thread-busy":
@@ -61,6 +63,7 @@ export function queuedMessageWaitIcon(args: {
   switch (args.waitingOn.kind) {
     case "thread-busy":
       return null;
+    case "stopping":
     case "turn-starting":
       return "TimeSchedule";
     case "time":
@@ -72,7 +75,7 @@ export function queuedMessageWaitIcon(args: {
     case "interaction":
       return "CircleQuestion";
     case "plugin":
-      return "Limitation";
+      return null;
   }
 }
 
@@ -125,6 +128,8 @@ export function describeQueuedMessageWait(
       return null;
     case "turn-starting":
       return "Waiting for turn to start";
+    case "stopping":
+      return "Sending when the thread stops";
     case "time":
       return args.sendAt === null
         ? "Scheduled"
@@ -132,7 +137,7 @@ export function describeQueuedMessageWait(
     case "provisioning":
       return "Waiting for workspace";
     case "host-offline":
-      return `Waiting for ${args.waitingOn.hostName} to reconnect`;
+      return `Waiting for ${args.waitingOn.hostName} to be ready`;
     case "interaction":
       return "Waiting for your reply";
     case "plugin":

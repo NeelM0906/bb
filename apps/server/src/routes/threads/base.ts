@@ -1,14 +1,16 @@
-import { cancelAbandonedProviderLaunches } from "../../services/threads/thread-environment-providers.js";
+import { cancelAbandonedProviderCreations } from "../../services/threads/thread-environment-providers.js";
 import {
   THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT,
   THREAD_SEARCH_LIMIT_PER_GROUP_MAX,
   countNonDeletedAssignedChildThreads,
   countThreads,
   getEnvironment,
+  getThread,
   getThreadSectionById,
   listThreadMentionRowsByIds,
   listThreadsWithPendingInteractionState,
   markThreadDeleted,
+  listLifecycleThreadTree,
   searchThreadsWithPendingInteractionState,
   updateThread,
   type ThreadSearchResultGroup as DbThreadSearchResultGroup,
@@ -34,7 +36,10 @@ import {
 import type { Hono } from "hono";
 import type { AppDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
-import { parseOptionalInteger } from "../../services/lib/validation.js";
+import {
+  parseInteger,
+  parsePaginationQuery,
+} from "../../services/lib/validation.js";
 import {
   getNonDestroyedHostWithStatus,
   requireEnvironment,
@@ -43,10 +48,7 @@ import {
 } from "../../services/lib/entity-lookup.js";
 import { listRunningThreadsWithIntendedHosts } from "../../services/threads/dispatch-attempt.js";
 import { dispatchThreadRenameCommand } from "../../services/threads/thread-commands.js";
-import {
-  finalizeStoppedThread,
-  requestActiveRuntimeThreadStopIfNeeded,
-} from "../../services/threads/thread-lifecycle.js";
+import { requestThreadStorageDeletion } from "../../services/threads/thread-lifecycle.js";
 import { createThreadFromRequest } from "../../services/threads/thread-create.js";
 import { createThreadForkFromRequest } from "../../services/threads/thread-fork.js";
 import { snapshotProviderPlanCommands } from "../../services/providers/provider-plan-command.js";
@@ -148,10 +150,7 @@ function parseSearchLimitPerGroup(value: string | undefined): number {
   const limit =
     value === undefined
       ? THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT
-      : parseOptionalInteger(value, "limitPerGroup");
-  if (limit === undefined) {
-    return THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT;
-  }
+      : parseInteger(value, "limitPerGroup");
   if (limit <= 0) {
     throw new ApiError(
       400,
@@ -257,14 +256,10 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
   });
 
   get(routes.list, async (context, query) => {
-    const limit = parseOptionalInteger(query.limit, "limit");
-    if (limit !== undefined && limit <= 0) {
-      throw new ApiError(400, "invalid_request", "limit must be positive");
-    }
-    const offset = parseOptionalInteger(query.offset, "offset");
-    if (offset !== undefined && offset < 0) {
-      throw new ApiError(400, "invalid_request", "offset must be non-negative");
-    }
+    const { limit, offset } = parsePaginationQuery({
+      limit: query.limit,
+      offset: query.offset,
+    });
     if (query.projectId) {
       requirePublicProject(deps.db, query.projectId);
     }
@@ -460,6 +455,12 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
         requireThreadSection(deps, sectionId);
       }
       metadataUpdate.sectionId = sectionId;
+    } else if (
+      payload.parentThreadId === null &&
+      thread.parentThreadId !== null
+    ) {
+      metadataUpdate.sectionId =
+        getThread(deps.db, thread.parentThreadId)?.sectionId ?? null;
     }
     if ("parentThreadId" in payload) {
       metadataUpdate.parentThreadId = payload.parentThreadId;
@@ -515,24 +516,24 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       deps,
       thread,
     });
-    const deletedThread = markThreadDeleted(deps.db, deps.hub, {
-      threadId: thread.id,
-    });
-    if (deletedThread) emitPluginThreadDeleted(deletedThread);
-    cancelAbandonedProviderLaunches(deps, thread.id);
-    deps.terminalSessions.closeDeletedThreadTerminals({ threadId: thread.id });
-    if (thread.environmentId === null) {
-      finalizeStoppedThread(deps, {
-        threadId: thread.id,
+    const dependents = listLifecycleThreadTree(deps.db, thread.id);
+    markThreadDeleted(deps.db, deps.hub, { threadId: thread.id });
+    for (const dependent of dependents) {
+      const deleted = getThread(deps.db, dependent.id);
+      if (!deleted) continue;
+      emitPluginThreadDeleted(deleted);
+      cancelAbandonedProviderCreations(deps, deleted.id);
+      deps.terminalSessions.closeDeletedThreadTerminals({
+        threadId: deleted.id,
       });
-      return context.json({ ok: true });
+      requestThreadStorageDeletion(
+        deps,
+        deleted,
+        deleted.environmentId === null
+          ? null
+          : getEnvironment(deps.db, deleted.environmentId),
+      );
     }
-
-    const environment = requireEnvironment(deps.db, thread.environmentId);
-    requestActiveRuntimeThreadStopIfNeeded(deps, thread, environment);
-    finalizeStoppedThread(deps, {
-      threadId: thread.id,
-    });
     return context.json({ ok: true });
   });
 }

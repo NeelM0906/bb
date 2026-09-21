@@ -22,9 +22,10 @@ A project maps to a code repository. All threads belong to a project.
 
   An explicit machine/host selector accepts an exact ID or unambiguous name and
   binds --root to that machine. Omitting the selector preserves the existing
-  local CLI machine fallback (normally the primary machine).
+  local CLI machine fallback (normally the server machine).
 
   bb project show <id>                    Show project details
+    Accepts proj_personal to inspect Personal.
   bb project update <id>                  Update a project
     --name <name>                         New name
     --protect-unmanaged-workspace <true|false>
@@ -51,7 +52,11 @@ Discovery:
   The machine/host and environment selectors are mutually exclusive. An
   environment selects its owning machine and workspace; otherwise an explicit
   machine selects that machine's project source. Omitting both intentionally
-  falls back to the primary machine's project source.
+  falls back to the server machine's project source.
+
+  Personal file access (`paths`, `files`, `content`) requires an explicit
+  --environment <id> belonging to Personal. Personal has no default project
+  source; the selected environment must be ready.
 
 Attachments:
 
@@ -63,8 +68,9 @@ Attachments:
     --client-file <path>                  Destination on this CLI machine
 
   Uploads use multipart bytes and return a server-managed attachment DTO. Pass
-  its relative `path` to thread --file/--image input. Those thread flags never
-  read a client path: absolute values remain paths for the execution host.
+  its relative `path` to thread --file/--image input. Thread --file and --image
+  upload absolute paths and file: URLs from the CLI machine automatically;
+  relative values remain existing server attachment paths.
   image/* uploads are limited to 10MB; other files are limited to 25MB.
   image/heic and image/heif uploads are rejected because no renderer or
   provider can decode them; convert them to JPEG or PNG first.
@@ -91,3 +97,9 @@ Sources:
   bb project source delete <projectId> <sourceId>
 
 Project source deletion remains available while a project is pending deletion so providers can finish cleanup. A live project must retain at least one source; a deleting project may remove its last source.
+
+Workspace file and path searches honor Git ignore rules, including local and
+global exclusions. Tracked files and non-ignored untracked files remain
+searchable, including hidden files. Non-Git workspaces use filesystem listings.
+Use `bb file list|paths` for filesystem listings that include ignored files,
+subject to their explicit exclusion options.

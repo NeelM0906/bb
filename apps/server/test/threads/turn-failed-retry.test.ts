@@ -10,6 +10,7 @@ import type { ThreadQueuedMessage } from "@bb/domain";
 import type { PluginHookName } from "@get-bb/plugin-sdk";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  invokePluginInline,
   setPluginHookProvider,
   type PluginHookRegistration,
 } from "../../src/services/plugins/plugin-hook-registry.js";
@@ -49,16 +50,7 @@ function installHooks(
   };
   setPluginHookProvider({
     listHooks: (hook) => registry[hook],
-    invokeHook: async (_pluginId, _label, run) => {
-      try {
-        return { ok: true, value: await run() };
-      } catch (error) {
-        return {
-          ok: false,
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
-    },
+    invokeHook: (_pluginId, _label, run) => invokePluginInline(run),
     decisionTimeoutMs: 10_000,
   });
 }
@@ -75,6 +67,8 @@ afterEach(() => {
 function recordTurnFailedAnnouncements(): string[] {
   const announced: string[] = [];
   setPluginThreadEventEmitter({
+    emitThreadEvents: () => {},
+    emitTerminalInput: () => {},
     emitThreadCreated: () => {},
     emitThreadActive: () => {},
     emitThreadIdle: () => {},
@@ -560,6 +554,7 @@ describe("retrying a failed turn", () => {
       setThreadExecutionOverride(harness.db, {
         threadId: thread.id,
         modelOverride: "gpt-6-pro",
+        reasoningLevelOverride: "max",
       });
 
       await retryFailedTurn(harness.deps, {
@@ -572,6 +567,9 @@ describe("retrying a failed turn", () => {
       if (retryRequest === undefined) throw new Error("expected a retry turn");
       expect(turnRequestData(retryRequest).execution.model).toBe("gpt-5");
       expect(requireThread(harness, thread.id).modelOverride).toBe("gpt-6-pro");
+      expect(requireThread(harness, thread.id).reasoningLevelOverride).toBe(
+        "max",
+      );
     });
   });
 
@@ -658,10 +656,13 @@ describe("retrying a failed turn", () => {
             pluginId: "concurrency-limit",
             handler: (context) => {
               dispatchCalls += 1;
+              if (context.queuedMessages.length === 0) {
+                return { action: "proceed" };
+              }
               // The re-attempt must look like a re-decision about an existing
               // queued row, not a fresh send, or a limiter would double-count
               // it — and the row it names is the retry, not a user message.
-              expect(context.queuedMessage?.payload.kind).toBe("retry");
+              expect(context.queuedMessages[0]?.payload.kind).toBe("retry");
               return { action: "wait", reason: "At capacity" };
             },
           },
@@ -680,7 +681,7 @@ describe("retrying a failed turn", () => {
 
       await sweepPastResume(harness);
 
-      expect(dispatchCalls).toBe(1);
+      expect(dispatchCalls).toBe(2);
       // The turn did not dispatch; the same row is queued again, this time by
       // the limiter, and its schedule is cleared because the limiter named no
       // instant of its own.

@@ -17,10 +17,8 @@ import {
   resetPluginThreadRowStatusesForTest,
   setPluginThreadRowStatus,
 } from "@/lib/plugin-thread-row-status";
-import {
-  ProjectListSectionIconButton,
-  TopLevelSidebarSection,
-} from "./ProjectList";
+import { TopLevelSidebarSection } from "./TopLevelSidebarSection";
+import { SidebarControlButton } from "./SidebarRowControls";
 
 afterEach(() => {
   cleanup();
@@ -30,24 +28,23 @@ afterEach(() => {
   window.sessionStorage.removeItem(SPLIT_LAYOUT_STORAGE_KEY);
 });
 
-describe("ProjectListSectionIconButton", () => {
+describe("SidebarControlButton", () => {
   it("drops pointer focus before a section action opens a picker", () => {
     let triggerWasFocused = true;
     render(
       <TooltipProvider>
-        <ProjectListSectionIconButton
-          ariaLabel="New project"
-          icon={<span aria-hidden>+</span>}
-          title="New project"
+        <SidebarControlButton
+          label="New thread"
+          icon="MessageSquarePlus"
           onClick={() => {
             triggerWasFocused =
               document.activeElement ===
-              screen.getByRole("button", { name: "New project" });
+              screen.getByRole("button", { name: "New thread" });
           }}
         />
       </TooltipProvider>,
     );
-    const trigger = screen.getByRole("button", { name: "New project" });
+    const trigger = screen.getByRole("button", { name: "New thread" });
     trigger.focus();
 
     fireEvent.click(trigger, { detail: 1 });
@@ -59,15 +56,14 @@ describe("ProjectListSectionIconButton", () => {
   it("retains section-action focus for keyboard activation", () => {
     render(
       <TooltipProvider>
-        <ProjectListSectionIconButton
-          ariaLabel="New project"
-          icon={<span aria-hidden>+</span>}
-          title="New project"
+        <SidebarControlButton
+          label="New thread"
+          icon="MessageSquarePlus"
           onClick={vi.fn()}
         />
       </TooltipProvider>,
     );
-    const trigger = screen.getByRole("button", { name: "New project" });
+    const trigger = screen.getByRole("button", { name: "New thread" });
     trigger.focus();
 
     fireEvent.click(trigger, { detail: 0 });
@@ -121,6 +117,40 @@ describe("TopLevelSidebarSection", () => {
     expect(
       screen.getByRole("button", { name: "Expand Pinned section" }),
     ).not.toBeNull();
+  });
+
+  it("can expose a drop preview while the section is collapsed", () => {
+    render(
+      <TopLevelSidebarSection
+        label="Pinned"
+        showChildrenWhenCollapsed
+        collapseControl={{ isCollapsed: true, onToggleCollapsed: vi.fn() }}
+      >
+        <div>Projected thread</div>
+      </TopLevelSidebarSection>,
+    );
+
+    expect(screen.getByText("Projected thread")).not.toBeNull();
+  });
+
+  it("can keep projected children without reserving an inset", () => {
+    render(
+      <TopLevelSidebarSection
+        label="Design"
+        childrenInset={false}
+        collapseControl={{ isCollapsed: false, onToggleCollapsed: vi.fn() }}
+      >
+        <div>Projected thread</div>
+      </TopLevelSidebarSection>,
+    );
+
+    expect(screen.getByText("Projected thread").parentElement?.className).toBe(
+      "",
+    );
+    const label = screen
+      .getByTitle("Design")
+      .closest<HTMLElement>('[data-sidebar="group-label"]');
+    expect(label?.style.marginBottom).toBe("0px");
   });
 
   it("renders the disclosure after the section label without a leading icon", () => {

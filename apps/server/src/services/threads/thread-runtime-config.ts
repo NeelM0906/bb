@@ -4,15 +4,15 @@ import {
   getHost,
   getProject,
 } from "@bb/db";
+import {
+  resolveHostEnvironment,
+  mergeHostAndProviderEnvironment,
+} from "../hosts/host-environment.js";
 import type {
   DynamicTool,
   InstructionMode,
   PermissionEscalation,
-  ProjectExecutionDefaults,
-  ResolvedThreadExecutionOptions,
   Thread,
-  ThreadExecutionOptions,
-  ThreadExecutionSource,
   ThreadTurnInitiator,
   EnvironmentStatus,
 } from "@bb/domain";
@@ -20,15 +20,10 @@ import type {
   HostDaemonContributedEnvEntry,
   HostDaemonInjectedSkillSource,
 } from "@bb/host-daemon-contract";
-import { renderTemplate } from "@bb/templates";
 import { ApiError } from "../../errors.js";
-import type { AppDeps, LoggedWorkSessionDeps } from "../../types.js";
+import type { LoggedWorkSessionDeps } from "../../types.js";
 import { throwEnvironmentNotReady } from "../lib/lifecycle-api-errors.js";
-import { requireThreadStoragePath } from "./thread-storage.js";
-import {
-  buildExistingThreadExecutionInput,
-  resolveExistingThreadExecutionPlan,
-} from "./thread-execution-plan.js";
+import { requireLiveThreadStoragePath } from "./thread-storage.js";
 import {
   listPluginAgentTools,
   listPluginInstructionContributions,
@@ -49,10 +44,6 @@ import {
 } from "./workspace-agent-instructions.js";
 import { resolveDeprecatedWorkspaceProvisionType } from "../environments/environment-response.js";
 
-const STANDARD_AGENT_INSTRUCTIONS = renderTemplate(
-  "standardAgentAppendInstructions",
-  {},
-);
 const UPDATE_ENVIRONMENT_DIRECTORY_INSTRUCTIONS =
   "If the user asks you to move this thread to another checkout, worktree, or directory, make sure the target directory exists, then call `update_environment_directory` with its absolute path. After it succeeds, stop work in the current turn; future turns will run in the updated environment.";
 
@@ -63,16 +54,6 @@ export interface ThreadRuntimeCommandEnvironment {
   id: string;
   path: string | null;
   status: EnvironmentStatus;
-}
-
-interface ResolveExecutionOptionsArgs {
-  projectDefaults?: ProjectExecutionDefaults | null;
-  requestedExecution: RequestedExecutionOptions;
-  threadId: string;
-}
-
-interface RequestedExecutionOptions extends ThreadExecutionOptions {
-  source: ThreadExecutionSource;
 }
 
 interface ResolveThreadRuntimeCommandConfigArgs {
@@ -138,21 +119,6 @@ export function resolvePermissionEscalation(
   }
 
   return "ask";
-}
-
-export async function resolveExecutionOptions(
-  deps: Pick<AppDeps, "db" | "providerRegistry">,
-  args: ResolveExecutionOptionsArgs,
-): Promise<ResolvedThreadExecutionOptions> {
-  const plan = await resolveExistingThreadExecutionPlan(deps, {
-    ...(args.projectDefaults !== undefined
-      ? { projectDefaults: args.projectDefaults }
-      : {}),
-    executionSource: args.requestedExecution.source,
-    input: buildExistingThreadExecutionInput(args.requestedExecution),
-    threadId: args.threadId,
-  });
-  return plan.resolvedExecution;
 }
 
 export async function resolveThreadRuntimeCommandConfig(
@@ -235,14 +201,20 @@ export async function resolveThreadRuntimeCommandConfig(
     },
     skillIdsByPlugin,
   });
-  const contributedEnv = await resolvePluginProviderEnv({
-    providerId: args.thread.providerId,
-    context: {
-      threadId: args.thread.id,
-      projectId: project.id,
+  const contributedEnv = mergeHostAndProviderEnvironment(
+    await resolveHostEnvironment(deps, {
       hostId: host.id,
-    },
-  });
+      projectId: project.id,
+    }),
+    await resolvePluginProviderEnv({
+      providerId: args.thread.providerId,
+      context: {
+        threadId: args.thread.id,
+        projectId: project.id,
+        hostId: host.id,
+      },
+    }),
+  );
   const injectedSkillSources = resolveSkillCatalog(deps, {
     projectSkillSources,
     sharedSkillSources: sharedSkills.runtimeSources,
@@ -258,7 +230,7 @@ export async function resolveThreadRuntimeCommandConfig(
   const dynamicTools = dynamicToolContributions.map(
     (contribution) => contribution.tool,
   );
-  const instructionSections = [STANDARD_AGENT_INSTRUCTIONS];
+  const instructionSections: string[] = [];
   for (const contribution of dynamicToolContributions) {
     if (!contribution.instructions) continue;
     if (contribution.pluginId === null) {
@@ -316,7 +288,7 @@ export async function resolveThreadRuntimeCommandConfig(
     );
   }
   const instructions = instructionSections.join("\n\n");
-  const threadStoragePath = await requireThreadStoragePath(deps, {
+  const threadStoragePath = await requireLiveThreadStoragePath(deps, {
     hostId: args.environment.hostId,
     threadId: args.thread.id,
   });

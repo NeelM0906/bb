@@ -12,10 +12,11 @@ import {
 import {
   settleEnvironmentProvisionCancelCommandResult,
   settleEnvironmentProvisionCommandResult,
-} from "../services/environments/environment-provisioning-internal.js";
+} from "../services/environments/environment-engine.js";
 import {
   settleThreadPlanCancelCommandResult,
   settleThreadStartCommandResult,
+  settleThreadStorageDeleteCommandResult,
   settleThreadStopCommandResult,
   settleTurnSubmitCommandResult,
 } from "../services/threads/thread-lifecycle.js";
@@ -54,6 +55,7 @@ const commandResultSideEffectHandlers: CommandResultSideEffectHandlers = {
   },
   "thread.start": settleThreadStartCommandResult,
   "thread.stop": settleThreadStopCommandResult,
+  "thread.storage.delete": settleThreadStorageDeleteCommandResult,
   "thread.plan.cancel": settleThreadPlanCancelCommandResult,
   "turn.submit": settleTurnSubmitCommandResult,
   "workspace.commit": ({ deps, command, report }) => {

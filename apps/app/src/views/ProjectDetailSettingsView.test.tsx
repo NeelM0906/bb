@@ -13,6 +13,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { makeProjectResponse } from "@/test/fixtures/projects";
 import { makeSystemConfig } from "@/test/fixtures/system-config";
 import { SETTINGS_PROJECT_ROUTE_PATH } from "@/lib/route-paths";
 import { ProjectDetailSettingsView } from "./ProjectDetailSettingsView";
@@ -86,6 +87,7 @@ function stubSidebarBootstrapFetch(
               kind: "standard",
               name: "bb",
               gitRemoteUrl: "git@github.com:get-bb/bb.git",
+              protectUnmanagedWorkspace: false,
               createdAt: NOW - 86_400_000,
               updatedAt: NOW,
               sources: sources.map((source, index) => ({
@@ -107,6 +109,7 @@ function stubSidebarBootstrapFetch(
             kind: "personal",
             name: "Personal",
             gitRemoteUrl: null,
+            protectUnmanagedWorkspace: false,
             createdAt: NOW,
             updatedAt: NOW,
             sources: [],
@@ -165,6 +168,50 @@ afterEach(() => {
 });
 
 describe("ProjectDetailSettingsView", () => {
+  it("updates workspace protection from the relocated project settings", async () => {
+    stubSidebarBootstrapFetch([]);
+    vi.mocked(sdk.projects.update).mockResolvedValue(makeProjectResponse({ id: "proj_bb", protectUnmanagedWorkspace: true }));
+    renderView();
+    fireEvent.click(await screen.findByRole("switch", { name: "Protect unmanaged workspaces" }));
+    await waitFor(() => {
+      expect(sdk.projects.update).toHaveBeenCalledWith({
+        projectId: "proj_bb",
+        protectUnmanagedWorkspace: true,
+      });
+    });
+  });
+
+  it("keeps checkout counts in sync with the show-all machine toggle", async () => {
+    const sandbox = host({
+      id: "host_sandbox",
+      name: "Sandbox",
+      type: "ephemeral",
+    });
+    vi.mocked(sdk.hosts.list).mockResolvedValue([
+      primaryHost,
+      remoteHost,
+      sandbox,
+    ]);
+    stubSidebarBootstrapFetch(
+      [primaryHost, remoteHost, sandbox].map((machine) => ({
+        hostId: machine.id,
+        path: `/repos/${machine.id}`,
+      })),
+    );
+    renderView();
+    await screen.findByRole("heading", { name: "bb" });
+    expect(screen.getByText(/2 of 2 machines/)).toBeDefined();
+    expect(screen.queryByRole("link", { name: sandbox.name })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show all machines" }));
+    expect(screen.getByText(/3 of 3 machines/)).toBeDefined();
+    expect(screen.getByRole("link", { name: sandbox.name })).toBeDefined();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Show fewer machines" }),
+    );
+    expect(screen.getByText(/2 of 2 machines/)).toBeDefined();
+    expect(screen.queryByRole("link", { name: sandbox.name })).toBeNull();
+  });
+
   it("lists every paired machine with its checkout or a set-up action", async () => {
     stubSidebarBootstrapFetch([
       { hostId: "host_primary", path: "/Users/me/bb" },

@@ -84,6 +84,7 @@ function stubSidebarBootstrapFetch(
             kind: "standard",
             name: project.name,
             gitRemoteUrl: project.gitRemoteUrl,
+            protectUnmanagedWorkspace: false,
             createdAt: NOW,
             updatedAt: NOW,
             sources: project.hostIds.map((hostId, index) => ({
@@ -175,6 +176,45 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+});
+
+it("counts only persistent checkouts and their connection status in project summaries", async () => {
+  const sandbox = host({
+    id: "host_sandbox",
+    name: "Sandbox",
+    type: "ephemeral",
+  });
+  vi.mocked(sdk.hosts.list).mockResolvedValue([
+    primaryHost,
+    remoteHost,
+    sandbox,
+  ]);
+  stubSidebarBootstrapFetch([
+    {
+      id: "proj_all",
+      name: "All checkouts",
+      gitRemoteUrl: null,
+      hostIds: [primaryHost.id, remoteHost.id, sandbox.id],
+      threadCount: 1,
+    },
+    {
+      id: "proj_offline",
+      name: "Offline checkout",
+      gitRemoteUrl: null,
+      hostIds: [remoteHost.id, sandbox.id],
+      threadCount: 1,
+    },
+  ]);
+  renderSection();
+  const all = await screen.findByRole("link", {
+    name: "Open All checkouts settings",
+  });
+  const offline = screen.getByRole("link", {
+    name: "Open Offline checkout settings",
+  });
+  expect(all.textContent).toContain("2 of 2 machines");
+  expect(offline.textContent).toContain("1 of 2 machines");
+  expect(offline.textContent).toContain("offline");
 });
 
 describe("buildProjectReorderRequest", () => {
@@ -293,6 +333,7 @@ describe("ProjectsSettingsSection", () => {
       kind: "standard",
       name: "bb-next",
       gitRemoteUrl: null,
+      protectUnmanagedWorkspace: false,
       createdAt: NOW,
       updatedAt: NOW,
       sources: [],

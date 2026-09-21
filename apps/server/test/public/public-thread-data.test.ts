@@ -4,10 +4,12 @@ import {
   createQueuedThreadMessageId,
   createThreadSection,
   deleteQueuedThreadMessage,
-  deleteHost,
   environments,
   events,
+  getEnvironment,
+  getPreparingEnvironment,
   getQueuedThreadMessage,
+  hosts,
   insertEvents,
   listQueuedThreadMessages,
   getThread,
@@ -40,8 +42,8 @@ import { renderTemplate } from "@bb/templates";
 import { z } from "zod";
 import { describe, expect, it, vi } from "vitest";
 import type { TelemetryService } from "../../src/services/system/telemetry.js";
-import { loadActiveThreadProvisionContext } from "../../src/services/threads/thread-provisioning-environment.js";
 import {
+  reportNextEnvironmentAttachSuccess,
   reportQueuedCommandError,
   reportQueuedCommandSuccess,
   waitForQueuedCommand,
@@ -53,14 +55,15 @@ import {
 import { readJson } from "../helpers/json.js";
 import { textInput } from "../helpers/prompt-input.js";
 import {
-  seedQueuedMessage,
   seedEnvironment,
   seedEvent,
   seedHostSession,
   seedProjectWithSource,
+  seedQueuedMessage,
   seedStoredEvent,
   seedThread,
   seedThreadFixture,
+  seedThreadIdentity,
   seedThreadRuntimeState,
 } from "../helpers/seed.js";
 import { installFakeEnvironmentProvider } from "../helpers/environment-provider.js";
@@ -410,7 +413,7 @@ describe("public thread data routes", () => {
         environmentId: environment.id,
         projectId: project.id,
       });
-      deleteHost(harness.deps.db, harness.deps.hub, host.id);
+      harness.deps.db.delete(hosts).where(eq(hosts.id, host.id)).run();
 
       const noEnvironmentResponse = await harness.app.request(
         `/api/v1/threads/${threadWithoutEnvironment.id}?include=environment,host`,
@@ -1806,7 +1809,7 @@ describe("public thread data routes", () => {
           },
         }),
       });
-      for (let item = 0; item < 650; item += 1) {
+      for (let item = 0; item < 200; item += 1) {
         const itemId = `command-${item}`;
         const command = "x".repeat(25_000);
         push({
@@ -1893,7 +1896,7 @@ describe("public thread data routes", () => {
       if (!turnRow) {
         throw new Error("Expected a turn row");
       }
-      expect(turnRow.sourceSeqStart).toBeGreaterThan(2);
+      expect(turnRow.sourceSeqStart).toBe(1);
 
       const detailsResponse = await harness.app.request(
         `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=${turnRow.turnId}&sourceSeqStart=${turnRow.sourceSeqStart}&sourceSeqEnd=${turnRow.sourceSeqEnd}`,
@@ -2558,7 +2561,7 @@ describe("public thread data routes", () => {
   it("creates and deletes thread queued messages", async () => {
     await withTestHarness(async (harness) => {
       const capture = vi.fn<TelemetryService["capture"]>();
-      harness.deps.telemetry = { capture };
+      harness.deps.telemetry = { ...harness.deps.telemetry, capture };
       const { environment, thread } = seedThreadFixture(harness);
       seedEvent(harness.deps, {
         threadId: thread.id,
@@ -2693,7 +2696,7 @@ describe("public thread data routes", () => {
   it("queues public send requests with sender context while the target thread is active", async () => {
     await withTestHarness(async (harness) => {
       const capture = vi.fn<TelemetryService["capture"]>();
-      harness.deps.telemetry = { capture };
+      harness.deps.telemetry = { ...harness.deps.telemetry, capture };
       const { project, thread } = seedThreadFixture(harness, {
         thread: {
           status: "active",
@@ -3618,6 +3621,7 @@ describe("public thread data routes", () => {
       expect(
         getQueuedThreadMessage(harness.db, createdQueuedMessage.id),
       ).toBeNull();
+      await reportNextEnvironmentAttachSuccess(harness, thread.id);
       const startCommand = await waitForQueuedCommand(
         harness,
         ({ command }) =>
@@ -3784,11 +3788,17 @@ describe("public thread data routes", () => {
           if (request.command.type === "environment.hook.run") {
             return { ok: true, result: {} };
           }
-          if (request.command.type === "host.inspect_git_source") {
+          if (request.command.type === "environment.attach") {
+            const currentThread = getThread(harness.db, thread.id);
             stateAtProvisionStart = {
               activeContextStage:
-                loadActiveThreadProvisionContext(harness.deps, thread.id)?.state
-                  .stage ?? null,
+                currentThread?.status !== "starting"
+                  ? "inactive"
+                  : (getPreparingEnvironment(harness.db, thread.id)?.status ??
+                    (currentThread.environmentId === null
+                      ? null
+                      : (getEnvironment(harness.db, currentThread.environmentId)
+                          ?.status ?? null))),
               queuedMessageExists:
                 getQueuedThreadMessage(harness.db, queuedMessage.id) !== null,
               requestEventCount: harness.db
@@ -3805,17 +3815,12 @@ describe("public thread data routes", () => {
             return {
               ok: true,
               result: {
-                checkout: {
-                  kind: "branch",
-                  branchName: `bb/${thread.id}`,
-                  headSha: "abc123",
-                },
-                defaultBranch: "main",
-                defaultBranchRelation: "equal",
+                path: request.command.path,
+                isGitRepo: true,
                 isWorktree: false,
-                hasUncommittedChanges: false,
-                operation: { kind: "none" },
-                originDefaultBranch: "origin/main",
+                branchName: `bb/${thread.id}`,
+                defaultBranch: "main",
+                transcript: [],
               },
             };
           }
@@ -3856,7 +3861,7 @@ describe("public thread data routes", () => {
       expect(sendResponse.status, await sendResponse.clone().text()).toBe(200);
       await vi.waitFor(() =>
         expect(stateAtProvisionStart).toEqual({
-          activeContextStage: "environment-provisioning",
+          activeContextStage: "provisioning",
           queuedMessageExists: false,
           requestEventCount: 1,
         }),
@@ -3951,6 +3956,7 @@ describe("public thread data routes", () => {
         getQueuedThreadMessage(harness.db, secondQueuedMessage.id),
       ).toBeNull();
 
+      await reportNextEnvironmentAttachSuccess(harness, thread.id);
       const startCommand = await waitForQueuedCommand(
         harness,
         ({ command }) =>
@@ -4003,12 +4009,18 @@ describe("public thread data routes", () => {
       const senderThread = seedThread(harness.deps, {
         projectId: project.id,
       });
+      seedThreadIdentity(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId: "provider-active-grouped-sender",
+        sequence: 1,
+      });
       seedEvent(harness.deps, {
         threadId: thread.id,
         environmentId: environment.id,
         providerThreadId: "provider-active-grouped-sender",
         scope: turnScope("turn-active-grouped-sender"),
-        sequence: 1,
+        sequence: 2,
         type: "turn/started",
         data: {},
       });
@@ -4331,6 +4343,8 @@ describe("public thread data routes", () => {
         limit: 1000,
         includeFiles: true,
         includeDirectories: true,
+        includeHidden: false,
+        excludeNames: expect.arrayContaining(["node_modules"]),
       });
       await reportQueuedCommandSuccess(harness, pathsCommand, {
         paths: [

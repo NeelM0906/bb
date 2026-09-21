@@ -6,7 +6,6 @@ import {
 } from "@bb/db";
 import {
   realtimeSubscriptionTargetKey,
-  type ChangedMessage,
   type EnvironmentChangeKind,
   type RealtimeSubscriptionTarget,
   type ThreadChangeKind,
@@ -18,7 +17,7 @@ import type {
   HostDaemonWatchSetWorkspaceTarget,
 } from "@bb/host-daemon-contract";
 import { workspaceContextFromPath } from "../services/environments/workspace-command-target.js";
-import type { NotificationHub } from "./hub.js";
+import type { NotificationHub, ServerChangedMessage } from "./hub.js";
 
 interface WatchInterestSocket {
   close(code?: number, reason?: string): void;
@@ -197,7 +196,7 @@ export class WatchInterestCoordinator {
     });
   }
 
-  refreshWatchSetsForChangedMessage(message: ChangedMessage): void {
+  refreshWatchSetsForChangedMessage(message: ServerChangedMessage): void {
     const affectedInterestKeys = this.interestKeysForChangedMessage(message);
     if (affectedInterestKeys.size === 0) {
       return;
@@ -300,24 +299,22 @@ export class WatchInterestCoordinator {
     };
   }
 
-  private interestKeysForChangedMessage(message: ChangedMessage): Set<string> {
+  private interestKeysForChangedMessage(
+    message: ServerChangedMessage,
+  ): Set<string> {
     const keys = new Set<string>();
     switch (message.entity) {
       case "environment":
         if (!this.environmentChangeCanAffectWatchTargets(message.changes)) {
           return keys;
         }
-        if (message.id) {
-          this.addKnownInterestKey(
-            keys,
-            realtimeSubscriptionTargetKey({
-              kind: "environment-detail",
-              environmentId: message.id,
-            }),
-          );
-        } else {
-          this.addInterestKeysWithPrefix(keys, "environment-detail:");
-        }
+        this.addKnownInterestKey(
+          keys,
+          realtimeSubscriptionTargetKey({
+            kind: "environment-detail",
+            environmentId: message.id,
+          }),
+        );
         this.addInterestKeysWithPrefix(keys, "thread-detail:");
         return keys;
       case "thread":
@@ -329,17 +326,13 @@ export class WatchInterestCoordinator {
         ) {
           return keys;
         }
-        if (message.id) {
-          this.addKnownInterestKey(
-            keys,
-            realtimeSubscriptionTargetKey({
-              kind: "thread-detail",
-              threadId: message.id,
-            }),
-          );
-        } else {
-          this.addInterestKeysWithPrefix(keys, "thread-detail:");
-        }
+        this.addKnownInterestKey(
+          keys,
+          realtimeSubscriptionTargetKey({
+            kind: "thread-detail",
+            threadId: message.id,
+          }),
+        );
         return keys;
       case "project":
       case "host":

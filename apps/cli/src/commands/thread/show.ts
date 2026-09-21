@@ -1,3 +1,4 @@
+import { prependOlderTimelineRows } from "@bb/client-core";
 import { Command } from "commander";
 import {
   formatThreadTimelineText,
@@ -190,6 +191,7 @@ export function registerShowCommand(
 ): void {
   parent
     .command("show [id]")
+    .aliases(["get", "view", "status"])
     .description("Show thread details and pull request status")
     .option("--self", "Target the current thread (from BB_THREAD_ID)")
     .option("--json", "Print machine-readable JSON output")
@@ -398,6 +400,7 @@ export function registerShowCommand(
 
   parent
     .command("log [id]")
+    .aliases(["messages", "timeline"])
     .description("Show thread event log")
     .option("--self", "Target the current thread (from BB_THREAD_ID)")
     .option(
@@ -487,7 +490,10 @@ export function registerShowCommand(
             beforeAnchorSeq: String(page.olderCursor.anchorSeq),
             beforeAnchorId: page.olderCursor.anchorId,
           });
-          rows = [...older.rows, ...rows];
+          rows = prependOlderTimelineRows({
+            olderRows: older.rows,
+            loadedRows: rows,
+          });
           page = older.timelinePage;
         }
         const color = process.stdout.isTTY === true && !process.env.NO_COLOR;

@@ -23,7 +23,10 @@ import {
   releaseThreadWorkAdmission,
   releaseWorkspaceLeaseForThreadInTransaction,
 } from "../../src/services/threads/work-admission.js";
-import { finalizeStoppedThread } from "../../src/services/threads/thread-lifecycle.js";
+import {
+  finalizeStoppedThread,
+  requestThreadStorageDeletion,
+} from "../../src/services/threads/thread-lifecycle.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
 import { buildThreadStartCommand } from "../../src/services/threads/thread-commands.js";
 import {
@@ -46,6 +49,7 @@ import {
   seedProjectWithSource,
   seedThread,
   seedTurnStarted,
+  seedThreadRuntimeState,
 } from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
 
@@ -276,7 +280,8 @@ describe("protected unmanaged workspace dispatch", () => {
       const stopCommand = await waitForQueuedCommand(
         harness,
         ({ command }) =>
-          command.type === "thread.stop" && command.threadId === holder.id,
+          command.type === "thread.storage.delete" &&
+          command.threadId === holder.id,
       );
 
       expect(
@@ -1020,8 +1025,7 @@ describe("protected unmanaged workspace dispatch", () => {
         status: "idle",
       });
       const canonicalPathByInput: Record<string, string> = {
-        "/legacy/promoted-retarget-repo":
-          "/canonical/promoted-retarget-v1",
+        "/legacy/promoted-retarget-repo": "/canonical/promoted-retarget-v1",
       };
       registerTestHostRpcCapture(harness, {
         canonicalPathByInput,
@@ -1190,6 +1194,11 @@ describe("protected unmanaged workspace dispatch", () => {
         projectId: project.id,
         status: "active",
       });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-reconnect-turn-command",
+        threadId: thread.id,
+      });
       seedTurnStarted(harness.deps, {
         environmentId: environment.id,
         providerThreadId: "provider-reconnect-turn-command",
@@ -1253,9 +1262,9 @@ describe("protected unmanaged workspace dispatch", () => {
         throw new Error("Expected turn submit command");
       }
 
-      expect(
-        submit.command.resumeContext.workspaceContext.workspacePath,
-      ).toBe("/canonical/reconnect-turn-command-v2");
+      expect(submit.command.resumeContext.workspaceContext.workspacePath).toBe(
+        "/canonical/reconnect-turn-command-v2",
+      );
       const admission = getCurrentThreadWorkAdmission(harness.db, thread.id);
       expect(admission).toMatchObject({ status: "running" });
       expect(
@@ -1299,6 +1308,11 @@ describe("protected unmanaged workspace dispatch", () => {
         environmentId: environment.id,
         projectId: project.id,
         status: "active",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-resident-turn-command",
+        threadId: thread.id,
       });
       seedTurnStarted(harness.deps, {
         environmentId: environment.id,
@@ -1367,9 +1381,9 @@ describe("protected unmanaged workspace dispatch", () => {
         throw new Error("Expected turn submit command");
       }
 
-      expect(
-        submit.command.resumeContext.workspaceContext.workspacePath,
-      ).toBe("/canonical/resident-turn-command-v1");
+      expect(submit.command.resumeContext.workspaceContext.workspacePath).toBe(
+        "/canonical/resident-turn-command-v1",
+      );
       expect(
         getUnmanagedWorkspaceMutationLeaseForThread(harness.db, thread.id),
       ).toMatchObject({
@@ -1565,6 +1579,114 @@ describe("protected unmanaged workspace dispatch", () => {
           threadId: second.id,
         }),
       ).resolves.toBe(true);
+      await releaseThreadWorkAdmission(harness.deps, {
+        terminalReason: "test holder completed",
+        threadId: first.id,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(
+        listQueuedThreadCommands(harness, "thread.start", second.id),
+      ).toHaveLength(0);
+      expect(getCurrentThreadWorkAdmission(harness.db, second.id)).toBeNull();
+    });
+  });
+
+  it("deletes a workspace waiter without stranding admission or dispatching it later", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-workspace-cancel",
+      });
+      registerTestHostRpcCapture(harness, {
+        canonicalPathByInput: {
+          "/canonical/cancel-repo": "/canonical/cancel-repo",
+        },
+        hostId: host.id,
+        sessionId: session.id,
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/cancel-repo",
+      });
+      updateProject(harness.db, harness.hub, project.id, {
+        protectUnmanagedWorkspace: true,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/canonical/cancel-repo",
+        projectId: project.id,
+        status: "ready",
+        environmentProviderId: "project-checkout",
+        providerOwnsPath: false,
+      });
+      const first = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const second = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const payload = (text: string) => ({
+        input: textInput(text),
+        mode: "start" as const,
+        model: "gpt-5",
+        permissionMode: "full" as const,
+        reasoningLevel: "medium" as const,
+        serviceTier: "default" as const,
+      });
+
+      await sendThreadMessage(harness.deps, {
+        environment,
+        payload: payload("holder mutation"),
+        thread: first,
+        trigger: "user",
+      });
+      await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued.command.type === "thread.start" &&
+          queued.command.threadId === first.id,
+      );
+      await sendThreadMessage(harness.deps, {
+        environment,
+        payload: payload("cancelled mutation"),
+        thread: second,
+        trigger: "user",
+      });
+      await vi.waitFor(() => {
+        expect(
+          getCurrentThreadWorkAdmission(harness.db, second.id),
+        ).toMatchObject({
+          status: "waiting",
+          waitingReason: expect.stringContaining("owns unmanaged workspace"),
+        });
+      });
+
+      const waitingAdmission = getCurrentThreadWorkAdmission(
+        harness.db,
+        second.id,
+      );
+      if (!waitingAdmission) throw new Error("Expected waiting admission");
+      markThreadDeleted(harness.db, harness.hub, { threadId: second.id });
+      requestThreadStorageDeletion(harness.deps, second, environment);
+      const deletion = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.storage.delete" &&
+          command.threadId === second.id,
+      );
+      await reportQueuedCommandSuccess(harness, deletion, {
+        providerCheckpointId: null,
+      });
+      await vi.waitFor(() =>
+        expect(getThread(harness.db, second.id)).toBeNull(),
+      );
+      expect(
+        getUnmanagedWorkspaceMutationWaitState(harness.db, waitingAdmission.id),
+      ).toBeNull();
       await releaseThreadWorkAdmission(harness.deps, {
         terminalReason: "test holder completed",
         threadId: first.id,

@@ -9,16 +9,25 @@ import {
 } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
-import type { Environment, Thread } from "@bb/domain";
+import type { Environment, Host, Thread } from "@bb/domain";
 import type { EnvironmentDisplayHostContext } from "@bb/core-ui";
-import type { SystemEnvironmentProvider } from "@bb/server-contract";
+import type {
+  SystemEnvironmentProvider,
+  SystemMachineProvider,
+} from "@bb/server-contract";
 import { systemEnvironmentProvidersQueryKey } from "@/hooks/queries/environment-provider-queries";
+import {
+  hostsQueryKey,
+  systemMachineProvidersQueryKey,
+} from "@/hooks/queries/query-keys";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { focusWithKeyboard } from "@/test/keyboard-focus";
 import {
   makeEnvironment,
+  makeHost,
   makeThread as makeThreadFixture,
 } from "@bb/test-helpers/domain-fixtures";
 import {
@@ -37,8 +46,17 @@ const connectedLocalHost: EnvironmentDisplayHostContext = {
 function withQueryClient(
   children: ReactNode,
   registeredProviders?: readonly SystemEnvironmentProvider[],
+  machines?: {
+    hosts: readonly Host[];
+    providers: readonly SystemMachineProvider[];
+  },
 ): ReactNode {
   const queryClient = new QueryClient();
+  queryClient.setQueryData(hostsQueryKey(), machines?.hosts ?? []);
+  queryClient.setQueryData(
+    systemMachineProvidersQueryKey(),
+    machines?.providers ?? [],
+  );
   if (registeredProviders !== undefined) {
     queryClient.setQueryData(
       systemEnvironmentProvidersQueryKey({}),
@@ -51,12 +69,15 @@ function withQueryClient(
 }
 
 const worktreeProvider: SystemEnvironmentProvider = {
+  machineProviderId: null,
   id: "git-worktree",
   displayName: "Worktree",
+  description: "Prepare a workspace for this thread.",
   icon: "GitBranch",
   logoUrl: null,
   pluginId: "environment-git-worktree",
   acceptsEmptyInputs: true,
+  machineAvailability: {},
   availability: null,
   requires: {
     projectCheckout: true,
@@ -68,12 +89,15 @@ const worktreeProvider: SystemEnvironmentProvider = {
 };
 
 const modalProvider: SystemEnvironmentProvider = {
+  machineProviderId: null,
   id: "modal-sandbox",
   displayName: "Modal sandbox",
+  description: "Prepare a workspace for this thread.",
   icon: "Cloud",
   logoUrl: null,
   pluginId: "environment-modal-sandbox",
   acceptsEmptyInputs: true,
+  machineAvailability: {},
   availability: null,
   requires: {
     projectCheckout: false,
@@ -85,12 +109,15 @@ const modalProvider: SystemEnvironmentProvider = {
 };
 
 const personalProvider: SystemEnvironmentProvider = {
+  machineProviderId: null,
   id: "personal-workspace",
   displayName: "Personal workspace",
+  description: "Prepare a workspace for this thread.",
   icon: "Folder",
   logoUrl: null,
   pluginId: "environment-personal-workspace",
   acceptsEmptyInputs: true,
+  machineAvailability: {},
   availability: null,
   requires: {
     projectCheckout: false,
@@ -116,6 +143,10 @@ function renderEnvironmentRow(
   environment: Environment,
   registeredProviders?: readonly SystemEnvironmentProvider[],
   environmentDisplayHost: EnvironmentDisplayHostContext = localHost,
+  machines?: {
+    hosts: readonly Host[];
+    providers: readonly SystemMachineProvider[];
+  },
 ): string {
   return renderToStaticMarkup(
     withQueryClient(
@@ -129,6 +160,7 @@ function renderEnvironmentRow(
         </MemoryRouter>
       </TooltipProvider>,
       registeredProviders,
+      machines,
     ),
   );
 }
@@ -176,6 +208,45 @@ describe("EnvironmentRow", () => {
     expect(markup).toContain("retired-cloud (not installed)");
   });
 
+  it("shows the provider icon and host name without provider kind text", () => {
+    const environment = makeEnvironment({ hostId: "host_modal" });
+    const markup = renderEnvironmentRow(
+      environment,
+      [],
+      {
+        locality: "remote",
+        identity: { name: "Modal sandbox abc123", connected: true },
+      },
+      {
+        hosts: [
+          makeHost({
+            id: "host_modal",
+            name: "Modal sandbox abc123",
+            type: "ephemeral",
+            machineProviderId: "modal-sandbox",
+          }),
+        ],
+        providers: [
+          {
+            id: "modal-sandbox",
+            displayName: "Modal machine",
+            description: "Run a machine for development.",
+            icon: "Cloud",
+            logoUrl: null,
+            pluginId: "environment-modal-sandbox",
+            inputs: null,
+            acceptsEmptyInputs: true,
+            supportsSuspend: true,
+          },
+        ],
+      },
+    );
+
+    expect(markup).toContain("Modal sandbox abc123");
+    expect(markup).toContain('data-icon="Cloud"');
+    expect(markup).not.toContain("Modal machine");
+  });
+
   it("shows the create-thread action for a ready environment", () => {
     expect(renderEnvironmentRow(makeEnvironment())).toContain(
       'aria-label="New thread in this environment"',
@@ -197,7 +268,7 @@ describe("EnvironmentRow", () => {
       ),
     );
 
-    fireEvent.focus(
+    focusWithKeyboard(
       screen.getByRole("button", {
         name: "New thread in this environment",
       }),
@@ -258,7 +329,7 @@ describe("EnvironmentRow", () => {
     );
 
     expect(markup).toContain(">Personal workspace<");
-    expect(markup).toContain("· Michael-M4");
+    expect(markup).toContain("Michael-M4");
     expect(markup).toContain('data-icon="Folder"');
   });
 
@@ -270,7 +341,7 @@ describe("EnvironmentRow", () => {
     );
 
     expect(markup).toContain("Design system polish");
-    expect(markup).toContain("· Michael-M4");
+    expect(markup).toContain("Michael-M4");
     expect(markup).not.toContain("· Worktree");
   });
 

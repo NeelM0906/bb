@@ -140,6 +140,7 @@ export function runDbReadWorker(): void {
             return {
               kind: "conversationOutline",
               response: buildThreadConversationOutline(db, thread, {
+                completedTurnDisplay: input.completedTurnDisplay,
                 maxSeq: getLatestThreadSequence(db, { threadId: thread.id }),
                 providerDisplayName: input.providerDisplayName,
               }),
@@ -148,8 +149,9 @@ export function runDbReadWorker(): void {
             return {
               kind: "turnSummaryDetails",
               response: buildTimelineTurnSummaryDetails(db, thread, {
-                includeDiagnosticOperations:
-                  input.includeDiagnosticOperations,
+                beforeCursor: input.beforeCursor,
+                completedTurnDisplay: input.completedTurnDisplay,
+                includeDiagnosticOperations: input.includeDiagnosticOperations,
                 providerDisplayName: input.providerDisplayName,
                 sourceSeqEnd: input.sourceSeqEnd,
                 sourceSeqStart: input.sourceSeqStart,

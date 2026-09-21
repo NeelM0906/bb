@@ -7,8 +7,10 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
   BRIDGE_JSON_RPC_ERRORS,
@@ -16,6 +18,7 @@ import {
   PROVIDER_BRIDGE_PROTOCOL_VERSION,
   THREAD_DELTA_GRAMMAR_V3,
   THREAD_DELTA_NOTIFICATION_METHOD,
+  buildShellEnvOverrides,
   bridgeRequestEnvelopeSchema,
   createBridgeIo,
   createBridgeLineHandler,
@@ -27,7 +30,6 @@ import {
   providerInstallationStatusParamsSchema,
   providerMaintenanceParamsSchema,
   isStandaloneBuiltinCompactCommand,
-  mimeTypeFromExtension,
   modelListParamsSchema,
   runBridgeRequest,
   skillsConfigureParamsSchema,
@@ -78,6 +80,7 @@ import {
   resolvePiBridgeSessionDir,
   resolvePiSessionFilePath,
 } from "./session-paths.js";
+import { extractPiPromptInput } from "./turn-input.js";
 
 const piCommandSchema = z.discriminatedUnion("method", [
   z.object({
@@ -551,7 +554,7 @@ async function handleRequest(
       await handleThreadConstruction(
         request.id,
         request.params.threadId,
-        request.params.threadId,
+        `pi_${randomUUID()}`,
         toPiSessionParams(request.params),
       );
       break;
@@ -818,21 +821,6 @@ async function constructPiThreadSession(
   }
 }
 
-async function startPiThreadSession(
-  threadId: string,
-  providerThreadId: string,
-  params: PiSessionParams,
-): Promise<void> {
-  const existing = sessions.get(threadId);
-  if (existing) {
-    await closeThreadSession({
-      message: "Pi thread session replaced while tool call was pending",
-      threadId,
-    });
-  }
-  await constructPiThreadSession(threadId, providerThreadId, params);
-}
-
 function retireReplacedPiChild(replaced: ThreadSession): void {
   replaced.closing = true;
   resolvePendingToolCalls(
@@ -888,7 +876,14 @@ async function handleThreadConstruction(
   providerThreadId: string,
   params: PiSessionParams,
 ): Promise<void> {
-  await startPiThreadSession(threadId, providerThreadId, params);
+  const existing = sessions.get(threadId);
+  if (existing) {
+    await closeThreadSession({
+      message: "Pi thread session replaced while tool call was pending",
+      threadId,
+    });
+  }
+  await constructPiThreadSession(threadId, providerThreadId, params);
   sendThreadSessionResult(id, threadId, providerThreadId);
 }
 
@@ -1031,6 +1026,13 @@ async function reconcileTurnOptions(
 ): Promise<ThreadSession> {
   const turnOptions = buildPiTurnOptions(options);
   const construction = threadSession.construction;
+  const shellEnvOverrides =
+    options.envVars && Object.keys(options.envVars).length > 0
+      ? { BB_THREAD_ID: threadId, ...buildShellEnvOverrides(options.envVars) }
+      : undefined;
+  const environmentChanged =
+    shellEnvOverrides !== undefined &&
+    !isDeepStrictEqual(shellEnvOverrides, construction.shellEnvOverrides);
   const changedModelRequest =
     turnOptions.model !== undefined && turnOptions.model !== construction.model
       ? turnOptions.model
@@ -1038,7 +1040,11 @@ async function reconcileTurnOptions(
   const thinkingLevelChanged =
     turnOptions.thinkingLevel !== undefined &&
     turnOptions.thinkingLevel !== construction.thinkingLevel;
-  if (changedModelRequest === undefined && !thinkingLevelChanged) {
+  if (
+    !environmentChanged &&
+    changedModelRequest === undefined &&
+    !thinkingLevelChanged
+  ) {
     return threadSession;
   }
   const nextModel =
@@ -1050,11 +1056,12 @@ async function reconcileTurnOptions(
     (threadSession.constructionModel === undefined ||
       threadSession.constructionModel.provider !== nextModel.provider ||
       threadSession.constructionModel.id !== nextModel.id);
-  if (!modelChanged && !thinkingLevelChanged) {
+  if (!environmentChanged && !modelChanged && !thinkingLevelChanged) {
     return threadSession;
   }
   const replacement = await rebuildThreadSession(threadId, threadSession, {
     ...construction,
+    ...(shellEnvOverrides === undefined ? {} : { shellEnvOverrides }),
     ...(turnOptions.model === undefined ? {} : { model: turnOptions.model }),
     ...(turnOptions.thinkingLevel === undefined
       ? {}
@@ -1106,13 +1113,14 @@ async function handleTurnStart(
     sendResult(id, { threadId: params.threadId });
     return;
   }
-  const { text, images } = extractInput(params.input);
-  if (!text && images.length === 0) {
+  const input = extractPiPromptInput(params.input);
+  if (input === null) {
     sendError(id, BRIDGE_JSON_RPC_ERRORS.INVALID_PARAMS, "Missing input text");
     return;
   }
+  const { text, images } = input;
   try {
-    await startPiPrompt(threadSession, params.threadId, text ?? "", images);
+    await startPiPrompt(threadSession, params.threadId, text, images);
     recordAcceptedTurnInput(params);
     sendResult(id, { threadId: params.threadId });
   } catch (error) {
@@ -1133,18 +1141,19 @@ async function handleTurnSteer(
     sendError(id, -32000, "No active pi session");
     return;
   }
-  const { text, images } = extractInput(params.input);
-  if (!text && images.length === 0) {
+  const input = extractPiPromptInput(params.input);
+  if (input === null) {
     sendError(id, BRIDGE_JSON_RPC_ERRORS.INVALID_PARAMS, "Missing input text");
     return;
   }
+  const { text, images } = input;
   if (threadSession.session.getIsCompacting()) {
     sendError(id, -32000, "Cannot steer while context compaction is active");
     return;
   }
   try {
     await threadSession.session.steer(
-      text ?? "",
+      text,
       images.length > 0 ? images : undefined,
     );
     sendThreadDeltas(params.threadId, [
@@ -1197,79 +1206,6 @@ async function handleThreadDiscard(
     },
   );
   return { ok: true };
-}
-
-interface ExtractedInput {
-  text?: string;
-  images: ImageContent[];
-}
-
-interface SelectedPiSkill {
-  chunkIndex: number;
-  end: number;
-  name: string;
-  start: number;
-}
-
-function extractInput(input: TurnStartParams["input"]): ExtractedInput {
-  const chunks: string[] = [];
-  const images: ImageContent[] = [];
-  const skills: SelectedPiSkill[] = [];
-  for (const item of input) {
-    if (!item || typeof item !== "object") continue;
-    const typed = item as {
-      type?: string;
-      text?: string;
-      path?: string;
-      mimeType?: string;
-    };
-    if (typed.type === "text" && typeof typed.text === "string") {
-      const chunkIndex = chunks.push(typed.text) - 1;
-      for (const mention of item.type === "text" ? item.mentions : []) {
-        const resource = mention.resource;
-        if (
-          resource.kind === "command" &&
-          resource.source === "skill" &&
-          resource.trigger === "/" &&
-          mention.start >= 0 &&
-          mention.start < mention.end &&
-          mention.end <= typed.text.length &&
-          typed.text.slice(mention.start, mention.end) ===
-            `${resource.trigger}${resource.name}`
-        ) {
-          skills.push({
-            chunkIndex,
-            end: mention.end,
-            name: resource.name,
-            start: mention.start,
-          });
-        }
-      }
-    } else if (typed.type === "localImage" && typeof typed.path === "string") {
-      try {
-        const data = readFileSync(typed.path).toString("base64");
-        const mimeType = typed.mimeType ?? mimeTypeFromExtension(typed.path);
-        images.push({ type: "image", data, mimeType });
-      } catch {}
-    } else if (typed.type === "localFile" && typeof typed.path === "string") {
-      chunks.push(`[Attached file: ${typed.path}]`);
-    }
-  }
-  const [skill] = skills;
-  if (skills.length === 1 && skill) {
-    const chunk = chunks[skill.chunkIndex];
-    if (chunk !== undefined) {
-      chunks[skill.chunkIndex] =
-        `${chunk.slice(0, skill.start)}${chunk.slice(skill.end)}`;
-      const argumentsText = chunks.join("\n");
-      const separator = argumentsText.startsWith(" ") ? "" : " ";
-      return {
-        text: `/skill:${skill.name}${argumentsText ? `${separator}${argumentsText}` : ""}`,
-        images,
-      };
-    }
-  }
-  return { text: chunks.length > 0 ? chunks.join("\n") : undefined, images };
 }
 
 function handleParsedMessage(parsed: unknown): void {

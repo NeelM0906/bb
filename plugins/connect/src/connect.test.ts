@@ -562,7 +562,6 @@ describe("ShareRegistry", () => {
     });
 
     await registry.load();
-    expect(registry.isLoaded).toBe(true);
     expect(fakeHost.harness.sdk.callsTo("hosts.get")).toEqual([]);
     expect(fakeHost.harness.sdk.callsTo("system.config")).toEqual([]);
     expect(await registry.list()).toEqual([
@@ -639,7 +638,6 @@ describe("ShareRegistry", () => {
     });
 
     await registry.load();
-    expect(registry.isLoaded).toBe(true);
     expect(ensureIdentity).not.toHaveBeenCalled();
     expect(fakeHost.harness.sdk.callsTo("hosts.get")).toEqual([]);
     expect(await registry.list()).toEqual([
@@ -928,10 +926,8 @@ describe("TunnelSession routing", () => {
     const session = new TunnelSession({
       tunnel: client,
       log: {
-        debug: () => {},
         info: () => {},
         warn: () => {},
-        error: () => {},
       },
       resolveOrigin: (target) => {
         if (target === undefined) {
@@ -1066,10 +1062,8 @@ describe("TunnelSession routing", () => {
     const session = new TunnelSession({
       tunnel: client,
       log: {
-        debug: () => {},
         info: () => {},
         warn: () => {},
-        error: () => {},
       },
       resolveOrigin: () => ({
         kind: "ok",
@@ -1157,10 +1151,8 @@ describe("TunnelSession routing", () => {
     const session = new TunnelSession({
       tunnel: client,
       log: {
-        debug: () => {},
         info: (message) => infoMessages.push(message),
         warn: () => {},
-        error: () => {},
       },
       resolveOrigin: () => ({
         kind: "ok",
@@ -1274,10 +1266,8 @@ describe("TunnelSession routing", () => {
     const session = new TunnelSession({
       tunnel: client,
       log: {
-        debug: () => {},
         info: () => {},
         warn: () => {},
-        error: () => {},
       },
       resolveOrigin: () => ({
         kind: "ok",
@@ -1414,6 +1404,48 @@ describe("connect plugin", () => {
       "https://getbb.app/api/connect/redeem",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("toggles remote instructions while preserving active and recent usage conditions", async () => {
+    const status: ConnectStatus = {
+      state: "connected",
+      paired: true,
+      handle: "test",
+      url: "https://test.getbb.app",
+      dashboardUrl: "https://getbb.app",
+      lastError: null,
+      nextRetryAt: null,
+      since: Date.now(),
+      remoteClients: 1,
+      lastRemoteActivityAt: null,
+      shares: [],
+    };
+    const statusSpy = vi
+      .spyOn(ConnectTunnel.prototype, "status")
+      .mockReturnValue(status);
+    try {
+      const { harness } = await loadPlugin();
+      const instructions = () =>
+        harness.registrations.instructionProvider?.({
+          threadId: "thr_test",
+          projectId: "proj_test",
+        });
+      expect(instructions()).toContain("bb connect expose");
+      await harness.behavior.setSettings({ sendRemoteInstructions: false });
+      expect(instructions()).toBeNull();
+      await harness.behavior.setSettings({ sendRemoteInstructions: true });
+      expect(instructions()).toContain("https://test.getbb.app");
+      statusSpy.mockReturnValue({ ...status, remoteClients: 0 });
+      expect(instructions()).toBeNull();
+      statusSpy.mockReturnValue({
+        ...status,
+        remoteClients: 0,
+        lastRemoteActivityAt: Date.now(),
+      });
+      expect(instructions()).toContain("bb connect expose");
+    } finally {
+      statusSpy.mockRestore();
+    }
   });
 
   it("registers contributeInstructions", async () => {
@@ -2207,6 +2239,7 @@ describe("connect plugin", () => {
     expect(call?.[1]).toEqual({
       method: "POST",
       headers: { "x-bb-connect-machine": "bbcred_durable" },
+      signal: expect.any(AbortSignal),
     });
     const result = (await harness.callRpc("createMachineCode")) as {
       expiresAt: number;
@@ -2403,7 +2436,36 @@ describe("connect CLI", () => {
     const { harness } = await loadCli();
     const result = await harness.runCli(["bogus"]);
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("Unknown connect command 'bogus'");
+    expect(result.stderr).toContain("unknown command 'bogus'");
+    expect(result.stderr).toContain("bb connect status");
+  });
+
+  it("`--help` prints help on stdout at every level", async () => {
+    const { harness } = await loadCli();
+    for (const argv of [["--help"], ["-h"], ["shares", "--help"]]) {
+      const result = await harness.runCli(argv);
+      expect(result.exitCode, argv.join(" ")).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("bb connect");
+    }
+    expect((await harness.runCli(["expose", "--help"])).stdout).toContain(
+      "<port>",
+    );
+  });
+
+  it("`bb connect list` points at shares", async () => {
+    const { harness } = await loadCli();
+    const result = await harness.runCli(["list"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("(Did you mean shares?)");
+  });
+
+  it("rejects an unknown flag instead of ignoring it", async () => {
+    const { harness } = await loadCli();
+    const result = await harness.runCli(["shares", "--hosts", "bee"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("unknown option '--hosts'");
+    expect(result.stderr).toContain("(Did you mean --host?)");
   });
 
   it("a failed pair surfaces the redeem error on stderr", async () => {
@@ -2572,6 +2634,7 @@ describe("connect CLI", () => {
     expect(call?.[1]).toEqual({
       method: "POST",
       headers: { "x-bb-connect-machine": "bbcred_live" },
+      signal: expect.any(AbortSignal),
     });
   });
 

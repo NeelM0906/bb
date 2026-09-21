@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type {
@@ -56,6 +58,21 @@ function contextWindowSizes(threadId: string): number[] {
     .filter((size): size is number => typeof size === "number");
 }
 
+function providerThreadIdFor(threadId: string): string {
+  const identity = [...harness.messages]
+    .reverse()
+    .find(
+      (message) =>
+        message.method === "thread/identity" &&
+        (message.params as { threadId?: unknown }).threadId === threadId,
+    );
+  const providerThreadId = (identity?.params as { providerThreadId?: unknown })
+    .providerThreadId;
+  expect(typeof providerThreadId).toBe("string");
+  if (typeof providerThreadId !== "string") throw new Error("missing provider thread identity");
+  return providerThreadId;
+}
+
 function turnStart(
   id: number,
   threadId: string,
@@ -64,7 +81,7 @@ function turnStart(
 ): Promise<BridgeJsonRpcOutputMessage> {
   return harness.request(id, "turn/start", {
     threadId,
-    providerThreadId: threadId,
+    providerThreadId: providerThreadIdFor(threadId),
     clientRequestId: `creq_abcdefghi${"23456789"[id % 8] ?? "2"}`,
     input: [{ type: "text", text, mentions: [] }],
     options,
@@ -72,10 +89,41 @@ function turnStart(
 }
 
 it(
+  "rebuilds the session with environment from a later turn",
+  async () => {
+    const threadId = "thr_turn_options_env";
+    const envLog = join(harness.workspaceDir, "env.log");
+    const options = (marker: string) => ({
+      ...MINI,
+      envVars: { FAKE_PI_ENV_LOG: envLog, FAKE_PI_ENV_MARKER: marker },
+    });
+    await harness.startThread(threadId, { options: options("first") });
+
+    expect(
+      (await turnStart(1, threadId, "first", options("first"))).error,
+    ).toBeUndefined();
+    const seen = await harness.waitForTurnBoundary(threadId, 0);
+    expect(
+      (await turnStart(2, threadId, "second", options("second"))).error,
+    ).toBeUndefined();
+    await harness.waitForTurnBoundary(threadId, seen);
+
+    expect(readFileSync(envLog, "utf8").trim().split("\n")).toEqual([
+      "first",
+      "second",
+    ]);
+    expect(sessionReplacements(threadId)).toHaveLength(1);
+  },
+  TURN_OPTIONS_TEST_TIMEOUT_MS,
+);
+
+it(
   "rebuilds the session on the model a later turn carries",
   async () => {
     const threadId = "thr_turn_options_model";
-    await harness.startThread(threadId, { options: MINI });
+    const start = await harness.startThread(threadId, { options: MINI });
+    const originalProviderThreadId = providerThreadIdFor(threadId);
+    expect(start.result).toMatchObject({ providerThreadId: originalProviderThreadId });
 
     expect((await turnStart(1, threadId, "first", MINI)).error).toBeUndefined();
     let seen = await harness.waitForTurnBoundary(threadId, 0);
@@ -91,7 +139,7 @@ it(
     expect(sessionReplacements(threadId)).toEqual([
       {
         threadId,
-        providerThreadId: threadId,
+        providerThreadId: originalProviderThreadId,
         reason: expect.stringContaining("Execution settings changed"),
         contextLost: false,
       },
@@ -147,7 +195,7 @@ it(
 
     const compaction = await harness.request(2, "turn/start", {
       threadId,
-      providerThreadId: threadId,
+      providerThreadId: providerThreadIdFor(threadId),
       clientRequestId: "creq_abcdefghij",
       input: [
         {
@@ -249,7 +297,7 @@ it(
 
     const steer = await harness.request(2, "turn/steer", {
       threadId,
-      providerThreadId: threadId,
+      providerThreadId: providerThreadIdFor(threadId),
       clientRequestId: "creq_abcdefghik",
       expectedTurnId: "turn-1",
       input: [{ type: "text", text: "steered", mentions: [] }],

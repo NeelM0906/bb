@@ -25,10 +25,11 @@ import {
   type CommandDispatchOptions,
 } from "./command-dispatch.js";
 import { isExpectedOnlineRpcFailureError } from "./command-dispatch-support.js";
-import { roundDurationMs } from "./event-loop-stall-monitor.js";
+import { roundDurationMs } from "@bb/process-utils";
 import type { HostDaemonLogger } from "./logger.js";
 import { RuntimeManager } from "./runtime-manager.js";
 import type { PluginHostManager } from "./plugin-host-manager.js";
+import { runInSerialLane } from "./serial-lane.js";
 
 type CommandRouterLogger = Pick<HostDaemonLogger, "debug" | "warn">;
 
@@ -43,12 +44,6 @@ interface ReadWriteLaneArgs<T> {
   key: string;
   lanes: Map<string, ReadWriteLaneState>;
   mode: EnvironmentLaneMode;
-  work: () => Promise<T>;
-}
-
-interface SerialLaneArgs<T> {
-  key: string;
-  lanes: Map<string, Promise<void>>;
   work: () => Promise<T>;
 }
 
@@ -69,7 +64,6 @@ export interface CommandRouterOptions {
   fetchSkillTree?: CommandDispatchOptions["fetchSkillTree"];
   fetchPluginHostArtifact?: CommandDispatchOptions["fetchPluginHostArtifact"];
   runtimeManager: RuntimeManager;
-  terminalManager?: CommandDispatchOptions["terminalManager"];
   eventSink: CommandDispatchOptions["eventSink"];
   listModels: CommandDispatchOptions["listModels"];
   providerHealth: CommandDispatchOptions["providerHealth"];
@@ -81,6 +75,7 @@ export interface CommandRouterOptions {
   pluginHostManager?: PluginHostManager;
   ensureConnectTunnelIdentity?: CommandDispatchOptions["ensureConnectTunnelIdentity"];
   hostAdmissionController?: CommandDispatchOptions["hostAdmissionController"];
+  serverMove?: CommandDispatchOptions["serverMove"];
   threadStorageRootPath: string;
   logger: CommandRouterLogger;
 }
@@ -197,22 +192,6 @@ export class CommandRouter {
   private executeLiveDaemonCommand(
     command: HostDaemonCommand,
   ): Promise<HostDaemonCommandResultForCommand> {
-    if (command.type === "thread.start" || command.type === "turn.submit") {
-      const controller = this.options.hostAdmissionController;
-      if (!controller) {
-        throw new Error("Host admission controller is unavailable");
-      }
-      if (
-        !controller.validate({
-          requestId: command.requestId,
-          threadId: command.threadId,
-        })
-      ) {
-        throw new Error(
-          "Provider work requires a valid host admission reservation",
-        );
-      }
-    }
     const environmentLaneMode = hostDaemonEnvironmentLaneForCommand(command);
     const threadLaneKey = this.resolveThreadLaneKey(command);
     const task = this.runAfterThreadUnarchiveBarrier(command, () =>
@@ -232,6 +211,22 @@ export class CommandRouter {
   private async executeLiveDaemonCommandBody(
     command: HostDaemonCommand,
   ): Promise<HostDaemonCommandResultForCommand> {
+    if (command.type === "thread.start" || command.type === "turn.submit") {
+      const controller = this.options.hostAdmissionController;
+      if (!controller) {
+        throw new Error("Host admission controller is unavailable");
+      }
+      if (
+        !controller.validate({
+          requestId: command.requestId,
+          threadId: command.threadId,
+        })
+      ) {
+        throw new Error(
+          "Provider work requires a valid host admission reservation",
+        );
+      }
+    }
     const result = await dispatchCommand(command, this.createDispatchOptions());
     if (shouldFlushEventsBeforeReportingCommandResult(command)) {
       await this.options.eventSink.flush();
@@ -261,12 +256,7 @@ export class CommandRouter {
     const threadWork =
       threadLaneKey === null
         ? work
-        : () =>
-            this.runInSerialLane({
-              key: threadLaneKey,
-              lanes: this.threadLaneTails,
-              work,
-            });
+        : () => runInSerialLane(this.threadLaneTails, threadLaneKey, work);
     if (!environmentLaneMode) {
       return threadWork();
     }
@@ -287,11 +277,7 @@ export class CommandRouter {
     if (command.type !== "thread.start" && command.type !== "turn.submit") {
       return work();
     }
-    return this.runInSerialLane({
-      key: command.threadId,
-      lanes: this.threadTurnLaneTails,
-      work,
-    });
+    return runInSerialLane(this.threadTurnLaneTails, command.threadId, work);
   }
 
   private createDispatchOptions(): CommandDispatchOptions {
@@ -300,7 +286,6 @@ export class CommandRouter {
       fetchSkillTree: this.options.fetchSkillTree,
       fetchPluginHostArtifact: this.options.fetchPluginHostArtifact,
       runtimeManager: this.options.runtimeManager,
-      terminalManager: this.options.terminalManager,
       desktopBrowserBroker: this.options.desktopBrowserBroker,
       dataDir: this.options.dataDir,
       eventSink: this.options.eventSink,
@@ -314,6 +299,7 @@ export class CommandRouter {
       resolveInteractiveRequest: this.options.resolveInteractiveRequest,
       ensureConnectTunnelIdentity: this.options.ensureConnectTunnelIdentity,
       hostAdmissionController: this.options.hostAdmissionController,
+      serverMove: this.options.serverMove,
       threadStorageRootPath: this.options.threadStorageRootPath,
       logger: this.options.logger,
     };
@@ -392,26 +378,6 @@ export class CommandRouter {
     });
   }
 
-  private runInSerialLane<T>({
-    key,
-    lanes,
-    work,
-  }: SerialLaneArgs<T>): Promise<T> {
-    const previousTail = lanes.get(key) ?? Promise.resolve();
-    const next = previousTail.catch(() => undefined).then(work);
-    const done = next.then(
-      () => undefined,
-      () => undefined,
-    );
-    lanes.set(key, done);
-    void done.then(() => {
-      if (lanes.get(key) === done) {
-        lanes.delete(key);
-      }
-    });
-    return next;
-  }
-
   private runInReadWriteLane<T>({
     key,
     lanes,
@@ -467,6 +433,7 @@ export class CommandRouter {
       case "thread.archive":
       case "interactive.resolve":
       case "thread.stop":
+      case "thread.storage.delete":
       case "thread.plan.cancel":
       case "thread.goal.clear":
         return `${command.environmentId}\0thread:${command.threadId}`;

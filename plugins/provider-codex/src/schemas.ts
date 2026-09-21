@@ -442,10 +442,13 @@ export const codexHandledThreadItemSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("imageGeneration"),
       id: z.string(),
-      status: codexToolReferenceStatusSchema,
+      status: z.union([
+        codexToolReferenceStatusSchema,
+        z.literal("in_progress").transform(() => "inProgress" as const),
+      ]),
       revisedPrompt: z.string().nullable(),
       result: z.string(),
-      transparentBackground: z.boolean().optional(),
+      transparentBackground: z.boolean().nullish(),
       failure: z
         .object({
           type: z.literal("usageLimitExceeded"),
@@ -536,13 +539,14 @@ const codexTurnErrorSchema = z
   })
   .passthrough();
 
-const codexTurnSchema = z
+export const codexTurnSchema = z
   .object({
     id: z.string(),
     status: codexTurnStatusSchema,
     error: codexTurnErrorSchema.nullable().optional(),
   })
   .passthrough();
+export type CodexTurn = z.infer<typeof codexTurnSchema>;
 
 const codexThreadSchema = z
   .object({
@@ -555,7 +559,8 @@ const codexTokenUsageBreakdownSchema = z
   .object({
     totalTokens: z.number(),
     inputTokens: z.number(),
-    cachedInputTokens: z.number(),
+    cachedInputTokens: z.number().nonnegative(),
+    cacheWriteInputTokens: z.number().nonnegative().optional(),
     outputTokens: z.number(),
     reasoningOutputTokens: z.number(),
   })
@@ -1021,6 +1026,12 @@ export const codexHandledEventSchema = z.discriminatedUnion("method", [
   ),
   createCodexEventSchema("deprecationNotice", codexWarningParamsSchema),
   createCodexEventSchema("configWarning", codexWarningParamsSchema),
+  createCodexEventSchema(
+    "warning",
+    z
+      .object({ threadId: z.string().nullable(), message: z.string() })
+      .passthrough(),
+  ),
 ]);
 export type CodexHandledEvent = z.infer<typeof codexHandledEventSchema>;
 type HandledCodexMethod = CodexHandledEvent["method"];

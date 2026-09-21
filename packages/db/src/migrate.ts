@@ -127,6 +127,10 @@ interface ExistingTableRow {
   name: string;
 }
 
+interface AppliedMigrationCountRow {
+  count: number;
+}
+
 interface PendingInteractionProviderRequestDuplicateRow {
   duplicateCount: number;
   providerId: string;
@@ -499,6 +503,23 @@ function readAppliedMigrationCreatedAts(db: DbConnection): Set<number> {
   return new Set(rows.map((row) => row.createdAt));
 }
 
+export function countAppliedMigrations(db: DbConnection): number {
+  if (!tableExists(db, "__drizzle_migrations")) {
+    return 0;
+  }
+
+  const row = db.$client
+    .prepare<[], AppliedMigrationCountRow>(
+      `
+        SELECT COUNT(*) AS count
+        FROM __drizzle_migrations
+      `,
+    )
+    .get();
+
+  return row?.count ?? 0;
+}
+
 function readLatestAppliedMigrationCreatedAt(db: DbConnection): number | null {
   if (!tableExists(db, "__drizzle_migrations")) {
     return null;
@@ -567,6 +588,49 @@ function applyMigrationStatements(
   });
 
   apply();
+}
+
+function applyMissingDivergentWorkspaceMigrations(
+  db: DbConnection,
+  migrationsFolder: string,
+): void {
+  const latest = readLatestAppliedMigrationCreatedAt(db);
+  if (latest === null) return;
+  const migrations = readExpectedAppliedMigrations(migrationsFolder);
+  const applied = readAppliedMigrationCreatedAts(db);
+  const sharedPredecessor = requireExpectedAppliedMigration(
+    migrations,
+    "0114_public_iron_lad",
+  );
+  if (!applied.has(sharedPredecessor.createdAt)) return;
+  const appliedRows = db.$client
+    .prepare<
+      [],
+      AppliedMigrationIdentityRow
+    >("SELECT hash, created_at AS createdAt FROM __drizzle_migrations")
+    .all();
+  const branchTags = ["0115_ui_preferences", "0115_workspace_safety"];
+  for (const migration of [
+    sharedPredecessor,
+    ...branchTags.map((tag) =>
+      requireExpectedAppliedMigration(migrations, tag),
+    ),
+  ]) {
+    if (
+      applied.has(migration.createdAt) &&
+      !hasAppliedMigrationHash(migration, appliedRows)
+    ) {
+      throw new Error(
+        `Mismatched applied migration hashes: ${formatExpectedAppliedMigration(migration)}`,
+      );
+    }
+  }
+  for (const tag of branchTags) {
+    const migration = requireExpectedAppliedMigration(migrations, tag);
+    if (migration.createdAt < latest && !applied.has(migration.createdAt)) {
+      applyMigrationStatements(db, migration);
+    }
+  }
 }
 
 function replayMissingCanonicalTailAfterLatestAppliedCanonicalMigration(
@@ -1315,6 +1379,8 @@ function repairBranchLocalQueuedGroupingBeforeInitialThreadSections(
 const STAGED_CONNECT_MACHINE_ID_COLUMN = "_bb_connect_machine_id_pending";
 const STAGED_PROTECT_UNMANAGED_WORKSPACE_COLUMN =
   "_bb_protect_unmanaged_workspace_pending";
+const STAGED_THREAD_STORAGE_DELETED_AT_COLUMN =
+  "_bb_thread_storage_deleted_at_pending";
 
 function stageExistingConnectMachineIdColumn(
   db: DbConnection,
@@ -1399,6 +1465,46 @@ function restoreStagedConnectMachineIdColumn(db: DbConnection): void {
   db.$client.exec(
     `UPDATE hosts SET connect_machine_id = ${STAGED_CONNECT_MACHINE_ID_COLUMN};
      ALTER TABLE hosts DROP COLUMN ${STAGED_CONNECT_MACHINE_ID_COLUMN};`,
+  );
+}
+
+function stageExistingThreadStorageDeletedAtColumn(
+  db: DbConnection,
+  migrationsFolder: string,
+): boolean {
+  if (
+    !tableExists(db, "__drizzle_migrations") ||
+    !tableExists(db, "threads") ||
+    !columnExists(db, "threads", "storage_deleted_at")
+  ) {
+    return false;
+  }
+  const migration = requireExpectedAppliedMigration(
+    readExpectedAppliedMigrations(migrationsFolder),
+    "0120_perfect_clint_barton",
+  );
+  if (readAppliedMigrationCreatedAts(db).has(migration.createdAt)) {
+    return false;
+  }
+  db.$client.exec(
+    `ALTER TABLE threads RENAME COLUMN storage_deleted_at TO ${STAGED_THREAD_STORAGE_DELETED_AT_COLUMN}`,
+  );
+  return true;
+}
+
+function restoreStagedThreadStorageDeletedAtColumn(db: DbConnection): void {
+  if (!columnExists(db, "threads", STAGED_THREAD_STORAGE_DELETED_AT_COLUMN)) {
+    return;
+  }
+  if (!columnExists(db, "threads", "storage_deleted_at")) {
+    db.$client.exec(
+      `ALTER TABLE threads RENAME COLUMN ${STAGED_THREAD_STORAGE_DELETED_AT_COLUMN} TO storage_deleted_at`,
+    );
+    return;
+  }
+  db.$client.exec(
+    `UPDATE threads SET storage_deleted_at = ${STAGED_THREAD_STORAGE_DELETED_AT_COLUMN};
+     ALTER TABLE threads DROP COLUMN ${STAGED_THREAD_STORAGE_DELETED_AT_COLUMN};`,
   );
 }
 
@@ -1605,6 +1711,20 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
   const migrationsFolder = resolveMigrationsFolder();
   const sqlite = db.$client;
 
+  sqlite.exec(
+    "CREATE TEMP TABLE IF NOT EXISTS bb_migration_local_host (id TEXT PRIMARY KEY)",
+  );
+  sqlite.exec("DELETE FROM bb_migration_local_host");
+  if (sqlite.name !== ":memory:") {
+    const identityPath = join(dirname(sqlite.name), "host-id");
+    if (existsSync(identityPath)) {
+      const hostId = readFileSync(identityPath, "utf8").trim();
+      if (hostId)
+        sqlite
+          .prepare("INSERT INTO bb_migration_local_host (id) VALUES (?)")
+          .run(hostId);
+    }
+  }
   sqlite.pragma("foreign_keys = OFF");
   let stagedProtectUnmanagedWorkspace = false;
   try {
@@ -1628,10 +1748,15 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
     );
     stagedProtectUnmanagedWorkspace =
       stageExistingProtectUnmanagedWorkspaceColumn(db, migrationsFolder);
+    const stagedThreadStorageDeletedAt =
+      stageExistingThreadStorageDeletedAtColumn(db, migrationsFolder);
     try {
+      applyMissingDivergentWorkspaceMigrations(db, migrationsFolder);
       drizzleMigrate(db, { migrationsFolder });
     } finally {
       if (stagedConnectMachineId) restoreStagedConnectMachineIdColumn(db);
+      if (stagedThreadStorageDeletedAt)
+        restoreStagedThreadStorageDeletedAtColumn(db);
     }
     applyReorderedCleanupMigrations(db, migrationsFolder);
     applyQueuedMessageGroupingSchema(db);

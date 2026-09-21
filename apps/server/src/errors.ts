@@ -1,3 +1,4 @@
+import { ProjectAttachmentError } from "@bb/domain";
 import { HTTPException } from "hono/http-exception";
 import type { ThreadEventScopeKind, ThreadEventType } from "@bb/domain";
 import type { ServerLogger } from "./types.js";
@@ -91,6 +92,9 @@ export function errorToResponse(
         },
       },
     );
+  }
+  if (error instanceof ProjectAttachmentError) {
+    return new ApiError(400, "invalid_request", error.message).toResponse();
   }
   if (error instanceof TurnStartGuardError) {
     logger.warn(

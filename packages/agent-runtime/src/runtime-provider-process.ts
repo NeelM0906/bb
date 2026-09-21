@@ -169,8 +169,6 @@ export class RuntimeProviderProcessManager {
       await existingProcess.exitFinalized;
       if (this.shuttingDown) return;
 
-      // A concurrent caller can replace this process while its final output
-      // drains. Reuse that replacement instead of spawning a second child.
       const concurrentStart = this.providerStarting.get(args.processKey);
       if (concurrentStart !== undefined) {
         await concurrentStart;
@@ -505,14 +503,7 @@ export class RuntimeProviderProcessManager {
     child.on("exit", (code, signal) => {
       const status = { code: code ?? null, signal: signal ?? null };
       exitStatus = status;
-      // `exit` precedes the final stdout/stderr events. Wait for `close` so
-      // diagnostics and pending requests observe the complete final drain.
-      // A descendant may keep an inherited pipe open, so force the read ends
-      // closed after a bounded grace period.
       closeGraceTimer = setTimeout(() => {
-        // Stop an inherited pipe from outliving its provider entry. Otherwise
-        // a descendant can emit stale protocol messages after the replacement
-        // process has become current, and the unread streams remain retained.
         child.stdout?.destroy();
         child.stderr?.destroy();
         handleExit(status);

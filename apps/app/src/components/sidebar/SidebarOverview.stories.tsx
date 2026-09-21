@@ -2,6 +2,7 @@ import {
   Suspense,
   useEffect,
   useLayoutEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -11,6 +12,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { createStore, Provider } from "jotai";
+import { useNavigate } from "react-router-dom";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import type { SidebarBootstrapResponse } from "@bb/server-contract";
 import {
@@ -23,11 +25,15 @@ import {
 } from "../../../.ladle/story-fixtures";
 import { ProjectActionsProvider } from "@/components/project/ProjectActionsProvider";
 import { ThreadActionsProvider } from "@/components/thread/ThreadActionsProvider";
+import { QuickCreateProjectProvider } from "@/hooks/useQuickCreateProject";
+import { SidebarProvider } from "@/components/ui/sidebar";
+import { AppSidebar } from "./AppSidebar";
 import { Icon } from "@bb/shared-ui/icon";
 import {
   ProjectList,
-  ProjectListActionButtons,
   ProjectListNavigationLoadingState,
+  ProjectListNewThreadAction,
+  ProjectListSearchThreadsAction,
   ProjectListShell,
 } from "./ProjectList";
 import {
@@ -36,6 +42,15 @@ import {
 } from "@/hooks/queries/query-keys";
 import { StoryCard, StoryRow } from "../../../.ladle/story-card";
 import { PluginNavSidebarItems } from "@/components/plugin/PluginNavSidebarItems";
+import {
+  pluginNavPanelOrderAtom,
+  pluginNavVisiblePanelKeysAtom,
+} from "@/components/plugin/pluginNavSidebarAtoms";
+import {
+  BUILT_IN_SIDEBAR_NAVIGATION_KEYS,
+  DEFAULT_BUILT_IN_SIDEBAR_NAVIGATION_ORDER,
+} from "@/components/plugin/pluginNavSidebarOrder";
+import { BuiltInSidebarNavigation } from "./BuiltInSidebarNavigation";
 import {
   removePluginSlotRegistrations,
   setPluginSlotRegistrations,
@@ -47,11 +62,12 @@ import {
 } from "@/lib/route-paths";
 import { splitLayoutAtom } from "@/lib/split-layout/atoms";
 import {
-  SIDEBAR_ORGANIZATION_MODE_STORAGE_KEY,
   sidebarOrganizationModeAtom,
+  sidebarHiddenGroupsAtom,
   type SidebarOrganizationMode,
 } from "./sidebarCollapsedAtoms";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import { installSidebarRenameStoryApi } from "../../../.ladle/sidebar-rename-fixtures";
 import {
   makeProjectWithThreadsResponse,
   makeSidebarBootstrapResponse,
@@ -63,6 +79,7 @@ export default {
 
 interface SidebarFrameProps {
   children: ReactNode;
+  navigation?: ReactNode;
 }
 
 const noop = () => {};
@@ -83,6 +100,11 @@ const personalProject = makeProject({
 });
 
 const loadedSidebarNavigation = makeSidebarBootstrapResponse({
+  sections: [
+    { id: "sec_story_build", name: "In progress", createdAt: 0, updatedAt: 0 },
+    { id: "sec_story_review", name: "Review", createdAt: 0, updatedAt: 0 },
+    { id: "sec_story_later", name: "Later", createdAt: 0, updatedAt: 0 },
+  ],
   personalProject: makeProjectWithThreadsResponse({
     ...personalProject,
     threads: [
@@ -143,6 +165,7 @@ const loadedSidebarNavigation = makeSidebarBootstrapResponse({
         }),
         makeThreadListEntry({
           id: "thr_story_active",
+          sectionId: "sec_story_build",
           projectId: bbProject.id,
           title: "Ship realtime sidebar updates",
           titleFallback: "Ship realtime sidebar updates",
@@ -180,6 +203,7 @@ const loadedSidebarNavigation = makeSidebarBootstrapResponse({
           environmentId: "env_story_sidebar",
           environmentName: "Sidebar polish",
           environmentBranchName: BRANCH_NAMES.feature,
+          environmentIsWorktree: true,
           environmentProviderId: "git-worktree",
           queuedWork: "none",
           title: "Tighten loading skeleton",
@@ -190,10 +214,12 @@ const loadedSidebarNavigation = makeSidebarBootstrapResponse({
         }),
         makeThreadListEntry({
           id: "thr_story_worktree_b",
+          sectionId: "sec_story_review",
           projectId: bbProject.id,
           environmentId: "env_story_sidebar",
           environmentName: "Sidebar polish",
           environmentBranchName: BRANCH_NAMES.feature,
+          environmentIsWorktree: true,
           environmentProviderId: "git-worktree",
           queuedWork: "none",
           title: "Audit sidebar stories",
@@ -210,12 +236,34 @@ const loadedSidebarNavigation = makeSidebarBootstrapResponse({
       threads: [
         makeThreadListEntry({
           id: "thr_story_docs",
+          sectionId: "sec_story_review",
           projectId: docsProject.id,
           title: "Refresh onboarding docs",
           titleFallback: "Refresh onboarding docs",
           latestAttentionAt: 120,
           createdAt: 120,
           updatedAt: 120,
+        }),
+        ...Array.from({ length: 40 }, (_, index) => {
+          const title = [
+            "Review keyboard navigation",
+            "Clarify the onboarding checklist",
+            "Update screenshots for the release guide",
+            "Verify nested thread actions",
+          ][index % 4];
+          return makeThreadListEntry({
+            id: `thr_story_docs_${index}`,
+            projectId: docsProject.id,
+            sectionId: "sec_story_review",
+            title: `${title} ${index + 1}`,
+            titleFallback: `${title} ${index + 1}`,
+            parentThreadId:
+              index % 8 === 1 ? `thr_story_docs_${index - 1}` : null,
+            latestAttentionAt: 110 - index,
+            createdAt: 110 - index,
+            updatedAt: 110 - index,
+            lastReadAt: index % 3 === 0 ? 0 : 120,
+          });
         }),
       ],
     }),
@@ -258,16 +306,78 @@ const machineSidebarNavigation = {
   })),
 } satisfies SidebarBootstrapResponse;
 
-function SidebarFrame({ children }: SidebarFrameProps) {
+const renameSidebarNavigation: SidebarBootstrapResponse = {
+  ...machineSidebarNavigation,
+  sections: [
+    { id: "sec_story_review", name: "Review", createdAt: 1, updatedAt: 1 },
+    { id: "sec_story_planning", name: "Planning", createdAt: 1, updatedAt: 1 },
+  ],
+  personalProject: {
+    ...machineSidebarNavigation.personalProject,
+    threads: machineSidebarNavigation.personalProject.threads.map(
+      (thread, index) => ({
+        ...thread,
+        sectionId: index === 0 ? "sec_story_review" : "sec_story_planning",
+      }),
+    ),
+  },
+};
+
+function RenameSidebar() {
+  const [ready, setReady] = useState(false);
+  const failureRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const cleanup = installSidebarRenameStoryApi({
+      navigation: renameSidebarNavigation,
+      hosts: machineStoryHosts,
+      failNextSave: () => {
+        const input = failureRef.current;
+        const fail = input?.checked ?? false;
+        if (input) input.checked = false;
+        return fail;
+      },
+    });
+    setReady(true);
+    return cleanup;
+  }, []);
+  return (
+    <div className="flex max-w-80 flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-3 text-sm">
+        <label className="inline-flex items-center gap-2">
+          <input type="checkbox" ref={failureRef} />
+          Fail next save
+        </label>
+      </div>
+      {ready ? (
+        <OrganizationSidebar
+          mode="chronological"
+          hosts={machineStoryHosts}
+          navigation={renameSidebarNavigation}
+          fullSidebar
+        />
+      ) : (
+        <LoadingSidebar />
+      )}
+    </div>
+  );
+}
+
+function SidebarFrame({ children, navigation }: SidebarFrameProps) {
   return (
     <ProjectActionsProvider>
       <ThreadActionsProvider>
         <div className="flex h-[680px] w-full max-w-[320px] min-w-0 flex-col overflow-hidden rounded-md border border-sidebar-border bg-sidebar text-sidebar-foreground shadow-sm">
-          <div className="shrink-0 px-2 py-2">
-            <ProjectListActionButtons onNewChat={noop} />
-          </div>
-          {}
-          <PluginNavSidebarItems />
+          {navigation ?? (
+            <>
+              <div className="shrink-0 px-2 py-2">
+                <div className="space-y-1">
+                  <ProjectListNewThreadAction onNewChat={noop} />
+                  <ProjectListSearchThreadsAction />
+                </div>
+              </div>
+              <PluginNavSidebarItems />
+            </>
+          )}
           <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
           <div className="shrink-0 border-t border-sidebar-border/70 px-2 py-2">
             <button
@@ -296,9 +406,11 @@ function LoadingSidebar() {
 function LoadedSidebar({
   hosts,
   navigation = loadedSidebarNavigation,
+  fullSidebar = false,
 }: {
   hosts?: typeof machineStoryHosts;
   navigation?: SidebarBootstrapResponse;
+  fullSidebar?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [isSeeded, setIsSeeded] = useState(false);
@@ -330,7 +442,24 @@ function LoadedSidebar({
 
   return (
     <Suspense fallback={<LoadingSidebar />}>
-      <ProjectList onNewProject={noop} onProjectSelect={noop} />
+      {fullSidebar ? (
+        <QuickCreateProjectProvider>
+          <ProjectActionsProvider>
+            <ThreadActionsProvider>
+              <SidebarProvider className="h-[680px] min-h-0 w-80 flex-col overflow-hidden rounded-md border border-sidebar-border bg-sidebar text-sidebar-foreground">
+                <AppSidebar
+                  onResizeMouseDown={noop}
+                  isResizing={false}
+                  settingsRoutePath="/settings"
+                  mobileHosted={{ hidden: false }}
+                />
+              </SidebarProvider>
+            </ThreadActionsProvider>
+          </ProjectActionsProvider>
+        </QuickCreateProjectProvider>
+      ) : (
+        <ProjectList onNewProject={noop} onProjectSelect={noop} />
+      )}
     </Suspense>
   );
 }
@@ -351,7 +480,7 @@ function StoryPluginPageRegistrations() {
         panel: {
           id: AUTOMATIONS_PLUGIN_PANEL_PATH,
           title: "Automations",
-          icon: "TimeSchedule" as const,
+          icon: "Repeat" as const,
           path: AUTOMATIONS_PLUGIN_PANEL_PATH,
           component: () => null,
         },
@@ -402,11 +531,29 @@ function StoryPluginPageRegistrations() {
 }
 
 function LoadedSidebarWithPluginPages() {
-  const [store] = useState(() => createStore());
+  const navigate = useNavigate();
+  const [store] = useState(() => {
+    const seededStore = createStore();
+    seededStore.set(pluginNavPanelOrderAtom, [
+      ...DEFAULT_BUILT_IN_SIDEBAR_NAVIGATION_ORDER,
+      "github/github",
+      "docs/docs",
+      "tasks/tasks",
+    ]);
+    seededStore.set(pluginNavVisiblePanelKeysAtom, [
+      BUILT_IN_SIDEBAR_NAVIGATION_KEYS.newThread,
+      "github/github",
+    ]);
+    return seededStore;
+  });
   return (
     <Provider store={store}>
       <StoryPluginPageRegistrations />
-      <SidebarFrame>
+      <SidebarFrame
+        navigation={
+          <BuiltInSidebarNavigation onNewChat={() => void navigate("/")} />
+        }
+      >
         <LoadedSidebar />
       </SidebarFrame>
     </Provider>
@@ -417,59 +564,39 @@ function OrganizationSidebar({
   hosts,
   mode,
   navigation,
+  fullSidebar = false,
 }: {
   hosts?: typeof machineStoryHosts;
   mode: SidebarOrganizationMode;
   navigation?: SidebarBootstrapResponse;
+  fullSidebar?: boolean;
 }) {
   const [store] = useState(() => createStore());
   const [isModeSeeded, setIsModeSeeded] = useState(false);
-  const [queryClient] = useState(
-    () =>
-      new QueryClient({
-        defaultOptions: {
-          queries: {
-            retry: false,
-          },
+  const [queryClient] = useState(() => {
+    const client = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+          refetchOnMount: false,
+          refetchOnWindowFocus: false,
+          refetchOnReconnect: false,
         },
-      }),
-  );
+      },
+    });
+    client.setQueryData(hostsQueryKey(), hosts ?? machineStoryHosts);
+    return client;
+  });
 
   useLayoutEffect(() => {
     setIsModeSeeded(false);
-
-    let localStorage: Storage | null = null;
-    let persistedMode: string | null = null;
-
-    if (typeof window !== "undefined") {
-      try {
-        localStorage = window.localStorage;
-        persistedMode = localStorage.getItem(
-          SIDEBAR_ORGANIZATION_MODE_STORAGE_KEY,
-        );
-      } catch {
-        localStorage = null;
-      }
-    }
-
     const unsubscribe = store.sub(sidebarOrganizationModeAtom, noop);
-
-    try {
-      store.set(sidebarOrganizationModeAtom, mode);
-    } finally {
-      if (localStorage) {
-        try {
-          if (persistedMode === null) {
-            localStorage.removeItem(SIDEBAR_ORGANIZATION_MODE_STORAGE_KEY);
-          } else {
-            localStorage.setItem(
-              SIDEBAR_ORGANIZATION_MODE_STORAGE_KEY,
-              persistedMode,
-            );
-          }
-        } catch {}
-      }
-    }
+    store.set(sidebarOrganizationModeAtom, mode);
+    store.set(sidebarHiddenGroupsAtom, [
+      `project:${docsProject.id}`,
+      "section:sec_story_review",
+      `machine:${HOST_IDS.remote}`,
+    ]);
 
     setIsModeSeeded(true);
 
@@ -479,13 +606,21 @@ function OrganizationSidebar({
   return (
     <Provider store={store}>
       <QueryClientProvider client={queryClient}>
-        <SidebarFrame>
-          {isModeSeeded ? (
-            <LoadedSidebar hosts={hosts} navigation={navigation} />
+        {fullSidebar ? (
+          isModeSeeded ? (
+            <LoadedSidebar hosts={hosts} navigation={navigation} fullSidebar />
           ) : (
             <LoadingSidebar />
-          )}
-        </SidebarFrame>
+          )
+        ) : (
+          <SidebarFrame>
+            {isModeSeeded ? (
+              <LoadedSidebar hosts={hosts} navigation={navigation} />
+            ) : (
+              <LoadingSidebar />
+            )}
+          </SidebarFrame>
+        )}
       </QueryClientProvider>
     </Provider>
   );
@@ -494,14 +629,15 @@ function OrganizationSidebar({
 export function Overview() {
   return (
     <StoryCard labelWidth="120px">
+      <StoryRow
+        label="interactive"
+        hint="Review or Planning → Rename. Use a section menu’s Organize options to switch to projects or machines."
+      >
+        <RenameSidebar />
+      </StoryRow>
       <StoryRow label="loading">
         <SidebarFrame>
           <LoadingSidebar />
-        </SidebarFrame>
-      </StoryRow>
-      <StoryRow label="loaded">
-        <SidebarFrame>
-          <LoadedSidebar />
         </SidebarFrame>
       </StoryRow>
     </StoryCard>
@@ -511,10 +647,7 @@ export function Overview() {
 export function PluginPages() {
   return (
     <StoryCard labelWidth="120px">
-      <StoryRow
-        label="expanded"
-        hint="all shipped plugin navigation above the real thread list"
-      >
+      <StoryRow label="sidebar">
         <LoadedSidebarWithPluginPages />
       </StoryRow>
     </StoryCard>
@@ -538,7 +671,7 @@ export function OrganizationModes() {
           navigation={emptySidebarNavigation}
         />
       </StoryRow>
-      <StoryRow label="Manually">
+      <StoryRow label="Custom">
         <OrganizationSidebar
           mode="chronological"
           navigation={loadedSidebarNavigation}
@@ -628,11 +761,14 @@ export function SplitPageLabels() {
         >
           <div className="w-full max-w-[320px] rounded-md bg-sidebar py-2 text-sidebar-foreground">
             <div className="px-2">
-              <ProjectListActionButtons
-                splitEnabled
-                newThreadSplit={{ openInSplit: noop }}
-                onNewChat={noop}
-              />
+              <div className="space-y-1">
+                <ProjectListNewThreadAction
+                  splitEnabled
+                  newThreadSplit={{ openInSplit: noop }}
+                  onNewChat={noop}
+                />
+                <ProjectListSearchThreadsAction />
+              </div>
             </div>
             <PluginNavSidebarItems splitEnabled />
           </div>

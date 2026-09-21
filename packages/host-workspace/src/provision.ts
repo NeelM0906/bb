@@ -3,6 +3,7 @@ import { lstat, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { ProvisioningTranscriptEntry, WorkspaceStatus } from "@bb/domain";
+import { pathExists } from "@bb/process-utils";
 import type {
   CommitOptions,
   CommitResult,
@@ -23,7 +24,6 @@ import type {
 import {
   detectGitRepo,
   detectLinkedWorktree,
-  pathExists,
   readDefaultBranch,
   WorkspaceError,
   type GitProcessOptions,
@@ -83,10 +83,8 @@ export interface HostWorkspace {
     action: PullRequestActionOptions,
     options?: GitHostCliOptions,
   ): Promise<void>;
-  listFiles(): Promise<string[]>;
 
   commit(options: CommitOptions): Promise<CommitResult>;
-  reset(): Promise<void>;
 }
 
 class ProvisionedHostWorkspace implements HostWorkspace {
@@ -179,16 +177,8 @@ class ProvisionedHostWorkspace implements HostWorkspace {
     return this.ws.runPullRequestAction(action, options);
   }
 
-  listFiles(): Promise<string[]> {
-    return this.ws.listFiles();
-  }
-
   commit(options: CommitOptions): Promise<CommitResult> {
     return this.ws.commit(options);
-  }
-
-  reset(): Promise<void> {
-    return this.ws.reset();
   }
 }
 

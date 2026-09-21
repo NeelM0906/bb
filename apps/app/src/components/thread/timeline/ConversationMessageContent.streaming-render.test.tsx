@@ -95,6 +95,25 @@ describe("assistant streaming Markdown rendering", () => {
     },
   );
 
+  it.each([
+    ["**Live bold and `live code", ["strong"]],
+    ["__Live bold and `live code", ["strong"]],
+    ["*Live italic and `live code", ["em"]],
+    ["_Live italic and `live code", ["em"]],
+    ["***Live bold italic and `live code", ["strong", "em"]],
+  ])(
+    "keeps repaired inline code inside outer emphasis: %s",
+    (source, outer) => {
+      const view = render(assistant(source));
+      for (const selector of outer) {
+        expect(
+          view.container.querySelector(`${selector} code`)?.textContent,
+        ).toBe("live code");
+      }
+      expect(view.container.textContent).not.toMatch(/[*_]/u);
+    },
+  );
+
   it("shows incomplete links as text and mounts links only after their destination completes", () => {
     const view = render(assistant("Read [the docs](https://example"));
     expect(screen.queryByRole("link")).toBeNull();
@@ -107,14 +126,14 @@ describe("assistant streaming Markdown rendering", () => {
     ).toBe("https://example.com");
   });
 
-  it("does not load an incomplete image and loads the completed local image", () => {
+  it("does not resolve an incomplete image and resolves the completed local image", () => {
     const view = render(assistant("Image ![preview](/workspace/preview"));
     expect(screen.queryByRole("img")).toBeNull();
     expect(view.container.textContent).not.toContain("![preview]");
 
     view.rerender(assistant("Image ![preview](/workspace/preview.png)"));
     expect(
-      screen.getByRole("img", { name: "preview" }).getAttribute("src"),
+      screen.getByRole("img", { name: "preview" }).getAttribute("data-markdown-image-src"),
     ).toBe(
       "/api/v1/threads/thr_stream/host-files/content?path=%2Fworkspace%2Fpreview.png",
     );
@@ -170,6 +189,40 @@ describe("assistant streaming Markdown rendering", () => {
     expect(
       screen.getByRole("link", { name: "Related thread" }).getAttribute("href"),
     ).toBe(`/projects/${mentionedThread.projectId}/threads/thr_mentioned`);
+  });
+
+  it("settled code block DOM survives boundary advances", () => {
+    const source = "Intro.\n\n```ts\nconst a = 1;\n```\n\nA.\n\nB";
+    const view = render(assistant(source));
+    const markdownPreviewParagraphs = () =>
+      Array.from(
+        view.container.querySelectorAll("[data-markdown-preview]"),
+        (preview) =>
+          Array.from(preview.querySelectorAll("p"), (p) => p.textContent),
+      );
+    expect(markdownPreviewParagraphs()).toEqual([["Intro."], ["A.", "B"]]);
+    const line = view.container.querySelector("pre code span.sh__line");
+    const code = line?.closest("code");
+    if (!line || !code) {
+      throw new Error("Expected a highlighted settled code block");
+    }
+    const observer = new MutationObserver(() => {});
+    observer.observe(code, {
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+
+    view.rerender(assistant(`${source}\n\nC.\n\nD`));
+
+    const mutations = observer.takeRecords();
+    observer.disconnect();
+    expect(markdownPreviewParagraphs()).toEqual([
+      ["Intro.", "A.", "B"],
+      ["C.", "D"],
+    ]);
+    expect(mutations).toHaveLength(0);
+    expect(line.isConnected).toBe(true);
   });
 
   it("copies original message text while the rendered tail is repaired", async () => {

@@ -1,8 +1,9 @@
 import type { RenderProcessGoneDetails, WebContentsView } from "electron";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 import {
@@ -12,12 +13,14 @@ import {
 } from "@bb/host-daemon-contract";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BbDesktopBrowserViewBounds } from "@bb/desktop-contract";
+import { resolveDesktopBrowserAppCommand } from "../src/desktop-browser-shortcuts.js";
 import { createDesktopBrowserCdpAdapter } from "../src/desktop-browser-cdp-adapter.js";
 import { createDesktopBrowserBroker } from "../src/desktop-browser-broker.js";
 import { createDesktopBrowserBrokerClient } from "../src/desktop-browser-broker-client.js";
 import { captureDesktopBrowserPage } from "../src/desktop-browser-capture.js";
 import type { DesktopBrowserCdpPage } from "../src/desktop-browser-cdp.js";
 import {
+  browserPageEvaluationSource,
   createDesktopBrowserViewManager as createProductionDesktopBrowserViewManager,
   isAllowedBrowserPermission,
   type CreateDesktopBrowserViewManagerArgs,
@@ -28,6 +31,11 @@ import {
   type DesktopBrowserHostWebContentsPayload,
   type DesktopBrowserHostWindow,
 } from "../src/desktop-browser-view.js";
+import {
+  BB_DESKTOP_BROWSER_GUEST_MESSAGE_CHANNEL,
+  BB_DESKTOP_BROWSER_PAGE_MESSAGE_CHANNEL,
+  BB_DESKTOP_BROWSER_PAGE_WORLD_ID,
+} from "../src/desktop-browser-ipc.js";
 
 function createDesktopBrowserViewManager(
   args: Partial<CreateDesktopBrowserViewManagerArgs> = {},
@@ -35,6 +43,7 @@ function createDesktopBrowserViewManager(
   return createProductionDesktopBrowserViewManager({
     dispatchAppCommand: () => undefined,
     focusHostWebContents: () => undefined,
+    pagePreloadPath: null,
     resolveAppCommand: () => null,
     ...args,
   });
@@ -513,6 +522,49 @@ const electronMock = vi.hoisted(() => {
 
     stop(): void {}
 
+    public readonly executeJavaScriptCalls: string[] = [];
+    public readonly isolatedWorldCalls: Array<{
+      code: string;
+      worldId: number;
+    }> = [];
+    public executeJavaScriptResult: unknown = { ok: true, value: null };
+    private readonly ipcListeners = new Map<
+      string,
+      Array<(event: FakeWebContentsEvent, payload: unknown) => void>
+    >();
+    public readonly ipc = {
+      on: (
+        channel: string,
+        listener: (event: FakeWebContentsEvent, payload: unknown) => void,
+      ): void => {
+        this.ipcListeners.set(channel, [
+          ...(this.ipcListeners.get(channel) ?? []),
+          listener,
+        ]);
+      },
+    };
+
+    emitIpc(channel: string, payload: unknown): void {
+      for (const listener of this.ipcListeners.get(channel) ?? []) {
+        listener(fakeWebContentsEvent, payload);
+      }
+    }
+
+    executeJavaScript(code: string): Promise<unknown> {
+      this.executeJavaScriptCalls.push(code);
+      return Promise.resolve(this.executeJavaScriptResult);
+    }
+
+    executeJavaScriptInIsolatedWorld(
+      worldId: number,
+      scripts: Array<{ code: string }>,
+    ): Promise<unknown> {
+      for (const script of scripts) {
+        this.isolatedWorldCalls.push({ code: script.code, worldId });
+      }
+      return Promise.resolve(this.executeJavaScriptResult);
+    }
+
     emitDidFailLoad(args: FakeDidFailLoadArgs): void {
       for (const listener of this.listeners["did-fail-load"]) {
         listener(
@@ -641,7 +693,9 @@ const electronMock = vi.hoisted(() => {
     public visible = false;
 
     constructor(
-      public readonly options: { webPreferences: { partition: string } },
+      public readonly options: {
+        webPreferences: { partition: string; preload?: string };
+      },
     ) {
       this.webContents = new FakeWebContents(nextWebContentsId);
       nextWebContentsId += 1;
@@ -742,7 +796,9 @@ const electronMock = vi.hoisted(() => {
       }
     },
     FakeWebContentsView: class extends FakeWebContentsView {
-      constructor(options: { webPreferences: { partition: string } }) {
+      constructor(options: {
+        webPreferences: { partition: string; preload?: string };
+      }) {
         super(options);
         fakeViews.push(this);
       }
@@ -866,6 +922,7 @@ interface AttachBrowserTabArgs {
   hostWindow: FakeHostWindow;
   manager: DesktopBrowserViewManager;
   tabId: string;
+  threadId?: string;
   url: string;
 }
 
@@ -873,7 +930,7 @@ function attachBrowserTab(args: AttachBrowserTabArgs): void {
   args.manager.attach({
     hostWindow: args.hostWindow,
     request: {
-      threadId: "thread-1",
+      threadId: args.threadId ?? "thread-1",
       tabId: args.tabId,
       url: args.url,
       bounds: { x: 100, y: 50, width: 500, height: 350 },
@@ -893,7 +950,189 @@ function requireFakeView(
   return view;
 }
 
-function createRendererRecoveryFixture(webContentsId: number) {
+describe("browser page scripts", () => {
+  it("awaits JSON values and binds the isolated bridge to the request channel", async () => {
+    const posted: Array<{ channel: string; data: unknown }> = [];
+    const isolated = await runInNewContext(
+      browserPageEvaluationSource({
+        tabId: "browser:a",
+        world: "isolated",
+        channel: "agent-annotations",
+        expression:
+          "(bb.postMessage({ step: 1 }), Promise.resolve({ title: 'ok', skipped: undefined })) // trailing comment",
+      }),
+      {
+        __bbBrowserPage: {
+          postMessage: (channel: string, data: unknown) => {
+            posted.push({ channel, data });
+          },
+        },
+      },
+    );
+    expect(isolated).toEqual({ ok: true, value: { title: "ok" } });
+    expect(posted).toEqual([
+      { channel: "agent-annotations", data: { step: 1 } },
+    ]);
+
+    const main = await runInNewContext(
+      browserPageEvaluationSource({
+        tabId: "browser:a",
+        world: "main",
+        channel: "agent-annotations",
+        expression: "bb === null ? missingPageValue.read : 1",
+      }),
+      {},
+    );
+    expect(main.ok).toBe(false);
+    expect(String(main.error)).toContain("missingPageValue is not defined");
+  });
+
+  it("routes evaluation to the requested world and rejects malformed results", async () => {
+    const manager = createDesktopBrowserViewManager({
+      pagePreloadPath: "/app/dist/browser-page-preload.cjs",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 91,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:a",
+      url: "https://example.com/",
+    });
+    const view = requireFakeView(0);
+    expect(view.options.webPreferences.preload).toBe(
+      "/app/dist/browser-page-preload.cjs",
+    );
+
+    view.webContents.executeJavaScriptResult = { ok: true, value: 3 };
+    await expect(
+      manager.evaluate({
+        hostWindow,
+        request: {
+          tabId: "browser:a",
+          expression: "1 + 2",
+          world: "main",
+          channel: "agent-annotations",
+        },
+      }),
+    ).resolves.toEqual({ ok: true, value: 3 });
+    expect(view.webContents.executeJavaScriptCalls).toHaveLength(1);
+    expect(view.webContents.isolatedWorldCalls).toEqual([]);
+
+    view.webContents.executeJavaScriptResult = undefined;
+    await expect(
+      manager.evaluate({
+        hostWindow,
+        request: {
+          tabId: "browser:a",
+          expression: "document.title",
+          world: "isolated",
+          channel: "agent-annotations",
+        },
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: "Browser page script returned no result",
+    });
+    expect(
+      view.webContents.isolatedWorldCalls.map((call) => call.worldId),
+    ).toEqual([BB_DESKTOP_BROWSER_PAGE_WORLD_ID]);
+
+    await expect(
+      manager.evaluate({
+        hostWindow,
+        request: {
+          tabId: "browser:missing",
+          expression: "1",
+          world: "main",
+          channel: "agent-annotations",
+        },
+      }),
+    ).resolves.toEqual({ ok: false, error: "Browser tab is not available" });
+  });
+
+  it("forwards only well-formed guest messages to the owning host window", () => {
+    const manager = createDesktopBrowserViewManager({
+      pagePreloadPath: "/app/dist/browser-page-preload.cjs",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 92,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:a",
+      url: "https://example.com/",
+    });
+    const view = requireFakeView(0);
+
+    view.webContents.emitIpc(BB_DESKTOP_BROWSER_GUEST_MESSAGE_CHANNEL, {
+      channel: "agent-annotations",
+      data: { type: "state", active: true },
+    });
+    view.webContents.emitIpc(BB_DESKTOP_BROWSER_GUEST_MESSAGE_CHANNEL, {
+      channel: "",
+      data: 1,
+    });
+    view.webContents.emitIpc(BB_DESKTOP_BROWSER_GUEST_MESSAGE_CHANNEL, {
+      channel: "agent-annotations",
+      data: { text: "a".repeat(1_000_001) },
+    });
+
+    const pushes = hostWindow.webContents.sentChannels.flatMap(
+      (channel, index) =>
+        channel === BB_DESKTOP_BROWSER_PAGE_MESSAGE_CHANNEL
+          ? [hostWindow.webContents.sentPayloads[index]]
+          : [],
+    );
+    expect(pushes).toEqual([
+      {
+        tabId: "browser:a",
+        channel: "agent-annotations",
+        data: { type: "state", active: true },
+      },
+    ]);
+  });
+
+  it("keeps isolated page scripts unavailable without the page preload", async () => {
+    const manager = createDesktopBrowserViewManager();
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 93,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:a",
+      url: "https://example.com/",
+    });
+    const view = requireFakeView(0);
+    expect(view.options.webPreferences.preload).toBeUndefined();
+    await expect(
+      manager.evaluate({
+        hostWindow,
+        request: {
+          tabId: "browser:a",
+          expression: "1",
+          world: "isolated",
+          channel: "agent-annotations",
+        },
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: "Browser page scripts are not available",
+    });
+    expect(view.webContents.isolatedWorldCalls).toEqual([]);
+  });
+});
+
+function createRendererRecoveryFixture(
+  webContentsId: number,
+  threadId = "thread-1",
+) {
   const manager = createDesktopBrowserViewManager({
     partition: "persist:test",
   });
@@ -904,6 +1143,7 @@ function createRendererRecoveryFixture(webContentsId: number) {
   attachBrowserTab({
     manager,
     hostWindow,
+    threadId,
     tabId: "browser:a",
     url: "https://example.com/original",
   });
@@ -1407,144 +1647,173 @@ describe("DesktopBrowserCdpAdapter", () => {
 });
 
 describe("DesktopBrowserViewManager", () => {
-  it("preserves same-server reconnect tabs but clears them before a different server registration", async () => {
-    const { manager, hostWindow } = createRendererRecoveryFixture(91);
-    const broker = createDesktopBrowserBroker({
-      manager,
-      product: "Chrome/test",
-    });
-    broker.registerWindow(
-      Object.assign(hostWindow, {
-        focus() {},
-        show() {},
-        restore() {},
-        isMinimized: () => false,
-      }),
-    );
-    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-    await once(server, "listening");
-    const address = server.address();
-    if (typeof address === "string" || address === null)
-      throw new Error("Expected TCP address");
-    const dataDir = await mkdtemp(join(tmpdir(), "bb-native-origin-"));
-    const frameSchema = z.union([
-      desktopBrowserRegistrationSchema,
-      desktopBrowserChangedSchema,
-    ]);
-    const messages: Array<{
-      peer: number;
-      frame: z.infer<typeof frameSchema>;
-    }> = [];
-    let peers = 0;
-    server.on("connection", (socket) => {
-      const peer = ++peers;
-      socket.on("message", (data) =>
-        messages.push({
-          peer,
-          frame: frameSchema.parse(JSON.parse(data.toString())),
-        }),
+  it.each(["local", "enrolled"])(
+    "preserves same-server reconnect tabs but clears them before a different server registration (%s daemon)",
+    async (daemon) => {
+      const threadId = "thr_23456789ab";
+      const newServerThreadId = "thr_3456789abc";
+      const { manager, hostWindow } = createRendererRecoveryFixture(
+        91,
+        threadId,
       );
-    });
-    let serverUrl = "https://first.example";
-    const writeDescriptor = () =>
-      writeFile(
-        join(dataDir, DESKTOP_BROWSER_BROKER_DESCRIPTOR_FILE),
-        JSON.stringify({
-          version: 1,
-          hostId: "host-1",
-          serverUrl,
-          url: `ws://127.0.0.1:${address.port}/desktop-browser`,
-          token: "a".repeat(64),
-        }),
-        { mode: 0o600 },
-      );
-    await writeDescriptor();
-    const client = createDesktopBrowserBrokerClient({
-      broker,
-      dataDir,
-      getServerUrl: () => serverUrl,
-    });
-    const hasOriginalTab = (peer: number) =>
-      messages.some(
-        (message) =>
-          message.peer === peer &&
-          message.frame.type === "desktop-browser.changed" &&
-          message.frame.tabs.some((tab) => tab.tabId === "browser:a"),
-      );
-    try {
-      await vi.waitFor(() => expect(hasOriginalTab(1)).toBe(true));
-      client.reconnect();
-      await vi.waitFor(() => expect(hasOriginalTab(2)).toBe(true));
-      expect(
-        manager.listTabs({ hostWebContentsId: 91, threadId: "thread-1" }),
-      ).toHaveLength(1);
-      const target = broker.getTarget(91);
-      if (!target) throw new Error("Expected connected desktop");
-      await broker.execute({
-        type: "desktop.browser.acquire_control",
-        instanceId: target.instanceId,
-        generation: target.generation,
-        threadId: "thread-1",
-        leaseId: "origin-lease",
-        tabIds: ["browser:a"],
-        controllerLabel: "Test",
-        expiresAt: Date.now() + 60_000,
+      const broker = createDesktopBrowserBroker({
+        manager,
+        product: "Chrome/test",
       });
-      serverUrl = "https://second.example";
+      broker.registerWindow(
+        Object.assign(hostWindow, {
+          focus() {},
+          show() {},
+          restore() {},
+          isMinimized: () => false,
+        }),
+      );
+      const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+      await once(server, "listening");
+      const address = server.address();
+      if (typeof address === "string" || address === null)
+        throw new Error("Expected TCP address");
+      const dataDir = await mkdtemp(join(tmpdir(), "bb-native-origin-"));
+      const frameSchema = z.union([
+        desktopBrowserRegistrationSchema,
+        desktopBrowserChangedSchema,
+      ]);
+      const messages: Array<{
+        peer: number;
+        frame: z.infer<typeof frameSchema>;
+      }> = [];
+      let peers = 0;
+      server.on("connection", (socket) => {
+        const peer = ++peers;
+        socket.on("message", (data) =>
+          messages.push({
+            peer,
+            frame: frameSchema.parse(JSON.parse(data.toString())),
+          }),
+        );
+      });
+      let serverUrl = "https://first.example";
+      if (daemon === "enrolled") {
+        await writeFile(
+          join(dataDir, DESKTOP_BROWSER_BROKER_DESCRIPTOR_FILE),
+          JSON.stringify({
+            version: 1,
+            hostId: "local-host",
+            serverUrl: "http://127.0.0.1:38886",
+            url: `ws://127.0.0.1:${address.port}/desktop-browser`,
+            token: "b".repeat(64),
+          }),
+          { mode: 0o600 },
+        );
+      }
+      const writeDescriptor = async () => {
+        const directory =
+          daemon === "local"
+            ? dataDir
+            : join(dataDir, ".bb-machines", new URL(serverUrl).host);
+        await mkdir(directory, { recursive: true });
+        await writeFile(
+          join(directory, DESKTOP_BROWSER_BROKER_DESCRIPTOR_FILE),
+          JSON.stringify({
+            version: 1,
+            hostId: "host-1",
+            serverUrl,
+            url: `ws://127.0.0.1:${address.port}/desktop-browser`,
+            token: "a".repeat(64),
+          }),
+          { mode: 0o600 },
+        );
+      };
       await writeDescriptor();
-      client.reconnect();
-      expect(
-        manager.listTabs({ hostWebContentsId: 91, threadId: null }),
-      ).toEqual([]);
-      expect(broker.getControl(91, "browser:a")).toBeNull();
-      await vi.waitFor(() =>
-        expect(
-          messages.some(
-            ({ peer, frame }) =>
-              peer === 3 &&
-              frame.type === "register" &&
-              frame.serverUrl === serverUrl,
-          ),
-        ).toBe(true),
-      );
-      manager.attach({
-        hostWindow,
-        request: {
-          tabId: "new-server-tab",
-          threadId: "thread-new",
-          url: "about:blank",
-          bounds: { x: 0, y: 0, width: 640, height: 400 },
-          visible: false,
-        },
+      const client = createDesktopBrowserBrokerClient({
+        broker,
+        dataDir,
+        homeDir: dataDir,
+        getServerUrl: () => serverUrl,
       });
-      await vi.waitFor(() =>
+      const hasOriginalTab = (peer: number) =>
+        messages.some(
+          (message) =>
+            message.peer === peer &&
+            message.frame.type === "desktop-browser.changed" &&
+            message.frame.tabs.some((tab) => tab.tabId === "browser:a"),
+        );
+      try {
+        await vi.waitFor(() => expect(hasOriginalTab(1)).toBe(true));
+        client.reconnect();
+        await vi.waitFor(() => expect(hasOriginalTab(2)).toBe(true));
         expect(
-          messages.some(
-            ({ peer, frame }) =>
-              peer === 3 &&
-              frame.type === "desktop-browser.changed" &&
-              frame.threadId === "thread-new",
-          ),
-        ).toBe(true),
-      );
-      expect(
-        messages
-          .filter(({ peer }) => peer === 3)
-          .every(
-            ({ frame }) =>
-              frame.type === "register" || frame.threadId === "thread-new",
-          ),
-      ).toBe(true);
-      expect(hasOriginalTab(3)).toBe(false);
-    } finally {
-      client.stop();
-      broker.dispose();
-      manager.destroyAll();
-      for (const socket of server.clients) socket.terminate();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      await rm(dataDir, { recursive: true, force: true });
-    }
-  });
+          manager.listTabs({ hostWebContentsId: 91, threadId }),
+        ).toHaveLength(1);
+        const target = broker.getTarget(91);
+        if (!target) throw new Error("Expected connected desktop");
+        await broker.execute({
+          type: "desktop.browser.acquire_control",
+          instanceId: target.instanceId,
+          generation: target.generation,
+          threadId,
+          leaseId: "origin-lease",
+          tabIds: ["browser:a"],
+          controllerLabel: "Test",
+          expiresAt: Date.now() + 60_000,
+        });
+        serverUrl = "https://second.example";
+        await writeDescriptor();
+        client.reconnect();
+        expect(
+          manager.listTabs({ hostWebContentsId: 91, threadId: null }),
+        ).toEqual([]);
+        expect(broker.getControl(91, "browser:a")).toBeNull();
+        await vi.waitFor(() =>
+          expect(
+            messages.some(
+              ({ peer, frame }) =>
+                peer === 3 &&
+                frame.type === "register" &&
+                frame.serverUrl === serverUrl,
+            ),
+          ).toBe(true),
+        );
+        manager.attach({
+          hostWindow,
+          request: {
+            tabId: "new-server-tab",
+            threadId: newServerThreadId,
+            url: "about:blank",
+            bounds: { x: 0, y: 0, width: 640, height: 400 },
+            visible: false,
+          },
+        });
+        await vi.waitFor(() =>
+          expect(
+            messages.some(
+              ({ peer, frame }) =>
+                peer === 3 &&
+                frame.type === "desktop-browser.changed" &&
+                frame.threadId === newServerThreadId,
+            ),
+          ).toBe(true),
+        );
+        expect(
+          messages
+            .filter(({ peer }) => peer === 3)
+            .every(
+              ({ frame }) =>
+                frame.type === "register" ||
+                frame.threadId === newServerThreadId,
+            ),
+        ).toBe(true);
+        expect(hasOriginalTab(3)).toBe(false);
+      } finally {
+        client.stop();
+        broker.dispose();
+        manager.destroyAll();
+        for (const socket of server.clients) socket.terminate();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("captures an unpainted hidden page without detaching another controller", async () => {
     const { manager, view } = createRendererRecoveryFixture(91);
@@ -1582,7 +1851,7 @@ describe("DesktopBrowserViewManager", () => {
     }
   });
 
-  it("reveals and focuses pages created through a controlled CDP connection", async () => {
+  it("requests reveal without activating the window for pages created through a controlled CDP connection", async () => {
     const { manager, hostWindow } = createRendererRecoveryFixture(91);
     const focus = vi.fn();
     const show = vi.fn();
@@ -1640,9 +1909,21 @@ describe("DesktopBrowserViewManager", () => {
           params: { url: "https://example.com/new" },
         }),
       );
-      await vi.waitFor(() => expect(focus).toHaveBeenCalledOnce());
-      expect(show).toHaveBeenCalledOnce();
-      expect(restore).toHaveBeenCalledOnce();
+      await vi.waitFor(() =>
+        expect(hostWindow.webContents.sentPayloads).toContainEqual(
+          expect.objectContaining({
+            threadId: "thread-1",
+            desktopTarget: {
+              hostId: "host-1",
+              instanceId: scope.instanceId,
+              generation: scope.generation,
+            },
+          }),
+        ),
+      );
+      expect(focus).not.toHaveBeenCalled();
+      expect(show).not.toHaveBeenCalled();
+      expect(restore).not.toHaveBeenCalled();
       const created = manager
         .listTabs({ hostWebContentsId: 91, threadId: "thread-1" })
         .find((tab) => tab.url === "https://example.com/new");
@@ -2085,6 +2366,62 @@ describe("DesktopBrowserViewManager", () => {
     expect(snapshots).toHaveLength(4);
   });
 
+  it.each(["visibility", "destroyed", "detach"] as const)(
+    "tolerates a missing guest during %s",
+    (operation) => {
+      const { manager, hostWindow, view } = createRendererRecoveryFixture(94);
+      const guest = view.webContents;
+      if (operation !== "destroyed") guest.destroyed = true;
+      Object.defineProperty(view, "webContents", { get: () => undefined });
+      expect(() => {
+        if (operation === "visibility") {
+          manager.setVisible({
+            hostWindow,
+            request: { tabId: "browser:a", visible: false },
+          });
+        } else if (operation === "destroyed") {
+          guest.close();
+        } else {
+          manager.detach({ hostWindow, tabId: "browser:a" });
+        }
+      }).not.toThrow();
+      manager.destroyAll();
+    },
+  );
+
+  it.each(["guest", "releaseWindow", "destroyAll"] as const)(
+    "cleans up through %s after the host is destroyed",
+    (operation) => {
+      const { manager, hostWindow, view } = createRendererRecoveryFixture(91);
+      const onTabsChanged = vi.fn();
+      manager.subscribeAutomationTabs(onTabsChanged);
+      hostWindow.destroyed = true;
+      hostWindow.webContents.destroyed = true;
+      Object.defineProperty(hostWindow.webContents, "id", {
+        get: () => {
+          throw new TypeError("Object has been destroyed");
+        },
+      });
+
+      expect(() => {
+        if (operation === "guest") view.webContents.close();
+        if (operation === "releaseWindow") manager.releaseWindow(91);
+        if (operation === "destroyAll") manager.destroyAll();
+      }).not.toThrow();
+      expect(
+        manager.getAutomationTabs({
+          hostWebContentsId: 91,
+          threadId: "thread-1",
+        }),
+      ).toEqual([]);
+      expect(view.webContents.isDestroyed()).toBe(true);
+      expect(onTabsChanged).toHaveBeenCalledTimes(1);
+      expect(hostWindow.contentView.removedViews).toEqual([]);
+      manager.destroyAll();
+      expect(onTabsChanged).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it.each(["detach", "releaseWindow", "destroyAll", "destroyed"] as const)(
     "notifies once after removing a native target through %s",
     (operation) => {
@@ -2154,36 +2491,101 @@ describe("DesktopBrowserViewManager", () => {
     expect(dispatchAppCommand).toHaveBeenCalledTimes(1);
   });
 
-  it("takes host focus for the find command so the find bar can receive typing", () => {
-    const dispatchAppCommand = vi.fn();
-    const focusHostWebContents = vi.fn();
-    const manager = createDesktopBrowserViewManager({
-      dispatchAppCommand,
-      focusHostWebContents,
-      partition: "persist:test",
-      resolveAppCommand: (input) =>
-        input.key === "f" && input.metaKey ? "browser.find" : null,
-    });
-    const hostWindow = new FakeHostWindow({
-      contentBounds: { width: 700, height: 450 },
-      webContentsId: 51,
-    });
+  it.each([
+    "browser.find",
+    "panel.previousTab",
+    "panel.nextTab",
+    "pane.focus.previous",
+    "pane.focus.next",
+  ] as const)(
+    "takes host focus for %s so the selected target can receive typing",
+    (command) => {
+      const dispatchAppCommand = vi.fn();
+      const focusHostWebContents = vi.fn();
+      const manager = createDesktopBrowserViewManager({
+        dispatchAppCommand,
+        focusHostWebContents,
+        partition: "persist:test",
+        resolveAppCommand: (input) =>
+          input.key === "f" && input.metaKey ? command : null,
+      });
+      const hostWindow = new FakeHostWindow({
+        contentBounds: { width: 700, height: 450 },
+        webContentsId: 51,
+      });
 
-    attachBrowserTab({
-      manager,
-      hostWindow,
-      tabId: "browser:a",
-      url: "https://example.com",
-    });
-    const webContents = requireFakeView(0).webContents;
+      attachBrowserTab({
+        manager,
+        hostWindow,
+        tabId: "browser:a",
+        url: "https://example.com",
+      });
+      const webContents = requireFakeView(0).webContents;
 
-    expect(webContents.emitBeforeInput({ key: "f", meta: true })).toBe(true);
-    expect(focusHostWebContents).toHaveBeenCalledWith(51);
-    expect(dispatchAppCommand).toHaveBeenCalledWith({
-      command: "browser.find",
-      hostWebContentsId: 51,
-    });
-  });
+      expect(webContents.emitBeforeInput({ key: "f", meta: true })).toBe(true);
+      expect(focusHostWebContents).toHaveBeenCalledWith(51);
+      expect(dispatchAppCommand).toHaveBeenCalledWith({
+        command,
+        hostWebContentsId: 51,
+      });
+    },
+  );
+
+  it.each(["pane.focus.previous", "pane.focus.next"] as const)(
+    "leaves native page focus and input untouched when %s is unavailable",
+    (command) => {
+      let splitNavigationEnabled = false;
+      const dispatchAppCommand = vi.fn();
+      const focusHostWebContents = vi.fn();
+      const manager = createDesktopBrowserViewManager({
+        dispatchAppCommand,
+        focusHostWebContents,
+        partition: "persist:test",
+        resolveAppCommand: (input, hostWebContentsId) => resolveDesktopBrowserAppCommand({
+          input,
+          isMac: true,
+          splitNavigationEnabled: splitNavigationEnabled && hostWebContentsId === 51,
+          keybindings: [{
+            command,
+            desktopOnly: false,
+            shortcut: {
+              key: "ArrowRight", mod: true, control: true,
+              meta: false, alt: false, shift: false,
+            },
+            when: { all: ["mainSurface", "splitActive"], none: ["modalOpen"] },
+          }],
+        }),
+      });
+      const hostWindow = new FakeHostWindow({
+        contentBounds: { width: 700, height: 450 },
+        webContentsId: 51,
+      });
+      attachBrowserTab({
+        manager, hostWindow, tabId: "browser:a", url: "https://example.com",
+      });
+      const webContents = requireFakeView(0).webContents;
+
+      expect(webContents.emitBeforeInput({
+        key: "ArrowRight", meta: true, control: true,
+      })).toBe(false);
+      expect(focusHostWebContents).not.toHaveBeenCalled();
+      expect(dispatchAppCommand).not.toHaveBeenCalled();
+
+      splitNavigationEnabled = true;
+      expect(webContents.emitBeforeInput({
+        key: "ArrowRight", meta: true, control: true,
+      })).toBe(true);
+      expect(focusHostWebContents).toHaveBeenCalledWith(51);
+      expect(dispatchAppCommand).toHaveBeenCalledWith({ command, hostWebContentsId: 51 });
+
+      splitNavigationEnabled = false;
+      expect(webContents.emitBeforeInput({
+        key: "ArrowRight", meta: true, control: true,
+      })).toBe(false);
+      expect(focusHostWebContents).toHaveBeenCalledTimes(1);
+      expect(dispatchAppCommand).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("drives webContents find-in-page and relays results to the host renderer", () => {
     const manager = createDesktopBrowserViewManager({

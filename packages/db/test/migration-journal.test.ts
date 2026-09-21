@@ -38,19 +38,28 @@ interface MigrationSnapshot {
   prevId: string;
 }
 
-function snapshotPathFor(idx: number): string {
+function snapshotPathFor(tag: string): string {
+  if (tag === "0115_workspace_safety") {
+    return resolve(
+      __dirname,
+      "..",
+      "drizzle",
+      "fork-history",
+      "0115_workspace_safety_snapshot.json",
+    );
+  }
   return resolve(
     __dirname,
     "..",
     "drizzle",
     "meta",
-    `${String(idx).padStart(4, "0")}_snapshot.json`,
+    `${tag.split("_")[0]}_snapshot.json`,
   );
 }
 
-function readSnapshot(idx: number): MigrationSnapshot {
+function readSnapshot(tag: string): MigrationSnapshot {
   return JSON.parse(
-    fs.readFileSync(snapshotPathFor(idx), "utf-8"),
+    fs.readFileSync(snapshotPathFor(tag), "utf-8"),
   ) as MigrationSnapshot;
 }
 
@@ -141,19 +150,23 @@ describe("migration journal integrity", () => {
     const { entries } = readJournal();
 
     const missing = entries
-      .filter((entry) => !fs.existsSync(snapshotPathFor(entry.idx)))
+      .filter((entry) => !fs.existsSync(snapshotPathFor(entry.tag)))
       .map((entry) => entry.tag);
 
     expect(missing).toEqual([]);
   });
 
-  it("has an unbroken snapshot prevId chain in journal order", () => {
+  it("has an unbroken active snapshot chain and a preserved fork branch", () => {
     const entries = [...readJournal().entries].sort((a, b) => a.idx - b.idx);
 
     const violations: string[] = [];
     let previousSnapshotId: string | null = null;
     for (const entry of entries) {
-      const snapshot = readSnapshot(entry.idx);
+      const snapshot = readSnapshot(entry.tag);
+      if (entry.tag === "0115_workspace_safety") {
+        expect(snapshot.prevId).toBe(readSnapshot("0114_public_iron_lad").id);
+        continue;
+      }
       if (
         previousSnapshotId !== null &&
         snapshot.prevId !== previousSnapshotId
