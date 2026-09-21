@@ -1,3 +1,4 @@
+import { ScopedMachineEnvironmentSettings } from "@/components/settings/MachineEnvironmentSettings";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import "@bb/shared-ui/icon-extended";
@@ -9,6 +10,7 @@ import {
 import { Button } from "@bb/shared-ui/button";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
+import { Switch } from "@bb/shared-ui/switch";
 import { Pill } from "@bb/shared-ui/pill";
 import { ResourceOverflowMenu } from "@bb/shared-ui/resource-list";
 import { ProjectPathDialog } from "@/components/dialogs/ProjectPathDialog";
@@ -36,9 +38,11 @@ import {
 import { PageShell } from "@/components/ui/page-shell.js";
 import {
   SettingsBadge,
+  SettingsDetailRow,
   SettingsRow,
   SettingsRowList,
   SettingsSection,
+  SettingsWithControl,
 } from "@/components/ui/settings-section";
 import {
   useAddLocalProjectSource,
@@ -51,7 +55,7 @@ import {
   isHostPathMissing,
   useHostPathExistence,
 } from "@/hooks/queries/host-path-queries";
-import { selectPersistentHosts, useHosts } from "@/hooks/queries/host-queries";
+import { selectHosts, useHosts } from "@/hooks/queries/host-queries";
 import { useProjectDefaultExecutionOptions } from "@/hooks/queries/project-default-execution-options-query";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
 import { useSystemConfig } from "@/hooks/queries/system-queries";
@@ -71,22 +75,6 @@ const CHECKOUTS_DESCRIPTION =
 
 const DEFAULTS_DESCRIPTION =
   "What new threads in this project start with. bb remembers the last options you used here.";
-
-interface DetailRowProps {
-  label: string;
-  children: ReactNode;
-}
-
-function DetailRow({ label, children }: DetailRowProps) {
-  return (
-    <SettingsRow className="flex-col items-stretch gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-      <span className="shrink-0 text-foreground">{label}</span>
-      <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 text-left text-subtle-foreground sm:ml-auto sm:justify-end sm:text-right">
-        {children}
-      </div>
-    </SettingsRow>
-  );
-}
 
 interface CheckoutRowProps {
   host: Host;
@@ -115,41 +103,37 @@ function CheckoutRow({
 }: CheckoutRowProps) {
   const connected = host.status === "connected";
   return (
-    <SettingsRow className="flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-3">
-      <div className="flex min-w-0 flex-1 items-center gap-3">
-        <Icon
-          name="Laptop"
-          className={cn(
-            "size-4 shrink-0 text-muted-foreground",
-            !connected && "opacity-60",
-          )}
-        />
-        <div className="min-w-0 flex-1 space-y-0.5">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <MachineStatusDot connected={connected} />
-            <Link
-              to={getSettingsMachineRoutePath(host.id)}
-              className="min-w-0 truncate text-sm font-medium text-foreground hover:underline"
-            >
-              {host.name}
-            </Link>
-            {isPrimary ? <SettingsBadge>primary</SettingsBadge> : null}
-            {isPathInvalid ? (
-              <Pill variant="destructive">Path not found</Pill>
-            ) : null}
-          </div>
-          <div className="min-w-0 truncate font-mono text-xs text-subtle-foreground/75">
-            {source === null ? (
-              <span className="font-sans italic">
-                Not set up on this machine
-              </span>
-            ) : (
-              source.path
+    <SettingsRow className="items-start">
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <Icon
+            name="Laptop"
+            className={cn(
+              "size-4 shrink-0 text-muted-foreground",
+              !connected && "opacity-60",
             )}
-          </div>
+          />
+          <MachineStatusDot connected={connected} />
+          <Link
+            to={getSettingsMachineRoutePath(host.id)}
+            className="min-w-0 truncate text-sm font-medium text-foreground hover:underline"
+          >
+            {host.name}
+          </Link>
+          {isPrimary ? <SettingsBadge>primary</SettingsBadge> : null}
+          {isPathInvalid ? (
+            <Pill variant="destructive">Path not found</Pill>
+          ) : null}
+        </div>
+        <div className="min-w-0 truncate font-mono text-xs text-subtle-foreground/75">
+          {source === null ? (
+            <span className="font-sans italic">Not set up on this machine</span>
+          ) : (
+            source.path
+          )}
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-1 sm:justify-end">
+      <div className="flex shrink-0 items-center gap-1">
         {source === null ? (
           <Button
             type="button"
@@ -235,10 +219,17 @@ export function ProjectDetailSettingsView() {
   const projectSources = project?.sources;
   const sources = useMemo(() => projectSources ?? [], [projectSources]);
   const projectName = project?.name ?? "";
-  const hosts = useMemo(
-    () => selectPersistentHosts(hostsQuery.data),
+  const everyHost = useMemo(
+    () => selectHosts(hostsQuery.data, "all"),
     [hostsQuery.data],
   );
+  const persistentHosts = useMemo(
+    () => selectHosts(hostsQuery.data, "persistent"),
+    [hostsQuery.data],
+  );
+  const [showAllMachines, setShowAllMachines] = useState(false);
+  const hosts = showAllMachines ? everyHost : persistentHosts;
+  const hiddenMachineCount = everyHost.length - persistentHosts.length;
   const primaryHostId = systemConfig.data?.primaryHostId ?? null;
 
   const localSourcePending =
@@ -335,7 +326,10 @@ export function ProjectDetailSettingsView() {
     project.gitRemoteUrl === null
       ? null
       : formatGitRemote(project.gitRemoteUrl);
-  const configuredCount = new Set(sources.map((source) => source.hostId)).size;
+  const configuredHostIds = new Set(sources.map((source) => source.hostId));
+  const configuredCount = hosts.filter((host) =>
+    configuredHostIds.has(host.id),
+  ).length;
   const defaults = defaultsQuery.data ?? null;
   const permissionLabel =
     defaults === null
@@ -448,8 +442,50 @@ export function ProjectDetailSettingsView() {
               })}
             </SettingsRowList>
           )}
+          {hiddenMachineCount > 0 ? (
+            <button
+              type="button"
+              aria-expanded={showAllMachines}
+              onClick={() => setShowAllMachines((previous) => !previous)}
+              className="-ml-1 inline-flex items-center gap-1.5 self-start rounded-md px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground"
+            >
+              <Icon
+                name="ChevronDown"
+                className={cn(
+                  "size-3.5 transition-transform",
+                  showAllMachines && "rotate-180",
+                )}
+                aria-hidden
+              />
+              <span>
+                {showAllMachines ? "Show fewer machines" : "Show all machines"}
+              </span>
+            </button>
+          ) : null}
         </SettingsSection>
 
+        <SettingsSection
+          title="Workspace Safety"
+          description="Control mutation concurrency for unmanaged project folders."
+        >
+          <SettingsWithControl
+            label="Protect unmanaged workspaces"
+            description="Allow only one thread or automation at a time to mutate a shared physical folder, including aliases used by other projects."
+          >
+            <Switch
+              aria-label="Protect unmanaged workspaces"
+              checked={project?.protectUnmanagedWorkspace ?? false}
+              disabled={!project || updateProject.isPending}
+              onCheckedChange={(protectUnmanagedWorkspace) => {
+                if (!project) return;
+                updateProject.mutate({
+                  id: project.id,
+                  protectUnmanagedWorkspace,
+                });
+              }}
+            />
+          </SettingsWithControl>
+        </SettingsSection>
         <SettingsSection
           title="Thread defaults"
           description={DEFAULTS_DESCRIPTION}
@@ -467,25 +503,25 @@ export function ProjectDetailSettingsView() {
             </p>
           ) : (
             <SettingsRowList>
-              <DetailRow label="Provider">
+              <SettingsDetailRow label="Provider">
                 <span>{defaults.providerId}</span>
-              </DetailRow>
-              <DetailRow label="Model">
+              </SettingsDetailRow>
+              <SettingsDetailRow label="Model">
                 <span className="font-mono text-xs">{defaults.model}</span>
-              </DetailRow>
-              <DetailRow label="Permission mode">
+              </SettingsDetailRow>
+              <SettingsDetailRow label="Permission mode">
                 <span>{permissionLabel}</span>
-              </DetailRow>
-              <DetailRow label="Reasoning">
+              </SettingsDetailRow>
+              <SettingsDetailRow label="Reasoning">
                 <span>{defaults.reasoningLevel}</span>
-              </DetailRow>
+              </SettingsDetailRow>
             </SettingsRowList>
           )}
         </SettingsSection>
 
         <SettingsSection title="Project information">
           <SettingsRowList>
-            <DetailRow label="Git remote">
+            <SettingsDetailRow label="Git remote">
               {project.gitRemoteUrl === null ? (
                 <span>None detected</span>
               ) : (
@@ -493,17 +529,19 @@ export function ProjectDetailSettingsView() {
                   {project.gitRemoteUrl}
                 </span>
               )}
-            </DetailRow>
-            <DetailRow label="Project ID">
+            </SettingsDetailRow>
+            <SettingsDetailRow label="Project ID">
               <span className="font-mono text-xs">{project.id}</span>
-            </DetailRow>
-            <DetailRow label="Created">
+            </SettingsDetailRow>
+            <SettingsDetailRow label="Created">
               <span>
                 {formatRelativeTime({ timestamp: project.createdAt, now })}
               </span>
-            </DetailRow>
+            </SettingsDetailRow>
           </SettingsRowList>
         </SettingsSection>
+
+        <ScopedMachineEnvironmentSettings projectId={project.id} />
 
         <SettingsSection
           title="Danger zone"

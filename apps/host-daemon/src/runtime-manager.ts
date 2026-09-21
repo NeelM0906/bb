@@ -18,7 +18,7 @@ import type {
 import { threadScope, turnScope } from "@bb/domain";
 import type {
   HostDaemonActiveThread,
-  HostDaemonEnvironmentChange,
+  HostDaemonContributedEnvEntry,
   HostDaemonLoadedEnvironment,
   HostDaemonInjectedSkillSource,
 } from "@bb/host-daemon-contract";
@@ -39,7 +39,6 @@ import {
   stageInjectedSkillSources,
   type InjectedSkillsLogger,
 } from "./injected-skills.js";
-import { reconnectProvisionArgs } from "./workspace-provision-target.js";
 import {
   createProviderInstallationGate,
   PROVIDER_INSTALLATION_GATE_TTL_MS,
@@ -47,6 +46,8 @@ import {
 } from "./provider-installation-gate.js";
 import type { FetchSkillTree } from "./skill-trees.js";
 import { userExecutableProcessOptions } from "./user-executable-env.js";
+import { runSetupScript } from "./environment-lifecycle-script.js";
+import { runInSerialLane } from "./serial-lane.js";
 
 type StopWatching = () => void | Promise<void>;
 
@@ -127,7 +128,6 @@ export interface RuntimeEntry {
   runtime: AgentRuntime;
   skillCatalogHash: string | null;
   lastWarnedStaleSkillCatalogHash: string | null;
-  stopWatchingStatus: StopWatching;
   workspace: HostWorkspace;
   path: string;
   terminals: Set<string>;
@@ -141,6 +141,8 @@ interface InjectedSkillsChangedNotification {
 export interface EnsureEnvironmentArgs {
   environmentId: string;
   injectedSkillSources?: readonly HostDaemonInjectedSkillSource[];
+  setupScriptTimeoutMs?: number | null;
+  setupContributedEnv?: readonly HostDaemonContributedEnvEntry[];
   targetThreadId?: string;
   workspacePath?: string;
   provision?: ProvisionWorkspaceArgs;
@@ -174,15 +176,14 @@ export interface RuntimeManagerOptions {
   providerInstallationGateTtlMs?: number;
   providerMaintenanceIdleTimeoutMs?: number;
   shellEnv?: AgentRuntimeOptions["shellEnv"];
+  applyMachineEnvironment?: (
+    shell: NonNullable<AgentRuntimeOptions["shellEnv"]>,
+  ) => NonNullable<AgentRuntimeOptions["shellEnv"]>;
   onEvent?: (args: { environmentId: string; event: ThreadEvent }) => void;
   threadStorageRootPath?: string | null;
   onInjectedSkillsChanged?: (args: InjectedSkillsChangedNotification) => void;
   onDataDirSkillsWatchError?: (args: {
     error: DataDirSkillsWatchError;
-  }) => void;
-  onWorkspaceStatusChanged?: (args: {
-    changeKinds: HostDaemonEnvironmentChange[];
-    environmentId: string;
   }) => void;
   onInteractiveRequest?: (
     request: PendingInteractionCreate,
@@ -209,10 +210,6 @@ export interface RuntimeManagerProviderProcessDiagnostic extends AgentRuntimePro
   environmentId: string;
 }
 
-/**
- * `interrupt` stops an old runtime even while it runs a turn. `keep` leaves
- * that turn alone and reports its environment to the caller.
- */
 type ReleaseThreadActiveTurnPolicy = "interrupt" | "keep";
 
 interface ReleaseThreadFromOtherEnvironmentsResult {
@@ -342,19 +339,7 @@ export class RuntimeManager {
     threadId: string,
     work: () => T | PromiseLike<T>,
   ): Promise<T> {
-    const previous = this.threadControlTails.get(threadId) ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(work);
-    const settled = next.then(
-      () => undefined,
-      () => undefined,
-    );
-    this.threadControlTails.set(threadId, settled);
-    void settled.then(() => {
-      if (this.threadControlTails.get(threadId) === settled) {
-        this.threadControlTails.delete(threadId);
-      }
-    });
-    return next;
+    return runInSerialLane(this.threadControlTails, threadId, work);
   }
 
   async releaseThreadFromOtherEnvironments(args: {
@@ -574,7 +559,11 @@ export class RuntimeManager {
   }
 
   getShellEnv(): NonNullable<AgentRuntimeOptions["shellEnv"]> {
-    return { ...this.baseShellEnv };
+    return (
+      this.options.applyMachineEnvironment?.(this.baseShellEnv) ?? {
+        ...this.baseShellEnv,
+      }
+    );
   }
 
   async replaceBaseShellEnv(
@@ -706,7 +695,6 @@ export class RuntimeManager {
     }
 
     this.entries.delete(args.entry.environmentId);
-    await this.stopWatchingStatus(args.entry);
     await args.entry.runtime.shutdown();
     await this.cleanupUnusedInjectedSkillStagingDirs([
       args.skillConfig.catalogHash,
@@ -835,7 +823,6 @@ export class RuntimeManager {
     );
 
     for (const entry of idleEntries) {
-      await this.stopWatchingStatus(entry);
       this.entries.delete(entry.environmentId);
     }
 
@@ -1051,7 +1038,6 @@ export class RuntimeManager {
     }
 
     this.entries.delete(environmentId);
-    await this.stopWatchingStatus(entry);
     await entry.runtime.shutdown();
     return entry;
   }
@@ -1062,39 +1048,6 @@ export class RuntimeManager {
       return;
     }
     await this.cleanupUnusedInjectedSkillStagingDirs([]);
-  }
-
-  async evictIdleEnvironments(): Promise<string[]> {
-    if (this.pendingEntries.size > 0) {
-      return [];
-    }
-
-    const idleEntries = [...this.entries.values()].filter(
-      (entry) => !this.entryHasActiveEnvironmentWork(entry),
-    );
-
-    for (const entry of idleEntries) {
-      await this.stopWatchingStatus(entry);
-      this.entries.delete(entry.environmentId);
-    }
-
-    const shutdownResults = await Promise.allSettled(
-      idleEntries.map(async (entry) => {
-        await entry.runtime.shutdown();
-        return entry.environmentId;
-      }),
-    );
-    const firstRejected = shutdownResults.find(
-      (result) => result.status === "rejected",
-    );
-    if (firstRejected && firstRejected.status === "rejected") {
-      throw firstRejected.reason;
-    }
-
-    await this.cleanupUnusedInjectedSkillStagingDirs([]);
-    return shutdownResults.flatMap((result) =>
-      result.status === "fulfilled" ? [result.value] : [],
-    );
   }
 
   async shutdownAll(): Promise<void> {
@@ -1108,7 +1061,6 @@ export class RuntimeManager {
     this.pendingEntries.clear();
 
     for (const entry of entries) {
-      await this.stopWatchingStatus(entry);
       await entry.runtime.shutdown();
     }
     await this.shutdownProviderMaintenanceRuntime();
@@ -1117,12 +1069,6 @@ export class RuntimeManager {
     await this.cleanupUnusedInjectedSkillStagingDirs([]);
   }
 
-  /**
-   * Synthesizes failure events for threads that were mid-turn or awaiting
-   * turn/start when their provider process died, from the runtime's final
-   * per-thread snapshot. Fully idle resident threads remain silent so a
-   * retained provider exiting does not create a false thread failure.
-   */
   private buildUnexpectedProviderExitEvents(
     info: AgentRuntimeProcessExitInfo,
   ): ThreadEvent[] {
@@ -1219,14 +1165,23 @@ export class RuntimeManager {
   private async createEntry(args: CreateEntryArgs): Promise<RuntimeEntry> {
     const provision =
       args.provision ??
-      (args.workspacePath
-        ? reconnectProvisionArgs({ workspacePath: args.workspacePath })
-        : null);
+      (args.workspacePath ? { path: args.workspacePath } : null);
 
     if (!provision) {
       throw new Error(
         `Missing workspace path for environment ${args.environmentId}`,
       );
+    }
+
+    if (args.setupScriptTimeoutMs != null) {
+      await runSetupScript({
+        workspacePath: provision.path,
+        timeoutMs: args.setupScriptTimeoutMs,
+        contributedEnv: args.setupContributedEnv,
+        shellPath: this.getShellEnv().PATH,
+        signal: args.provisionSignal,
+        onProgress: provision.onProgress,
+      });
     }
 
     const workspace = await this.provisionHostWorkspace({
@@ -1303,7 +1258,6 @@ export class RuntimeManager {
       runtime,
       skillCatalogHash: args.skillConfig?.catalogHash ?? null,
       lastWarnedStaleSkillCatalogHash: null,
-      stopWatchingStatus: STOP_WATCHING,
       terminals: new Set<string>(),
       workspace,
       path: workspace.path,
@@ -1317,12 +1271,6 @@ export class RuntimeManager {
       ...provision,
       ...userExecutableProcessOptions(this.getShellEnv()),
     });
-  }
-
-  private async stopWatchingStatus(entry: RuntimeEntry): Promise<void> {
-    const stopWatchingStatus = entry.stopWatchingStatus;
-    entry.stopWatchingStatus = STOP_WATCHING;
-    await stopWatchingStatus();
   }
 
   private ensureDataDirSkillsWatcher(): void {

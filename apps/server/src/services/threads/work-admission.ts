@@ -35,7 +35,10 @@ import {
   type HostDaemonCommand,
 } from "@bb/host-daemon-contract";
 import type { LoggedWorkSessionDeps } from "../../types.js";
-import { callHostRetryableOnlineRpc } from "../hosts/online-rpc.js";
+import {
+  callHostRetryableOnlineRpc,
+  callHostRetryableOnlineRpcForWork,
+} from "../hosts/online-rpc.js";
 
 const ADMISSION_RPC_TIMEOUT_MS = 10_000;
 const INITIAL_WAITING_REASON = "Awaiting host capacity";
@@ -141,7 +144,7 @@ async function canonicalizeLegacyUnmanagedWorkspacePaths(
 
   const canonicalize = async (environment: (typeof environments)[number]) => {
     if (environment.path === null) return;
-    const result = await callHostRetryableOnlineRpc(deps, {
+    const result = await callHostRetryableOnlineRpcForWork(deps, {
       command: { type: "project.inspect", path: environment.path },
       hostId: args.hostId,
       timeoutMs: ADMISSION_RPC_TIMEOUT_MS,
@@ -255,7 +258,7 @@ async function reserve(
     reason: HostAdmissionReason;
   },
 ): Promise<HostAdmissionReserveResult> {
-  return callHostRetryableOnlineRpc(deps, {
+  return callHostRetryableOnlineRpcForWork(deps, {
     command: {
       type: "host.admission.reserve",
       hostId: args.hostId,
@@ -292,7 +295,8 @@ function commandWithWorkspacePath<TCommand extends ProviderWorkCommand>(
   workspacePath: string,
 ): TCommand {
   if (command.type === "thread.start") {
-    if (command.workspaceContext.workspacePath === workspacePath) return command;
+    if (command.workspaceContext.workspacePath === workspacePath)
+      return command;
     return {
       ...command,
       workspaceContext: { ...command.workspaceContext, workspacePath },
@@ -465,6 +469,21 @@ export async function awaitThreadWorkAdmission<
   });
 
   for (;;) {
+    const current = getWorkAdmission(deps.db, row.id);
+    if (current === null) {
+      throw new Error(`Work admission ${row.id} no longer exists`);
+    }
+    row = current;
+    const thread = getThread(deps.db, row.threadId);
+    if (thread === null || thread.deletedAt !== null) {
+      await releaseThreadWorkAdmission(deps, {
+        terminalReason: "thread deleted before admission dispatch",
+        threadId: row.threadId,
+      });
+      throw new Error(
+        `Thread ${row.threadId} was deleted before admission dispatch`,
+      );
+    }
     if (row.status === "terminal") {
       throw new Error(`Work admission ${row.id} is already terminal`);
     }
@@ -518,7 +537,6 @@ export async function awaitThreadWorkAdmission<
       const head = getFirstHostEligibleWaitingAdmission(deps.db, args.hostId);
       if (head?.id !== row.id) {
         await promotion.promise;
-        row = getWorkAdmission(deps.db, row.id) ?? row;
         continue;
       }
 
@@ -533,7 +551,6 @@ export async function awaitThreadWorkAdmission<
           waitingReason: result.reason,
         });
         await promotion.promise;
-        row = getWorkAdmission(deps.db, row.id) ?? row;
         continue;
       }
       // The initial canonicalization may have completed before a daemon
@@ -583,7 +600,6 @@ export async function awaitThreadWorkAdmission<
           hostId: workspace.hostId,
           requestId: row.id,
         });
-        row = getWorkAdmission(deps.db, row.id) ?? row;
         continue;
       }
       if (workspace.outcome !== "admission-not-waiting") {
@@ -591,7 +607,6 @@ export async function awaitThreadWorkAdmission<
         return { command, reservation: result.reservation };
       }
       await releaseHostReservation(deps, result.reservation);
-      row = getWorkAdmission(deps.db, row.id) ?? row;
     } finally {
       promotion.cancel();
     }

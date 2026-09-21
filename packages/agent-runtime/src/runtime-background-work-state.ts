@@ -19,10 +19,6 @@ export class RuntimeBackgroundWorkState {
     return (this.openTaskIdsByThreadId.get(threadId)?.size ?? 0) > 0;
   }
 
-  hasOpenWorkForThread(threadId: string): boolean {
-    return this.hasOpenThreadWork(threadId);
-  }
-
   observe(event: ThreadEvent): void {
     if (event.type === "item/started" || event.type === "item/completed") {
       if (

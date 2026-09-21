@@ -30,8 +30,11 @@ import {
   LIVE_DAEMON_COMMAND_TIMEOUT_MS,
   startLiveHostCommand,
 } from "../hosts/live-command.js";
-import { getLastProviderThreadId } from "./thread-events.js";
-import type { ThreadForkDescriptor } from "./thread-provisioning-context.js";
+import {
+  getLastProviderThreadId,
+  requireDispatchableProviderThreadId,
+} from "./thread-events.js";
+import type { ThreadForkDescriptor } from "./thread-startup-store.js";
 import {
   resolveThreadRuntimeCommandConfig,
   type ResolvedThreadRuntimeCommandConfig,
@@ -362,7 +365,8 @@ export async function prepareTurnSubmitCommandPayload(
 ): Promise<PreparedTurnSubmitCommandPayload> {
   await deps.providerRegistry.whenRegistrationsSettled();
   const providerThreadId = requireProviderThreadId(
-    args.providerThreadId ?? getLastProviderThreadId(deps, args.thread.id),
+    args.providerThreadId ??
+      requireDispatchableProviderThreadId(deps, args.thread.id),
     args.thread.id,
   );
   const runtimeContext = await resolveThreadRuntimeCommandConfig(deps, {
@@ -602,6 +606,17 @@ export function buildThreadStopCommand(
     type: "thread.stop",
     environmentId: args.environmentId,
     intent: args.intent,
+    threadId: args.threadId,
+  };
+}
+
+export function buildThreadStorageDeleteCommand(args: {
+  environmentId: string;
+  threadId: string;
+}): Extract<HostDaemonCommand, { type: "thread.storage.delete" }> {
+  return {
+    type: "thread.storage.delete",
+    environmentId: args.environmentId,
     threadId: args.threadId,
   };
 }

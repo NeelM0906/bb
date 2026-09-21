@@ -4,6 +4,8 @@ import type { ThreadListEntry } from "@bb/domain";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import { Provider, createStore } from "jotai";
+import { collapsedThreadIdsAtom } from "@/components/sidebar/sidebarCollapsedAtoms";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SystemEnvironmentProvider } from "@bb/server-contract";
@@ -16,12 +18,15 @@ import {
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 
 const personalProvider: SystemEnvironmentProvider = {
+  machineProviderId: null,
   id: "personal-workspace",
   displayName: "Personal workspace",
+  description: "Prepare a workspace for this thread.",
   icon: "Folder",
   logoUrl: null,
   pluginId: "environment-personal-workspace",
   acceptsEmptyInputs: true,
+  machineAvailability: {},
   availability: null,
   requires: {
     projectCheckout: false,
@@ -32,12 +37,26 @@ const personalProvider: SystemEnvironmentProvider = {
   inputs: null,
 };
 
-function TestProviders({ children }: { children: ReactNode }) {
+function TestProviders({
+  children,
+  store = createStore(),
+}: {
+  children: ReactNode;
+  store?: ReturnType<typeof createStore>;
+}) {
   return (
-    <QueryClientProvider client={new QueryClient()}>
-      <MemoryRouter>{children}</MemoryRouter>
-    </QueryClientProvider>
+    <Provider store={store}>
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>{children}</MemoryRouter>
+      </QueryClientProvider>
+    </Provider>
   );
+}
+
+function storeWithCollapsedThreads(threadIds: string[]) {
+  const store = createStore();
+  store.set(collapsedThreadIdsAtom, threadIds);
+  return store;
 }
 
 function makeThread(overrides: Partial<ThreadListEntry> = {}): ThreadListEntry {
@@ -297,7 +316,7 @@ describe("mobile recents hierarchy interaction", () => {
     );
   }
 
-  it("collapses and expands children from the parent row chevron", () => {
+  it("collapses and expands children from the provider tile and caret", () => {
     const { container } = renderTree();
 
     expect(container.querySelector("a button")).toBeNull();
@@ -308,7 +327,11 @@ describe("mobile recents hierarchy interaction", () => {
     });
     expect(collapse.getAttribute("aria-expanded")).toBe("true");
 
-    fireEvent.click(collapse);
+    const providerTile = collapse.querySelector("span.size-7");
+    if (!(providerTile instanceof HTMLElement)) {
+      throw new Error("Expected provider tile inside the disclosure button");
+    }
+    fireEvent.click(providerTile);
 
     expect(screen.queryByText("Audit folder query paths")).toBeNull();
     const expand = screen.getByRole("button", {
@@ -316,7 +339,11 @@ describe("mobile recents hierarchy interaction", () => {
     });
     expect(expand.getAttribute("aria-expanded")).toBe("false");
 
-    fireEvent.click(expand);
+    const caret = expand.querySelector("svg");
+    if (caret === null) {
+      throw new Error("Expected disclosure caret");
+    }
+    fireEvent.click(caret);
     expect(screen.getByText("Audit folder query paths")).not.toBeNull();
   });
 
@@ -351,13 +378,8 @@ describe("mobile recents hierarchy interaction", () => {
   ])(
     "renders child-only $label state on a collapsed parent",
     ({ child, label }) => {
-      window.localStorage.setItem(
-        "bb.sidebar.collapsedThreads",
-        JSON.stringify(["thr_parent"]),
-      );
-
       render(
-        <TestProviders>
+        <TestProviders store={storeWithCollapsedThreads(["thr_parent"])}>
           <RootComposeMobileRecents
             highlightedThreadId={null}
             projectNamesById={new Map()}
@@ -389,13 +411,8 @@ describe("mobile recents hierarchy interaction", () => {
       "bb.promptbox.contents-proj_mobile-thr_child-3",
       JSON.stringify({ text: "Continue child work", attachments: [] }),
     );
-    window.localStorage.setItem(
-      "bb.sidebar.collapsedThreads",
-      JSON.stringify(["thr_parent"]),
-    );
-
     render(
-      <TestProviders>
+      <TestProviders store={storeWithCollapsedThreads(["thr_parent"])}>
         <RootComposeMobileRecents
           highlightedThreadId={null}
           projectNamesById={new Map()}
@@ -427,13 +444,9 @@ describe("mobile recents hierarchy interaction", () => {
   });
 
   it("reveals a highlighted thread whose parent is collapsed", () => {
-    window.localStorage.setItem(
-      "bb.sidebar.collapsedThreads",
-      JSON.stringify(["thr_parent"]),
-    );
-
+    const store = storeWithCollapsedThreads(["thr_parent"]);
     render(
-      <TestProviders>
+      <TestProviders store={store}>
         <RootComposeMobileRecents
           highlightedThreadId="thr_child"
           projectNamesById={new Map()}
@@ -457,17 +470,15 @@ describe("mobile recents hierarchy interaction", () => {
     );
 
     expect(screen.getByText("Audit folder query paths")).not.toBeNull();
-    expect(window.localStorage.getItem("bb.sidebar.collapsedThreads")).toBe(
-      "[]",
-    );
+    expect(store.get(collapsedThreadIdsAtom)).toEqual([]);
   });
 
   it("de-emphasizes the provider tile on child rows only", () => {
     renderTree();
 
-    const [parentRow, childRow] = screen.getAllByRole("link");
-    const parentTile = parentRow?.firstElementChild;
-    const childTile = childRow?.firstElementChild;
+    const [parentRow, childRow] = screen.getAllByRole("listitem");
+    const parentTile = parentRow?.querySelector("span.size-7");
+    const childTile = childRow?.querySelector("span.size-7");
     if (
       !(parentTile instanceof HTMLElement) ||
       !(childTile instanceof HTMLElement)
@@ -492,9 +503,9 @@ describe("mobile recents hierarchy interaction", () => {
   it("centers provider tiles against the title and metadata block", () => {
     renderTree();
 
-    const rows = screen.getAllByRole("link");
+    const rows = screen.getAllByRole("listitem");
     for (const row of rows) {
-      const tile = row.firstElementChild;
+      const tile = row.querySelector("span.size-7");
       if (!(tile instanceof HTMLElement)) {
         throw new Error("Expected a leading provider tile");
       }
@@ -508,7 +519,7 @@ describe("mobile recents hierarchy interaction", () => {
     renderTree();
 
     expect(screen.getAllByRole("button")).toHaveLength(1);
-    const [parentRow, childRow] = screen.getAllByRole("link");
+    const [parentRow, childRow] = screen.getAllByRole("listitem");
     if (!parentRow || !childRow) {
       throw new Error("Expected a parent and a child row");
     }
@@ -745,7 +756,7 @@ describe("RootComposeMobileRecents", () => {
     expect(screen.queryByLabelText("Plan mode active")).toBeNull();
   });
 
-  it("includes only the resolved idle draft indicator in the link label", () => {
+  it("includes only the resolved unread-success indicator in the link label", () => {
     window.localStorage.setItem(
       "bb.promptbox.contents-proj_mobile-thr_mobile-3",
       JSON.stringify({ text: "Keep editing", attachments: [] }),
@@ -780,7 +791,7 @@ describe("RootComposeMobileRecents", () => {
 
     expect(
       screen.getByRole("link", {
-        name: "Open Mobile activity — Thread has unsubmitted draft",
+        name: "Open Mobile activity — Unread thread succeeded",
       }),
     ).not.toBeNull();
     expect(screen.queryByLabelText("Plan mode active")).toBeNull();

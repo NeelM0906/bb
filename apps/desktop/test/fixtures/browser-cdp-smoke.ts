@@ -165,9 +165,11 @@ async function main() {
     "data:text/html,<title>Trusted app sentinel</title>TRUSTED_APP_SENTINEL",
   );
   const manager = createDesktopBrowserViewManager({
+    canSendToHost: () => true,
     partition: `smoke-${randomBytes(12).toString("hex")}`,
     dispatchAppCommand: () => {},
     focusHostWebContents: () => {},
+    pagePreloadPath: null,
     resolveAppCommand: () => null,
   });
   const scopeA = {
@@ -388,6 +390,7 @@ async function main() {
     console.log(`PASS ${name}`);
   }
   const broker = createDesktopBrowserBroker({
+    isTrustedWindow: () => true,
     manager,
     product: `Chrome/${process.versions.chrome}`,
   });

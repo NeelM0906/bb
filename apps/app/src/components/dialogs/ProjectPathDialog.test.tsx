@@ -48,7 +48,50 @@ afterEach(() => {
 });
 
 describe("ProjectPathDialog machine selection", () => {
-  it("creates a project from a folder on the selected connected machine", () => {
+  it("opens on demand and resets the form for a different project after closing", async () => {
+    const props = {
+      platform: "linux" as const,
+      hostId: atum.id,
+      hostName: atum.name,
+      hosts: [atum],
+      onOpenChange: vi.fn(),
+      onSubmit: vi.fn(),
+    };
+    const { rerender } = render(<ProjectPathDialog {...props} target={null} />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    rerender(<ProjectPathDialog {...props} target={{ kind: "create" }} />);
+    fireEvent.click(
+      await screen.findByRole(
+        "button",
+        { name: "Choose folder on host_atum" },
+        { timeout: 5_000 },
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add project" }));
+    expect(props.onSubmit).toHaveBeenCalledWith(
+      { kind: "create" },
+      "/home/deploy/repos/givecare",
+      "host_atum",
+    );
+    rerender(<ProjectPathDialog {...props} target={null} />);
+    rerender(
+      <ProjectPathDialog
+        {...props}
+        target={{
+          kind: "update",
+          projectId: "other",
+          projectName: "Other",
+          currentPath: "/other/project",
+        }}
+      />,
+    );
+    expect(
+      await screen.findByRole("button", { name: "Save path" }),
+    ).toBeTruthy();
+    expect(screen.queryByText("/home/deploy/repos/givecare")).toBeNull();
+  });
+
+  it("creates a project from a folder on the selected connected machine", async () => {
     const onSubmit = vi.fn();
     render(
       <ProjectPathDialog
@@ -61,6 +104,7 @@ describe("ProjectPathDialog machine selection", () => {
         onSubmit={onSubmit}
       />,
     );
+    await screen.findByRole("button", { name: "Add project" });
 
     const trigger = screen.getByRole("button", { name: "Machine" });
     expect(trigger.textContent).toContain("atum");
@@ -90,7 +134,7 @@ describe("ProjectPathDialog machine selection", () => {
     );
   });
 
-  it("preserves the direct single-machine folder flow", () => {
+  it("preserves the direct single-machine folder flow", async () => {
     const onSubmit = vi.fn();
     render(
       <ProjectPathDialog
@@ -103,6 +147,7 @@ describe("ProjectPathDialog machine selection", () => {
         onSubmit={onSubmit}
       />,
     );
+    await screen.findByRole("button", { name: "Add project" });
 
     expect(screen.queryByRole("button", { name: "Machine" })).toBeNull();
     fireEvent.click(
@@ -117,7 +162,7 @@ describe("ProjectPathDialog machine selection", () => {
     );
   });
 
-  it("includes provider-made hosts in the project setup machine picker", () => {
+  it("includes provider-made hosts in the project setup machine picker", async () => {
     render(
       <ProjectPathDialog
         target={{ kind: "create" }}
@@ -136,6 +181,7 @@ describe("ProjectPathDialog machine selection", () => {
         onSubmit={vi.fn()}
       />,
     );
+    await screen.findByRole("button", { name: "Add project" });
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "Machine" }), {
       button: 0,
@@ -147,7 +193,7 @@ describe("ProjectPathDialog machine selection", () => {
     ).toBeTruthy();
   });
 
-  it("uses a provider-made host as the only project machine", () => {
+  it("uses a provider-made host as the only project machine", async () => {
     const onSubmit = vi.fn();
     render(
       <ProjectPathDialog
@@ -165,6 +211,7 @@ describe("ProjectPathDialog machine selection", () => {
         onSubmit={onSubmit}
       />,
     );
+    await screen.findByRole("button", { name: "Add project" });
 
     fireEvent.click(
       screen.getByRole("button", { name: "Choose folder on host_modal" }),
@@ -177,7 +224,7 @@ describe("ProjectPathDialog machine selection", () => {
     );
   });
 
-  it("blocks submission when every listed machine is offline", () => {
+  it("blocks submission when every listed machine is offline", async () => {
     const onSubmit = vi.fn();
     render(
       <ProjectPathDialog
@@ -190,6 +237,7 @@ describe("ProjectPathDialog machine selection", () => {
         onSubmit={onSubmit}
       />,
     );
+    await screen.findByRole("button", { name: "Add project" });
 
     expect(screen.queryByLabelText("Project path")).toBeNull();
     expect(

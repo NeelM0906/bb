@@ -1,12 +1,17 @@
+import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { useAtom } from "jotai";
+import { pluginWorkspaceAtom } from "@/components/plugin/plugin-workspace-state";
+import { useSetPluginEnabled } from "@/components/plugin/useSetPluginEnabled";
 import {
   Suspense,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
-import { Navigate, useLocation, useNavigate } from "react-router-dom";
+import { matchPath, useLocation, useNavigate } from "react-router-dom";
 import "@bb/shared-ui/icon-extended";
 import { useMutation } from "@tanstack/react-query";
 import { buildPluginEditThreadPrompt } from "@bb/shared-ui/resource-edit-prompt";
@@ -18,6 +23,7 @@ import {
   ConfirmDeleteDialogContent,
 } from "@/components/dialogs/ConfirmDeleteDialog";
 import { AddPluginDialog } from "@/components/plugin/management/AddPluginDialog";
+import { installedPluginCatalogEntry } from "@/components/plugin/management/installed-plugin-catalog";
 import {
   ResourceListState,
   useResourceRouteLabel,
@@ -39,33 +45,34 @@ import {
 } from "@/hooks/queries/plugin-catalog-queries";
 import {
   removePlugin,
-  setPluginEnabled,
   usePluginList,
   type PluginListItem,
 } from "@/hooks/queries/plugin-settings-queries";
 import { useLocalOpenTargets } from "@/hooks/useLocalOpenTargets";
 import { pluginAdminErrorMessage } from "@/lib/plugin-admin-error";
 import {
-  TOOLS_REGISTRY_SKILLS_ROUTE_PATH,
-  TOOLS_SKILLS_ROUTE_PATH,
+  REGISTRY_SKILLS_ROUTE_PATH,
+  SKILLS_ROUTE_PATH,
   getPluginDetailRoutePath,
   getPluginsRoutePath,
   getRootComposeRoutePath,
 } from "@/lib/route-paths";
-import {
-  getToolsOwnedCollectionRoutePath,
-  resolveToolsSection,
-  type ToolsSectionId,
-} from "@/components/tools/tools-navigation";
+import { getToolsOwnedCollectionRoutePath } from "@/components/tools/tools-navigation";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { SkillsLibrary } from "@/components/tools/SkillsLibrary";
 import { PluginIcon } from "@/components/plugin/PluginIcon";
 import { pluginToast } from "@/components/plugin/PluginNotificationDescription";
-import { SecondaryPanelLayout } from "@/components/secondary-panel/SecondaryPanelLayout";
+import {
+  SecondaryPanelLayout,
+  type SecondaryPanelRenderArgs,
+} from "@/components/secondary-panel/SecondaryPanelLayout";
 import { ThreadSecondaryPanel } from "@/components/secondary-panel/ThreadSecondaryPanel";
-import type { SecondaryPanelRenderableTab } from "@/components/secondary-panel/secondaryPanelTab";
+import type {
+  SecondaryPanelRenderableTab,
+  SecondaryPanelTabReorderHandler,
+} from "@/components/secondary-panel/secondaryPanelTab";
 
-function ToolsBodyFallback() {
+function ResourceBodyFallback() {
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto w-full max-w-5xl px-4 pb-4 pt-2 md:px-5">
@@ -79,7 +86,7 @@ function ToolsBodyFallback() {
   );
 }
 
-function ToolsScrollPage({
+function ResourceScrollPage({
   children,
   fillViewport = false,
 }: {
@@ -128,37 +135,15 @@ function ToolsScrollPage({
   );
 }
 
-function ToolsSectionBody({
-  activeSection,
-  pathname,
-  onOpenPlugin,
-}: {
-  activeSection: ToolsSectionId;
-  pathname: string;
-  onOpenPlugin: (pluginId: string, trigger: HTMLButtonElement) => void;
-}) {
-  if (activeSection === "skills") {
-    const isCollection =
-      pathname === TOOLS_SKILLS_ROUTE_PATH ||
-      pathname === TOOLS_REGISTRY_SKILLS_ROUTE_PATH;
-    return (
-      <ToolsScrollPage fillViewport={isCollection}>
-        <SkillsLibrary />
-      </ToolsScrollPage>
-    );
-  }
-  return <PluginsToolView onOpenPlugin={onOpenPlugin} />;
-}
-
 function PluginsToolView({
   onOpenPlugin,
 }: {
   onOpenPlugin: (pluginId: string, trigger: HTMLButtonElement) => void;
 }) {
   return (
-    <ToolsScrollPage fillViewport>
+    <ResourceScrollPage fillViewport>
       <PluginsOverview onOpenPlugin={onOpenPlugin} />
-    </ToolsScrollPage>
+    </ResourceScrollPage>
   );
 }
 
@@ -182,12 +167,13 @@ function PluginDetailToolView({ pluginId }: { pluginId: string }) {
       (plugin) => pluginIsLocalSource(plugin) && plugin.rootDir !== null,
     ),
   });
+  const setEnabled = useSetPluginEnabled();
   const pluginToggle = useMutation({
     meta: { showErrorToast: false },
     mutationFn: async (plugin: PluginListItem) => {
       const action = plugin.enabled ? "disable" : "enable";
       try {
-        await setPluginEnabled(fetch, plugin.id, !plugin.enabled);
+        await setEnabled(plugin.id, !plugin.enabled);
       } catch {
         throw new Error(`Failed to ${action} plugin`);
       }
@@ -225,8 +211,15 @@ function PluginDetailToolView({ pluginId }: { pluginId: string }) {
   const selectedPlugin =
     plugins.find((plugin) => plugin.id === pluginId) ?? null;
   const selectedCatalogEntry =
-    catalogQuery.data?.entries.find((entry) => entry.pluginId === pluginId) ??
-    null;
+    selectedPlugin === null
+      ? (catalogQuery.data?.entries.find(
+          (entry) => entry.pluginId === pluginId,
+        ) ?? null)
+      : (installedPluginCatalogEntry(
+          selectedPlugin,
+          catalogQuery.data?.entries ?? [],
+          { allowSourceFallback: false },
+        ) ?? null);
   useResourceRouteLabel(
     selectedPlugin?.name ??
       selectedPlugin?.id ??
@@ -367,7 +360,7 @@ function PluginDetailToolView({ pluginId }: { pluginId: string }) {
         <CatalogPluginDetailBanner entry={selectedCatalogEntry} />
       ) : null}
       <div className="min-h-0 flex-1">
-        <ToolsScrollPage>
+        <ResourceScrollPage>
           {detailContent}
           <ConfirmDeleteDialog
             open={deleteTarget !== null}
@@ -392,27 +385,13 @@ function PluginDetailToolView({ pluginId }: { pluginId: string }) {
           </ConfirmDeleteDialog>
           <AddPluginDialog
             open={installTarget !== null}
-            initial={
-              installTarget === null
-                ? null
-                : {
-                    entryId: installTarget.entryId,
-                    marketplace: installTarget.marketplace,
-                    pluginId: installTarget.pluginId,
-                    publisherLabel: installTarget.publisherLabel,
-                    displayName: installTarget.displayName,
-                    icon: installTarget.icon,
-                    iconUrl: installTarget.iconUrl,
-                    iconTinted: installTarget.iconTinted,
-                    source: installTarget.source,
-                  }
-            }
+            initial={installTarget}
             onOpenChange={(open) => {
               if (!open) setInstallTarget(null);
             }}
             onInstalled={() => void listQuery.refetch()}
           />
-        </ToolsScrollPage>
+        </ResourceScrollPage>
       </div>
     </div>
   );
@@ -422,7 +401,7 @@ export function PluginDetailPaneView({ pluginId }: { pluginId: string }) {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="min-h-0 flex-1 overflow-hidden">
-        <Suspense fallback={<ToolsBodyFallback />}>
+        <Suspense fallback={<ResourceBodyFallback />}>
           <PluginDetailToolView pluginId={pluginId} />
         </Suspense>
       </div>
@@ -430,93 +409,153 @@ export function PluginDetailPaneView({ pluginId }: { pluginId: string }) {
   );
 }
 
-export function ToolsView({ pluginId }: { pluginId?: string } = {}) {
+export function PluginsView({ pluginId }: { pluginId?: string } = {}) {
   const location = useLocation();
   const navigate = useNavigate();
-  const activeSection = resolveToolsSection(location.pathname);
   const focusReturnRef = useRef<HTMLButtonElement | null>(null);
   const [isPluginDetailFullPage, setIsPluginDetailFullPage] = useState(false);
-  const catalogQuery = usePluginCatalogSearch("", {
-    enabled: activeSection === "plugins",
-  });
-  const listQuery = usePluginList({ enabled: activeSection === "plugins" });
-  const isPanelOpen = activeSection === "plugins" && pluginId !== undefined;
+  const [workspace, setWorkspace] = useAtom(pluginWorkspaceAtom);
+  const isCompact = useIsCompactViewport();
+  const activePluginId = pluginId ?? workspace.activePluginId;
+  const isPanelOpen =
+    activePluginId !== null && (!isCompact || pluginId !== undefined);
+  const catalogQuery = usePluginCatalogSearch("", { enabled: isPanelOpen });
+  const listQuery = usePluginList({ enabled: true });
+  const openIds = useMemo(
+    () =>
+      pluginId !== undefined && !workspace.tabs.includes(pluginId)
+        ? [...workspace.tabs, pluginId]
+        : workspace.tabs,
+    [pluginId, workspace.tabs],
+  );
 
-  const openPlugin = useCallback(
-    (nextPluginId: string, trigger: HTMLButtonElement) => {
-      focusReturnRef.current = trigger;
+  useEffect(() => {
+    if (pluginId === undefined) return;
+    setWorkspace((current) =>
+      current.activePluginId === pluginId && current.tabs.includes(pluginId)
+        ? current
+        : {
+            tabs: current.tabs.includes(pluginId)
+              ? current.tabs
+              : [...current.tabs, pluginId],
+            activePluginId: pluginId,
+          },
+    );
+  }, [pluginId, setWorkspace]);
+
+  const selectPlugin = useCallback(
+    (nextPluginId: string) => {
+      const params = new URLSearchParams(location.search);
       navigate({
         pathname: getPluginDetailRoutePath({ pluginId: nextPluginId }),
-        search: location.search,
+        search: params.toString(),
       });
     },
     [location.search, navigate],
   );
+  const openPlugin = useCallback(
+    (nextPluginId: string, trigger: HTMLButtonElement) => {
+      focusReturnRef.current = trigger;
+      selectPlugin(nextPluginId);
+    },
+    [selectPlugin],
+  );
+  const restoreFocus = useCallback(() => {
+    const target = focusReturnRef.current;
+    window.requestAnimationFrame(() => {
+      if (target?.isConnected) target.focus({ preventScroll: true });
+    });
+  }, []);
   const closePanel = useCallback(() => {
     setIsPluginDetailFullPage(false);
-    navigate({
-      pathname: getPluginsRoutePath(),
-      search: location.search,
-    });
-    const focusTarget = focusReturnRef.current;
-    window.requestAnimationFrame(() => {
-      if (focusTarget?.isConnected) focusTarget.focus({ preventScroll: true });
-    });
-  }, [location.search, navigate]);
-  const catalogEntry = catalogQuery.data?.entries.find(
-    (entry) => entry.pluginId === pluginId,
+    setWorkspace((current) => ({ ...current, activePluginId: null }));
+    const params = new URLSearchParams(location.search);
+    navigate({ pathname: getPluginsRoutePath(), search: params.toString() });
+    restoreFocus();
+  }, [location.search, navigate, restoreFocus, setWorkspace]);
+  const closeTab = useCallback(
+    (closedPluginId: string) => {
+      const tabs = openIds.filter((id) => id !== closedPluginId);
+      const closedIndex = openIds.indexOf(closedPluginId);
+      const next =
+        activePluginId === closedPluginId
+          ? (tabs[Math.min(closedIndex, tabs.length - 1)] ?? null)
+          : activePluginId;
+      setWorkspace({ tabs, activePluginId: next });
+      if (next !== null) selectPlugin(next);
+      else closePanel();
+    },
+    [activePluginId, closePanel, openIds, selectPlugin, setWorkspace],
   );
-  const installedPlugin = listQuery.data?.plugins.find(
-    (entry) => entry.id === pluginId,
+  const reorderTab = useCallback<SecondaryPanelTabReorderHandler>(
+    ({ activeTabId, overTabId }) => {
+      const tabs = [...openIds];
+      const from = tabs.findIndex(
+        (id) => `marketplace-plugin:${id}` === activeTabId,
+      );
+      const to = tabs.findIndex(
+        (id) => `marketplace-plugin:${id}` === overTabId,
+      );
+      if (from < 0 || to < 0 || from === to) return;
+      const moving = tabs.splice(from, 1)[0];
+      if (moving === undefined) return;
+      tabs.splice(to, 0, moving);
+      setWorkspace((current) => ({ ...current, tabs }));
+    },
+    [openIds, setWorkspace],
   );
-  const panelLabel =
-    catalogEntry?.displayName ??
-    installedPlugin?.name ??
-    installedPlugin?.id ??
-    pluginId ??
-    "Plugin";
-  const panelTab = useMemo<SecondaryPanelRenderableTab | null>(() => {
-    if (pluginId === undefined) return null;
-    return {
-      contentFillsRegion: true,
-      label: panelLabel,
-      leadingVisual: (
-        <PluginIcon
-          pluginId={pluginId}
-          icon={catalogEntry?.icon ?? installedPlugin?.icon ?? null}
-          compactIconUrl={installedPlugin?.compactIconUrl}
-          className="size-3.5"
-        />
-      ),
-      onClose: closePanel,
-      onSelect: () => undefined,
-      renderContent: () => <PluginDetailToolView pluginId={pluginId} />,
-      statusLabel: null,
-      tab: {
-        id: `marketplace-plugin:${pluginId}`,
-        kind: "marketplace-plugin-detail",
-      },
-    };
-  }, [
-    catalogEntry?.icon,
-    closePanel,
-    installedPlugin?.compactIconUrl,
-    installedPlugin?.icon,
-    panelLabel,
-    pluginId,
-  ]);
   const panelTabs = useMemo<readonly SecondaryPanelRenderableTab[]>(
-    () => (panelTab === null ? [] : [panelTab]),
-    [panelTab],
+    () =>
+      openIds.map((id) => {
+        const plugin = listQuery.data?.plugins.find(
+          (candidate) => candidate.id === id,
+        );
+        const entry =
+          plugin === undefined
+            ? catalogQuery.data?.entries.find(
+                (candidate) => candidate.pluginId === id,
+              )
+            : installedPluginCatalogEntry(
+                plugin,
+                catalogQuery.data?.entries ?? [],
+              );
+        return {
+          contentFillsRegion: true,
+          label: entry?.displayName ?? plugin?.name ?? id,
+          leadingVisual: (
+            <PluginIcon
+              pluginId={id}
+              icon={entry?.icon ?? plugin?.icon ?? null}
+              compactIconUrl={plugin?.compactIconUrl}
+              className="size-3.5"
+            />
+          ),
+          onClose: () => closeTab(id),
+          onSelect: () => selectPlugin(id),
+          renderContent: () => <PluginDetailToolView key={id} pluginId={id} />,
+          statusLabel: null,
+          tab: {
+            id: `marketplace-plugin:${id}`,
+            kind: "marketplace-plugin-detail",
+          },
+        };
+      }),
+    [
+      catalogQuery.data?.entries,
+      closeTab,
+      listQuery.data?.plugins,
+      openIds,
+      selectPlugin,
+    ],
   );
+  const activeTab =
+    panelTabs.find(
+      (tab) => tab.tab.id === `marketplace-plugin:${activePluginId}`,
+    )?.tab ?? null;
   const mainContent = (
     <div className="min-h-0 flex-1 overflow-hidden">
-      <Suspense fallback={<ToolsBodyFallback />}>
-        <ToolsSectionBody
-          activeSection={activeSection}
-          pathname={location.pathname}
-          onOpenPlugin={openPlugin}
-        />
+      <Suspense fallback={<ResourceBodyFallback />}>
+        <PluginsToolView onOpenPlugin={openPlugin} />
       </Suspense>
     </div>
   );
@@ -526,19 +565,14 @@ export function ToolsView({ pluginId }: { pluginId?: string } = {}) {
       isMainCollapsed,
       onToggleMainCollapse,
       resizablePanelId,
-    }: {
-      presentation: "inline" | "drawer";
-      isMainCollapsed: boolean;
-      onToggleMainCollapse: () => void;
-      resizablePanelId?: string;
-    }) => (
+    }: SecondaryPanelRenderArgs) => (
       <ThreadSecondaryPanel
-        activeTab={panelTab?.tab ?? null}
+        activeTab={activeTab}
         canUseGitUi={false}
         metadataContent={null}
         tabs={panelTabs}
         fixedTabs={[]}
-        onTabReorder={() => undefined}
+        onTabReorder={reorderTab}
         isOpen={isPanelOpen}
         showConversationCollapseControl
         showNewTabButton={false}
@@ -552,21 +586,8 @@ export function ToolsView({ pluginId }: { pluginId?: string } = {}) {
         resizablePanelId={resizablePanelId}
       />
     ),
-    [closePanel, isPanelOpen, panelTab?.tab, panelTabs],
+    [activeTab, closePanel, isPanelOpen, panelTabs, reorderTab],
   );
-
-  if (
-    activeSection === "plugins" &&
-    pluginId !== undefined &&
-    new URLSearchParams(location.search).get("view") === "installed"
-  ) {
-    return (
-      <Navigate
-        replace
-        to={`${getPluginDetailRoutePath({ pluginId, view: "installed" })}${location.hash}`}
-      />
-    );
-  }
 
   return (
     <div className="-mx-4 -mb-4 -mt-4 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:-mx-5 md:-mb-5 md:-mt-5">
@@ -576,9 +597,9 @@ export function ToolsView({ pluginId }: { pluginId?: string } = {}) {
         onClose={closePanel}
         panelGroupKey="extensions-plugin-details"
         resetKey="extensions-plugin-details"
-        contentKey={pluginId ?? "extensions-plugins"}
+        contentKey={activePluginId ?? "extensions-plugins"}
         drawerLabel="Plugin details"
-        drawerFallback={<ToolsBodyFallback />}
+        drawerFallback={<ResourceBodyFallback />}
         mainPanelId="extensions-main-panel"
         main={mainContent}
         collapse={{
@@ -589,6 +610,25 @@ export function ToolsView({ pluginId }: { pluginId?: string } = {}) {
         composerHost={null}
         compactPresentation="full"
       />
+    </div>
+  );
+}
+
+export function SkillsView() {
+  const location = useLocation();
+  const isCollection =
+    matchPath(SKILLS_ROUTE_PATH, location.pathname) !== null ||
+    location.pathname === REGISTRY_SKILLS_ROUTE_PATH;
+
+  return (
+    <div className="-mx-4 -mb-4 -mt-4 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:-mx-5 md:-mb-5 md:-mt-5">
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <Suspense fallback={<ResourceBodyFallback />}>
+          <ResourceScrollPage fillViewport={isCollection}>
+            <SkillsLibrary />
+          </ResourceScrollPage>
+        </Suspense>
+      </div>
     </div>
   );
 }

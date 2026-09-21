@@ -13,8 +13,9 @@ describe("experiments settings", () => {
       const body = systemConfigResponseSchema.parse(await readJson(response));
       expect(body.experiments).toEqual({
         changelogPreview: false,
-        editMessages: true,
         mobileApp: false,
+        multiMachinePicker: false,
+        serverMove: false,
         sidebarProgressiveDisclosure: false,
         timelineWindowing: false,
       });
@@ -28,8 +29,9 @@ describe("experiments settings", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           changelogPreview: true,
-          editMessages: true,
           mobileApp: true,
+          multiMachinePicker: true,
+          serverMove: true,
           sidebarProgressiveDisclosure: true,
           timelineWindowing: true,
         }),
@@ -37,15 +39,17 @@ describe("experiments settings", () => {
       expect(put.status).toBe(200);
       expect(experimentsSchema.parse(await readJson(put))).toEqual({
         changelogPreview: true,
-        editMessages: true,
         mobileApp: true,
+        multiMachinePicker: true,
+        serverMove: true,
         sidebarProgressiveDisclosure: true,
         timelineWindowing: true,
       });
       expect(getExperiments(harness.db)).toEqual({
         changelogPreview: true,
-        editMessages: true,
         mobileApp: true,
+        multiMachinePicker: true,
+        serverMove: true,
         sidebarProgressiveDisclosure: true,
         timelineWindowing: true,
       });
@@ -55,8 +59,9 @@ describe("experiments settings", () => {
         systemConfigResponseSchema.parse(await readJson(config)).experiments,
       ).toEqual({
         changelogPreview: true,
-        editMessages: true,
         mobileApp: true,
+        multiMachinePicker: true,
+        serverMove: true,
         sidebarProgressiveDisclosure: true,
         timelineWindowing: true,
       });
@@ -73,8 +78,9 @@ describe("experiments settings", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           changelogPreview: false,
-          editMessages: false,
           mobileApp: false,
+          multiMachinePicker: false,
+          serverMove: false,
           sidebarProgressiveDisclosure: false,
           timelineWindowing: false,
         }),

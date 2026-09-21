@@ -288,6 +288,12 @@ function pluginAppSurfaceItems(
       "thread-header",
       "Adds an action to thread headers.",
     ),
+    ...namedSlotItems(
+      pluginId,
+      slots.browserToolbarActions,
+      "browser-toolbar",
+      "Adds an action to Browser tab toolbars.",
+    ),
     ...slots.composerCustomizations
       .filter((slot) => slot.pluginId === pluginId)
       .flatMap((slot) => [
@@ -523,8 +529,8 @@ function PluginRuntimeStatusAlert({
     .join(" ");
   return (
     <PluginBannerBar
-      role="alert"
-      tone={runtimeStatus.tone === "error" ? "destructive" : "warning"}
+      role={plugin.status === "starting" ? "status" : "alert"}
+      tone={runtimeStatus.tone === "error" ? "destructive" : runtimeStatus.tone}
       icon={runtimeStatus.icon}
       title={runtimeStatus.label}
       detail={detail}

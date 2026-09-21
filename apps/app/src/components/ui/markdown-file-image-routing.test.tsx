@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FilePreview } from "@/components/secondary-panel/FilePreview";
 import {
@@ -59,6 +59,43 @@ function renderMarkdownFilePreview({
 }
 
 describe("Markdown file preview image routing", () => {
+  it("cycles images rendered in a Markdown table", () => {
+    render(
+      <FilePreview
+        headerMode="none"
+        path="gallery.md"
+        state={{
+          kind: "ready",
+          file: {
+            contents:
+              "| First | Second |\n| --- | --- |\n| ![one](one.png) | ![two](two.png) |",
+            name: "gallery.md",
+          },
+          lineRange: null,
+          textPreviewKind: "markdown",
+        }}
+      />,
+    );
+
+    const firstImage = screen.getByRole("img", { name: "one" });
+    Object.defineProperty(firstImage, "currentSrc", {
+      configurable: true,
+      value: "https://app.example/one.png",
+    });
+    fireEvent.click(firstImage);
+    fireEvent.click(screen.getByRole("button", { name: "Next image" }));
+
+    expect(
+      screen.getByRole("img", { name: "Expanded image" }).getAttribute("src"),
+    ).toMatch(/two\.png$/u);
+
+    fireEvent.click(screen.getByRole("button", { name: "Previous image" }));
+
+    expect(
+      screen.getByRole("img", { name: "Expanded image" }).getAttribute("src"),
+    ).toMatch(/one\.png$/u);
+  });
+
   it("preserves explicit image routing and file-link handlers", () => {
     const linkRouting: MarkdownLinkRouting = {
       onOpenLink: vi.fn(() => false),
@@ -101,12 +138,12 @@ describe("Markdown file preview image routing", () => {
       />,
     );
     for (const name of ["relative", "absolute"]) {
-      expect(screen.getByRole("img", { name }).getAttribute("src")).toBe(
+      expect(screen.getByRole("img", { name }).getAttribute("data-markdown-image-src")).toBe(
         "/api/v1/file-previews/lease_skill/assets/chart.png",
       );
     }
     expect(
-      screen.getByRole("img", { name: "escape" }).getAttribute("src"),
+      screen.getByRole("img", { name: "escape" }).getAttribute("data-markdown-image-src"),
     ).toBe("../../outside.png");
   });
 
@@ -122,12 +159,12 @@ describe("Markdown file preview image routing", () => {
     });
 
     expect(
-      screen.getByRole("img", { name: "absolute" }).getAttribute("src"),
+      screen.getByRole("img", { name: "absolute" }).getAttribute("data-markdown-image-src"),
     ).toBe(
       "/api/v1/threads/thr_preview/host-files/content?path=%2FUsers%2Fme%2F.bb%2Fthread-storage%2Fthr_preview%2Fgenerated.png",
     );
     expect(
-      screen.getByRole("img", { name: "relative" }).getAttribute("src"),
+      screen.getByRole("img", { name: "relative" }).getAttribute("data-markdown-image-src"),
     ).toBe(
       "/api/v1/threads/thr_preview/thread-storage/files/reports/nested/screenshots/chart.png",
     );
@@ -145,12 +182,12 @@ describe("Markdown file preview image routing", () => {
     });
 
     expect(
-      screen.getByRole("img", { name: "absolute" }).getAttribute("src"),
+      screen.getByRole("img", { name: "absolute" }).getAttribute("data-markdown-image-src"),
     ).toBe(
       "/api/v1/threads/thr_preview/host-files/content?path=%2FUsers%2Fme%2Fproject%2Fgenerated.png",
     );
     expect(
-      screen.getByRole("img", { name: "relative" }).getAttribute("src"),
+      screen.getByRole("img", { name: "relative" }).getAttribute("data-markdown-image-src"),
     ).toBe("/api/v1/threads/thr_preview/worktree/files/docs/assets/chart.png");
   });
 
@@ -163,7 +200,7 @@ describe("Markdown file preview image routing", () => {
     });
 
     expect(
-      screen.getByRole("img", { name: "escape" }).getAttribute("src"),
+      screen.getByRole("img", { name: "escape" }).getAttribute("data-markdown-image-src"),
     ).toBe("../../outside.png");
   });
 });

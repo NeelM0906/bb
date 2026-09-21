@@ -6,12 +6,15 @@ const projectId = "proj_123";
 
 const environmentProviders: SystemEnvironmentProvider[] = [
   {
+    machineProviderId: null,
     id: "branchy",
     displayName: "New branch workspace",
+    description: "Prepare a workspace for this thread.",
     icon: "GitBranch",
     logoUrl: null,
     pluginId: "branchy",
     acceptsEmptyInputs: false,
+    machineAvailability: {},
     availability: null,
     requires: {
       projectCheckout: true,
@@ -26,12 +29,15 @@ const environmentProviders: SystemEnvironmentProvider[] = [
     },
   },
   {
+    machineProviderId: null,
     id: "hosted",
     displayName: "Machine sandbox",
+    description: "Prepare a workspace for this thread.",
     icon: "Server",
     logoUrl: null,
     pluginId: "hosted",
     acceptsEmptyInputs: true,
+    machineAvailability: {},
     availability: null,
     requires: {
       projectCheckout: false,
@@ -44,6 +50,27 @@ const environmentProviders: SystemEnvironmentProvider[] = [
 ];
 
 describe("resolveRootComposeThreadEnvironment", () => {
+  it("submits a composition without a host or machine selector", () => {
+    const modal = {
+      ...environmentProviders[1],
+      id: "modal-sandbox",
+      machineProviderId: "modal-sandbox",
+    };
+    expect(
+      resolveRootComposeThreadEnvironment({
+        projectId,
+        environmentValue: "provider:modal-sandbox",
+        environmentProviders: [modal],
+        providerHostId: null,
+        providerMachine: null,
+      }),
+    ).toEqual({
+      type: "provider",
+      environmentProviderId: "modal-sandbox",
+      inputs: null,
+    });
+  });
+
   it("carries a provider's inputs verbatim with the picked machine", () => {
     expect(
       resolveRootComposeThreadEnvironment({

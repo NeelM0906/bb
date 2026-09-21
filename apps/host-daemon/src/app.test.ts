@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import type { AgentRuntime, AgentRuntimeOptions } from "@bb/agent-runtime";
@@ -12,6 +13,7 @@ import {
   hostDaemonEventBatchRequestSchema,
   hostDaemonInteractiveInterruptRequestSchema,
   type HostDaemonInteractiveRequestResponse,
+  type HostDaemonContributedEnvEntry,
 } from "@bb/host-daemon-contract";
 import type { HostWatcher } from "@bb/host-watcher";
 import { createDeferredPromise } from "@bb/test-helpers";
@@ -34,6 +36,7 @@ import type {
 import type { FetchFn } from "./server-client.js";
 import type { CreateReconnectingWebSocket } from "./server-connection.js";
 import type { ReconnectingWebSocketLike } from "./server-connection-support.js";
+import { MACHINE_SUSPENSION_MARKER } from "./suspension-marker.js";
 
 interface RecordedFetchRequest {
   body: string | null;
@@ -47,6 +50,8 @@ interface FetchRecorder {
 }
 
 interface CreateFetchRecorderArgs {
+  machineEnvironment?: HostDaemonContributedEnvEntry[];
+  onToolCallSignal?: (signal: AbortSignal | null | undefined) => void;
   inactiveSessionOnFirstEventPost?: boolean;
   interactiveRequestError?: Error;
   interactiveRequestResponse?: HostDaemonInteractiveRequestResponse;
@@ -60,6 +65,7 @@ interface RuntimeOptionsRef {
 
 interface HostDaemonAppFixture {
   app: HostDaemonApp;
+  dataDir: string;
   fetchRecorder: FetchRecorder;
   logger: ReturnType<typeof createLogger>;
   runtimeOptions: RuntimeOptionsRef;
@@ -122,6 +128,8 @@ function createFetchRecorder(
     };
     requests.push(request);
 
+    if (url.pathname === "/internal/session/tool-call")
+      args.onToolCallSignal?.(init?.signal);
     if (url.pathname === "/internal/session/open") {
       const sessionId =
         args.sessionIds?.[sessionOpenCount] ??
@@ -131,6 +139,10 @@ function createFetchRecorder(
       return Response.json(
         {
           sessionId,
+          machineEnvironment: {
+            revision: 0,
+            entries: args.machineEnvironment ?? [],
+          },
           heartbeatIntervalMs: 30000,
           leaseTimeoutMs: 90000,
           retiredEnvironmentIds: args.retiredEnvironmentIds ?? [],
@@ -196,7 +208,9 @@ function createFetchRecorder(
   };
 }
 
-function createOpeningWebSocket(): CreateReconnectingWebSocket {
+function createOpeningWebSocket(
+  onCreate?: (socket: ReconnectingWebSocketLike) => void,
+): CreateReconnectingWebSocket {
   return (urlProvider) => {
     let readyState = 0;
     const socket: ReconnectingWebSocketLike = {
@@ -225,6 +239,7 @@ function createOpeningWebSocket(): CreateReconnectingWebSocket {
       socket.onclose?.({ code: 1000, reason: "test-reconnect" });
       void openSocket();
     });
+    onCreate?.(socket);
     void openSocket();
     return socket;
   };
@@ -369,6 +384,8 @@ async function createAppFixture(
   options: {
     closeMachineAuthProxy?: () => Promise<void>;
     hostAdmissionLimit?: number;
+    createWebSocket?: CreateReconnectingWebSocket;
+    exitProcess?: (code: number) => void;
   } = {},
 ): Promise<HostDaemonAppFixture> {
   const dataDir = await makeTempDir("bb-host-daemon-app-test-");
@@ -379,7 +396,6 @@ async function createAppFixture(
     dataDir,
     serverUrl: "http://127.0.0.1:3334",
     hostKey: "host-key-app-test",
-    hostType: "persistent",
     hostId: "host-app-test",
     hostName: "App Test Host",
     instanceId: "instance-app-test",
@@ -391,10 +407,11 @@ async function createAppFixture(
       return createFakeRuntime();
     },
     fetchFn: fetchRecorder.fetchFn,
-    createWebSocket: createOpeningWebSocket(),
     ...(options.hostAdmissionLimit === undefined
       ? {}
       : { hostAdmissionLimit: options.hostAdmissionLimit }),
+    createWebSocket: options.createWebSocket ?? createOpeningWebSocket(),
+    ...(options.exitProcess ? { exitProcess: options.exitProcess } : {}),
     ...(options.closeMachineAuthProxy
       ? { closeMachineAuthProxy: options.closeMachineAuthProxy }
       : {}),
@@ -402,6 +419,7 @@ async function createAppFixture(
 
   return {
     app,
+    dataDir,
     fetchRecorder,
     logger,
     runtimeOptions,
@@ -439,6 +457,23 @@ describe("createHostDaemonApp", () => {
         ok: true,
         result: { outcome: "reserved" },
       });
+      const reconciled = await app.router.handleOnlineRpcRequest({
+        type: "host-rpc.request",
+        requestId: "admission-reconnect",
+        command: { type: "host.admission.reconcile" },
+      });
+      expect(reconciled).toMatchObject({
+        ok: true,
+        result: {
+          reservations: [
+            {
+              requestIds: ["creq_23456789ab"],
+              threadId: "thread-1",
+              reservation: { hostId: "host-app-test", generation: 1 },
+            },
+          ],
+        },
+      });
       expect(second).toEqual({
         type: "host-rpc.response",
         requestId: "admission-second",
@@ -452,6 +487,87 @@ describe("createHostDaemonApp", () => {
     } finally {
       await app.daemon.shutdown("test", 0);
     }
+  });
+
+  it("installs machine variables into the daemon and child processes before work, then removes overrides live", async () => {
+    vi.stubEnv("MACHINE_DAEMON_TEST", "original");
+    let socket: ReconnectingWebSocketLike | undefined;
+    const { app } = await createAppFixture(
+      {
+        machineEnvironment: [
+          {
+            name: "MACHINE_DAEMON_TEST",
+            value: "configured",
+            source: { core: "machine-environment" },
+            reason: "test",
+          },
+        ],
+      },
+      {
+        createWebSocket: createOpeningWebSocket((created) => {
+          socket = created;
+        }),
+      },
+    );
+    const readChild = () =>
+      execFileSync(
+        process.execPath,
+        ["-e", "process.stdout.write(process.env.MACHINE_DAEMON_TEST)"],
+        { encoding: "utf8" },
+      );
+    try {
+      await app.daemon.start();
+      expect(process.env.MACHINE_DAEMON_TEST).toBe("configured");
+      expect(readChild()).toBe("configured");
+      await app.runtimeManager.replaceBaseShellEnv({
+        MACHINE_DAEMON_TEST: "stale-shell",
+      });
+      expect(app.runtimeManager.getShellEnv().MACHINE_DAEMON_TEST).toBe(
+        "configured",
+      );
+      if (!socket) throw new Error("Expected daemon socket");
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "machine-environment.replace",
+          environment: { revision: 1, entries: [] },
+        }),
+      });
+      expect(process.env.MACHINE_DAEMON_TEST).toBe("original");
+      expect(readChild()).toBe("original");
+      expect(app.runtimeManager.getShellEnv()).not.toHaveProperty(
+        "MACHINE_DAEMON_TEST",
+      );
+    } finally {
+      await app.daemon.shutdown("test", 0);
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("acknowledges machine shutdown, cleans up, and exits", async () => {
+    let socket: ReconnectingWebSocketLike | undefined;
+    const exitProcess = vi.fn();
+    const { app, dataDir } = await createAppFixture(
+      {},
+      {
+        createWebSocket: createOpeningWebSocket((created) => {
+          socket = created;
+        }),
+        exitProcess,
+      },
+    );
+    await app.daemon.start();
+    if (socket === undefined) throw new Error("Expected daemon socket");
+
+    socket.onmessage?.({ data: JSON.stringify({ type: "machine.shutdown" }) });
+    await app.daemon.waitUntilStopped();
+
+    await expect(
+      fs.access(path.join(dataDir, MACHINE_SUSPENSION_MARKER)),
+    ).resolves.toBeUndefined();
+    expect(socket.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: "machine.shutdown-ack" }),
+    );
+    expect(exitProcess).toHaveBeenCalledWith(0);
   });
 
   it("closes the machine authentication proxy during daemon shutdown", async () => {
@@ -489,7 +605,6 @@ describe("createHostDaemonApp", () => {
       dataDir,
       serverUrl: "http://127.0.0.1:3334",
       hostKey: "host-key-app-test",
-      hostType: "persistent",
       hostId: "host-app-test",
       hostName: "App Test Host",
       instanceId: "instance-app-test",
@@ -505,7 +620,6 @@ describe("createHostDaemonApp", () => {
         return createFakeRuntimeWithModelList(listModels);
       },
       fetchFn: fetchRecorder.fetchFn,
-      createWebSocket: createOpeningWebSocket(),
     });
 
     try {
@@ -591,7 +705,6 @@ describe("createHostDaemonApp", () => {
       dataDir,
       serverUrl: "http://127.0.0.1:3334",
       hostKey: "host-key-app-test",
-      hostType: "persistent",
       hostId: "host-app-test",
       hostName: "App Test Host",
       instanceId: "instance-app-test",
@@ -610,7 +723,6 @@ describe("createHostDaemonApp", () => {
         return createFakeRuntimeWithModelList(listModels);
       },
       fetchFn: fetchRecorder.fetchFn,
-      createWebSocket: createOpeningWebSocket(),
     });
 
     try {
@@ -821,7 +933,6 @@ describe("createHostDaemonApp", () => {
       dataDir,
       serverUrl: "http://127.0.0.1:3334",
       hostKey: "host-key-retired-env",
-      hostType: "persistent",
       hostId: "host-retired-env",
       hostName: "Retired Environment Host",
       instanceId: "instance-retired-env",
@@ -830,8 +941,8 @@ describe("createHostDaemonApp", () => {
       localApiConfig: null,
       createRuntime: () => runtime,
       fetchFn: fetchRecorder.fetchFn,
-      hostWatcher,
       createWebSocket: createOpeningWebSocket(),
+      hostWatcher,
     });
 
     try {
@@ -1042,6 +1153,33 @@ describe("createHostDaemonApp", () => {
         threadIds: [request.threadId],
         reason: 'Provider "codex" exited while awaiting user interaction',
       });
+    } finally {
+      await app.daemon.shutdown("test", 0);
+    }
+  });
+
+  it("forwards the runtime cancellation signal through the daemon tool callback", async () => {
+    let signal: AbortSignal | null | undefined;
+    const { app, runtimeOptions } = await createAppFixture({
+      onToolCallSignal: (value) => {
+        signal = value;
+      },
+    });
+    try {
+      const workspacePath = await makeTempDir("bb-host-daemon-app-abort-");
+      await app.runtimeManager.ensureEnvironment({
+        environmentId: "env-abort",
+        workspacePath,
+      });
+      await app.connection.start();
+      const controller = new AbortController();
+      const callback = runtimeOptions.current?.onToolCall;
+      if (!callback) throw new Error("Tool callback missing");
+      await expect(
+        callback(createToolCallRequest(), controller.signal),
+      ).rejects.toThrow("Failed to call tool");
+      controller.abort();
+      expect(signal?.aborted).toBe(true);
     } finally {
       await app.daemon.shutdown("test", 0);
     }

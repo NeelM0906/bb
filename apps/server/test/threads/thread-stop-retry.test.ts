@@ -1,11 +1,20 @@
+import { callHostRetryableOnlineRpc } from "../../src/services/hosts/online-rpc.js";
 import { setTimeout as sleep } from "node:timers/promises";
-import { getThread, listEvents } from "@bb/db";
+import {
+  createWorkAdmission,
+  getThread,
+  getWorkAdmission,
+  listEvents,
+  markThreadDeleted,
+  markWorkAdmissionRunning,
+} from "@bb/db";
 import type { EnvironmentRow } from "@bb/db";
 import type { Thread } from "@bb/domain";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   finalizeStoppedThread,
   hasLiveThreadStopInFlight,
+  requestThreadStorageDeletion,
   requestThreadStopForCurrentState,
 } from "../../src/services/threads/thread-lifecycle.js";
 import {
@@ -75,6 +84,172 @@ async function waitForStopRpcIdle(args: WaitForStopRpcIdleArgs): Promise<void> {
 }
 
 describe("thread stop dispatch", () => {
+  it("releases admission after stop succeeds without a terminal provider event", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedActiveThreadStopFixture({
+        harness,
+        value: 20,
+      });
+      const admission = createWorkAdmission(harness.db, {
+        id: "creq_23456789ab",
+        commandJson: "{}",
+        hostId: environment.hostId,
+        reason: "interactive",
+        threadId: thread.id,
+        waitingReason: "test",
+      });
+      const reserved = await callHostRetryableOnlineRpc(harness.deps, {
+        timeoutMs: 1000,
+        hostId: environment.hostId,
+        command: {
+          type: "host.admission.reserve",
+          hostId: environment.hostId,
+          requestId: admission.id,
+          threadId: thread.id,
+          reason: "interactive",
+        },
+      });
+      if (reserved.outcome !== "reserved")
+        throw new Error("Expected reservation");
+      markWorkAdmissionRunning(harness.db, {
+        id: admission.id,
+        reservationGeneration: reserved.reservation.generation,
+        reservationToken: reserved.reservation.token,
+      });
+      requestThreadStopForCurrentState(harness.deps, thread, environment);
+      const stop = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.stop" && command.threadId === thread.id,
+      );
+      await reportQueuedCommandSuccess(harness, stop, {
+        providerCheckpointId: null,
+      });
+      await waitForStopRpcIdle({ threadId: thread.id });
+      expect(getWorkAdmission(harness.db, admission.id)).toMatchObject({
+        status: "terminal",
+      });
+    });
+  });
+
+  it("releases a running reservation before deleting its persisted identity", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedActiveThreadStopFixture({
+        harness,
+        value: 21,
+      });
+      const admission = createWorkAdmission(harness.db, {
+        id: "creq_23456789ab",
+        commandJson: "{}",
+        hostId: environment.hostId,
+        reason: "interactive",
+        threadId: thread.id,
+        waitingReason: "test",
+      });
+      const reserved = await callHostRetryableOnlineRpc(harness.deps, {
+        timeoutMs: 1000,
+        hostId: environment.hostId,
+        command: {
+          type: "host.admission.reserve",
+          hostId: environment.hostId,
+          requestId: admission.id,
+          threadId: thread.id,
+          reason: "interactive",
+        },
+      });
+      if (reserved.outcome !== "reserved")
+        throw new Error("Expected reservation");
+      markWorkAdmissionRunning(harness.db, {
+        id: admission.id,
+        reservationGeneration: reserved.reservation.generation,
+        reservationToken: reserved.reservation.token,
+      });
+      markThreadDeleted(harness.db, harness.hub, { threadId: thread.id });
+      requestThreadStorageDeletion(harness.deps, thread, environment);
+      const stop = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.storage.delete" &&
+          command.threadId === thread.id,
+      );
+      await reportQueuedCommandSuccess(harness, stop, {
+        providerCheckpointId: null,
+      });
+      await vi.waitFor(() =>
+        expect(getThread(harness.db, thread.id)).toBeNull(),
+      );
+      expect(getWorkAdmission(harness.db, admission.id)).toBeNull();
+      await expect(
+        callHostRetryableOnlineRpc(harness.deps, {
+          hostId: environment.hostId,
+          timeoutMs: 1000,
+          command: { type: "host.admission.reconcile" },
+        }),
+      ).resolves.toEqual({ reservations: [] });
+    });
+  });
+
+  it("keeps a deleted thread tombstone until storage deletion succeeds", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedActiveThreadStopFixture({
+        harness,
+        value: 5,
+      });
+      markThreadDeleted(harness.db, harness.hub, { threadId: thread.id });
+
+      requestThreadStorageDeletion(harness.deps, thread, environment);
+      const failedDelete = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.storage.delete" &&
+          command.threadId === thread.id,
+      );
+      expect(getThread(harness.db, thread.id)).toMatchObject({
+        deletedAt: expect.any(Number),
+        storageDeletedAt: null,
+      });
+
+      await reportQueuedCommandError(harness, failedDelete, {
+        errorCode: "test_storage_delete_failure",
+        errorMessage: "Test storage delete failure",
+      });
+      await sleep(10);
+      expect(getThread(harness.db, thread.id)).toMatchObject({
+        storageDeletedAt: null,
+      });
+
+      requestThreadStorageDeletion(harness.deps, thread, environment);
+      const successfulDelete = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.storage.delete" &&
+          command.threadId === thread.id,
+      );
+      await reportQueuedCommandSuccess(harness, successfulDelete, {
+        providerCheckpointId: null,
+      });
+
+      expect(getThread(harness.db, thread.id)).toBeNull();
+    });
+  });
+
+  it("keeps attached storage pending when its environment is unavailable", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedActiveThreadStopFixture({ harness, value: 6 });
+      markThreadDeleted(harness.db, harness.hub, { threadId: thread.id });
+
+      requestThreadStorageDeletion(harness.deps, thread, null);
+
+      expect(getThread(harness.db, thread.id)).toMatchObject({
+        deletedAt: expect.any(Number),
+        storageDeletedAt: null,
+      });
+      expect(
+        listQueuedThreadCommands(harness, "thread.storage.delete", thread.id),
+      ).toHaveLength(0);
+    });
+  });
+
   it("does not re-dispatch the stop after a live stop RPC failure", async () => {
     await withTestHarness(async (harness) => {
       const { environment, thread } = seedActiveThreadStopFixture({

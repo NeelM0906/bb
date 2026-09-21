@@ -1,53 +1,73 @@
 // @vitest-environment jsdom
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
+import { ThreadSectionCreateDialog } from "./ThreadSectionCreateDialog";
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { ThreadSectionRenameDialog } from "./ThreadSectionCreateDialog";
-
-const DUPLICATE_NAME_MESSAGE = "Section name already exists";
-
-function RenameDialogHarness({ onRename }: { onRename: () => void }) {
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  return (
-    <ThreadSectionRenameDialog
-      errorMessage={errorMessage}
-      target={{ id: "sec_alpha", name: "Alpha" }}
-      pending={false}
-      onOpenChange={() => {}}
-      onRename={() => {
-        onRename();
-        setErrorMessage(DUPLICATE_NAME_MESSAGE);
-      }}
-    />
-  );
-}
-
+const pointer = vi.hoisted(() => ({ coarse: false }));
+vi.mock("@bb/shared-ui/hooks/use-pointer-coarse", () => ({
+  usePointerCoarse: () => pointer.coarse,
+}));
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
+  pointer.coarse = false;
+});
+it("focuses the deferred form, validates and resets on reopen", async () => {
+  const onCreate = vi.fn();
+  const onOpenChange = vi.fn();
+  const { rerender } = render(
+    <ThreadSectionCreateDialog
+      open
+      onCreate={onCreate}
+      onOpenChange={onOpenChange}
+    />,
+  );
+  expect(screen.getByRole("dialog")).toBeDefined();
+  const input = await screen.findByRole("textbox", { name: "Section name" });
+  await waitFor(() => expect(document.activeElement).toBe(input));
+  fireEvent.click(screen.getByRole("button", { name: "Create section" }));
+  expect(screen.getByText("Section name cannot be empty.")).toBeDefined();
+  expect(onCreate).not.toHaveBeenCalled();
+  fireEvent.change(input, { target: { value: "  Work  " } });
+  fireEvent.click(screen.getByRole("button", { name: "Create section" }));
+  expect(onCreate).toHaveBeenCalledWith("Work");
+  rerender(
+    <ThreadSectionCreateDialog
+      open={false}
+      onCreate={onCreate}
+      onOpenChange={onOpenChange}
+    />,
+  );
+  rerender(
+    <ThreadSectionCreateDialog
+      open
+      onCreate={onCreate}
+      onOpenChange={onOpenChange}
+    />,
+  );
+  expect(
+    (
+      (await screen.findByRole("textbox", {
+        name: "Section name",
+      })) as HTMLInputElement
+    ).value,
+  ).toBe("");
 });
 
-describe("ThreadSectionRenameDialog", () => {
-  it("shows the same server validation error after a second submit", () => {
-    const onRename = vi.fn();
-    render(<RenameDialogHarness onRename={onRename} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Rename section" }));
-
-    expect(onRename).toHaveBeenCalledTimes(1);
-    expect(screen.getByText(DUPLICATE_NAME_MESSAGE)).not.toBeNull();
-
-    fireEvent.change(screen.getByRole("textbox", { name: "Section name" }), {
-      target: { value: "Beta" },
-    });
-
-    expect(screen.queryByText(DUPLICATE_NAME_MESSAGE)).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Rename section" }));
-
-    expect(onRename).toHaveBeenCalledTimes(2);
-    expect(screen.getByText(DUPLICATE_NAME_MESSAGE)).not.toBeNull();
-  });
+it("does not focus the deferred section input on a coarse pointer", async () => {
+  pointer.coarse = true;
+  render(
+    <ThreadSectionCreateDialog
+      open
+      onCreate={vi.fn()}
+      onOpenChange={vi.fn()}
+    />,
+  );
+  const input = await screen.findByRole("textbox", { name: "Section name" });
+  expect(document.activeElement).not.toBe(input);
 });

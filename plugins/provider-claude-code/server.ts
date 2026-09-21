@@ -1,3 +1,4 @@
+import { registerUsageSource } from "./src/usage-source.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   CLAUDE_CODE_ACTIVE_CATALOG_DATA,
@@ -7,6 +8,7 @@ import {
 import { CLAUDE_NATIVE_ROOTS_DECLARATION } from "./src/native-roots.js";
 
 export default function plugin(bb: BbPluginApi) {
+  registerUsageSource(bb);
   bb.settings.define({
     memoryEnabled: {
       type: "boolean",
@@ -26,13 +28,6 @@ export default function plugin(bb: BbPluginApi) {
       type: "boolean",
       label: "Disable Workflow tool",
       description: "Hide Claude Code's native Workflow tool for bb threads.",
-      default: false,
-    },
-    idleQueryReleaseEnabled: {
-      type: "boolean",
-      label: "Release idle Claude processes",
-      description:
-        "Close a quiescent Claude Code process after 30 seconds and resume it on the next turn.",
       default: false,
     },
     chromeEnabled: {
@@ -82,6 +77,7 @@ export default function plugin(bb: BbPluginApi) {
       { id: "max", label: "Max" },
     ],
     composerActions: ["plan"],
+    completedTurnDisplay: "flat",
     env: { passthrough: ["BB_CLAUDE_CODE_EXECUTABLE"] },
     models: {
       scope: "host",
@@ -99,8 +95,6 @@ export default function plugin(bb: BbPluginApi) {
         memoryEnabled: context.settings.memoryEnabled !== false,
         providerSubagentsEnabled: context.settings.subagentsDisabled !== true,
         workflowsEnabled: context.settings.workflowsDisabled !== true,
-        idleQueryReleaseEnabled:
-          context.settings.idleQueryReleaseEnabled === true,
         chromeEnabled: context.settings.chromeEnabled === true,
         ...(context.promptMode === "plan"
           ? { claudeCodePermissionMode: "plan" }

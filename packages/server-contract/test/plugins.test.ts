@@ -5,20 +5,20 @@ import {
   pluginCatalogSearchResponseSchema,
   pluginCatalogSearchResultSchema,
   pluginCatalogStatusSchema,
-  pluginInstallSourceRequestSchema,
+  pluginInstallRequestSchema,
   pluginSettingDescriptorSchema,
 } from "../src/index.js";
 
 describe("plugin contracts", () => {
   it("keeps the managed-workspace override absent for older strict servers", () => {
     expect(
-      pluginInstallSourceRequestSchema.parse({ source: "npm:@bb/notes@^1" }),
+      pluginInstallRequestSchema.parse({ source: "npm:@bb/notes@^1" }),
     ).toEqual({
       source: "npm:@bb/notes@^1",
       selection: { kind: "root" },
     });
     expect(
-      pluginInstallSourceRequestSchema.parse({
+      pluginInstallRequestSchema.parse({
         source: "path:/tmp/plugin",
         allowManagedWorkspaceSource: true,
       }),

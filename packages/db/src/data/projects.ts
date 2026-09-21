@@ -265,14 +265,6 @@ export function ensurePersonalProject(db: DbConnection) {
   return project;
 }
 
-export function listProjects(db: DbConnection) {
-  return db
-    .select()
-    .from(projects)
-    .orderBy(asc(projects.sortKey), asc(projects.id))
-    .all();
-}
-
 export interface UpdateProjectInput {
   name?: string;
   protectUnmanagedWorkspace?: boolean;

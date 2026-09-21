@@ -30,7 +30,7 @@ branch. Under the hood it's `git worktree add` plus some bookkeeping:
   worktree; after it elapses the worktree is removed the same way.
 
 Worktrees are created by bb's built-in **Worktree** plugin, which is enabled by
-default. Disabling it in Extensions → Plugins leaves existing worktrees alone
+default. Disabling it in Settings → Installed plugins leaves existing worktrees alone
 but stops bb from making new ones: a thread that asks for one waits until the
 plugin is running again.
 
@@ -193,3 +193,21 @@ A few quick checks:
    working-directory option set to an existing checkout. That resets the
    provider-owned session cwd; BB cannot repair it after the provider has
    retained the deleted path.
+
+## Fresh project clones on machines
+
+Core applies the same setup and teardown policy when a project checkout is freshly
+cloned onto a new machine and the environment provider reports that it owns the
+checkout. `.bb-env-setup.sh` must succeed before the environment is ready.
+`.bb-env-teardown.sh` runs before removal with its own 15-minute timeout; a failure
+is reported but does not prevent removal. A user-maintained checkout attached to
+BB remains unowned and runs neither hook.
+
+Fresh machine clones do not apply `.worktreeinclude`: no local source checkout
+exists on the new host. Supply local files and secrets through core Machine
+environment settings. Keep the repo hook's cache/no-op logic in the repository;
+Modal's stored Dockerfile recipe contains image-build instructions only.
+
+Restoring a machine filesystem does not rerun `.bb-env-setup.sh`. Setup runs when core first creates an owned environment. Fresh machine clones do not apply `.worktreeinclude`; supply local files and secrets through Machine environment settings.
+
+Thread startup does not validate workspace fingerprints, probe agent authentication, or automatically install agent CLIs.

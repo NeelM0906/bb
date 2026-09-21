@@ -406,6 +406,10 @@ function buildOptimisticQueuedMessage({
 
   return {
     id: `optimistic-queued-${nanoid()}`,
+    origin: null,
+    originPluginId: null,
+    initiator: "user",
+    senderThreadId: null,
     threadId: request.id,
     content: request.input,
     model: request.model ?? defaultExecutionOptions?.model ?? "pending",

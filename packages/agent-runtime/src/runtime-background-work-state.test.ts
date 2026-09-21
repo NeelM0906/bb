@@ -169,11 +169,11 @@ describe("RuntimeBackgroundWorkState", () => {
     const state = new RuntimeBackgroundWorkState();
     state.observe(taskStarted("task-1", { threadId: "t1" }));
 
-    expect(state.hasOpenWorkForThread("t1")).toBe(true);
-    expect(state.hasOpenWorkForThread("t2")).toBe(false);
+    expect(state.hasOpenThreadWork("t1")).toBe(true);
+    expect(state.hasOpenThreadWork("t2")).toBe(false);
 
     state.observe(taskCompleted("task-1", { threadId: "t1" }));
-    expect(state.hasOpenWorkForThread("t1")).toBe(false);
+    expect(state.hasOpenThreadWork("t1")).toBe(false);
   });
 
   it("settles a task that only reports a terminal status through progress", () => {

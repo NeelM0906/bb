@@ -1,31 +1,4 @@
 #!/usr/bin/env bash
-# Runs the Maestro flows CI can run against a Release build of the app (the
-# embedded JS bundle, no Metro) and a fresh mobile e2e backend, one `maestro
-# test` per flow so each gets its own artifacts, continuing past failures and
-# exiting non-zero if any flow failed.
-#
-# Usage:
-#   SERVER_URL=http://127.0.0.1:41999 \
-#   e2e/scripts/ci-run-flows.sh <simulator udid> <artifacts dir> [flow...]
-#
-# Default flows (in this order): shell-launch, shell-deep-link, shell-send,
-# shell-unreachable-server. Every one drives the WebView shell, so the backend
-# must be started with BB_MOBILE_E2E_SERVE_APP=1 and apps/app must be built
-# (`pnpm exec turbo run build --filter=@bb/app`); without them the server
-# answers API routes only and the shell shows its native error state.
-#
-# shell-connect is not in the default set: it needs the connect stub backend
-# (`pnpm --filter @bb/integration-tests e2e:mobile-connect-stub`), so it runs
-# on its own.
-#
-# Environment: SERVER_URL (default http://127.0.0.1:41999; the flows' own
-# env blocks point at the same port), MAESTRO_FLAGS (extra `maestro test`
-# flags). Needs maestro + java on PATH. Every flow gets
-# `-e BB_E2E_EMBEDDED_BUNDLE=1` (see ../subflows/launch-app.yaml); pass
-# `--dev-client` as the first argument to drive a dev client through Metro
-# instead (local use).
-# (bash 3.2 on macOS: empty arrays are expanded with the `${arr[@]+"${arr[@]}"}`
-# idiom so `set -u` does not trip.)
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
@@ -41,7 +14,7 @@ ARTIFACTS="${2:?artifacts dir}"
 shift 2
 FLOWS=("$@")
 if [ ${#FLOWS[@]} -eq 0 ]; then
-  FLOWS=(shell-launch shell-deep-link shell-send shell-unreachable-server)
+  FLOWS=(shell-launch shell-deep-link shell-send shell-send-sidebar-swipe shell-unreachable-server)
 fi
 
 export SERVER_URL="${SERVER_URL:-http://127.0.0.1:41999}"

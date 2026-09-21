@@ -1,17 +1,21 @@
 import type { DesktopBrowserBroker } from "./desktop-browser-broker.js";
-import type { AgentRuntimeBridgeLaunch } from "@bb/agent-runtime";
+import {
+  CompetingTurnError,
+  type AgentRuntimeBridgeLaunch,
+} from "@bb/agent-runtime";
 import type { AvailableModel } from "@bb/domain";
-import type { EventSinkInput } from "./event-sink.js";
-import type {
-  EnvironmentHookProgressMessage,
-  HostDaemonCommand,
-  ProviderHealthResult,
-  ProviderUsageResult,
-  HostDaemonBridgeLaunch,
-  HostDaemonInjectedSkillSource,
-  HostDaemonOnlineRpcCommand,
-  HostDaemonConnectTunnelIdentity,
-  WorkspaceContext,
+import type { EventSink } from "./event-sink.js";
+import {
+  COMPETING_TURN_ERROR_CODE,
+  type EnvironmentHookProgressMessage,
+  type HostDaemonCommand,
+  type ProviderHealthResult,
+  type ProviderUsageResult,
+  type HostDaemonBridgeLaunch,
+  type HostDaemonInjectedSkillSource,
+  type HostDaemonOnlineRpcCommand,
+  type HostDaemonConnectTunnelIdentity,
+  type WorkspaceContext,
 } from "@bb/host-daemon-contract";
 import type {
   ProviderInstallationCommand,
@@ -22,11 +26,11 @@ import { canonicalizeUnmanagedWorkspacePath } from "@bb/host-workspace";
 import { ensurePluginProcessDataDir } from "@bb/process-utils";
 import type { InteractiveResolveCommandInput } from "./interactive-request-registry.js";
 import { RuntimeManager, type RuntimeEntry } from "./runtime-manager.js";
-import type { TerminalManager } from "./terminals/terminal-manager.js";
 import type { FetchProjectAttachment } from "./project-attachments.js";
 import type { FetchSkillTree } from "./skill-trees.js";
 import type { HostAdmissionController } from "./host-admission-controller.js";
 import type { HostDaemonLogger } from "./logger.js";
+import type { ServerMoveService } from "./server-move/service.js";
 import {
   ensureCachedPluginHostArtifact,
   type FetchPluginHostArtifact,
@@ -39,12 +43,7 @@ export type CommandOf<TType extends DispatchCommand["type"]> = Extract<
   { type: TType }
 >;
 
-export interface EventSink {
-  emit: (event: EventSinkInput) => void;
-  flush: () => Promise<void>;
-}
-
-export const noopEventSink: EventSink = {
+export const noopEventSink: Pick<EventSink, "emit" | "flush"> = {
   emit: () => undefined,
   flush: async () => undefined,
 };
@@ -60,8 +59,7 @@ export interface CommandDispatchOptions {
   fetchSkillTree?: FetchSkillTree;
   fetchPluginHostArtifact?: FetchPluginHostArtifact;
   runtimeManager: RuntimeManager;
-  terminalManager?: Pick<TerminalManager, "closeEnvironmentTerminals">;
-  eventSink: EventSink;
+  eventSink: Pick<EventSink, "emit" | "flush">;
   listModels: (args: {
     providerId: string;
     bridgeLaunch: AgentRuntimeBridgeLaunch;
@@ -103,6 +101,7 @@ export interface CommandDispatchOptions {
   ) => Promise<void>;
   ensureConnectTunnelIdentity?: () => Promise<HostDaemonConnectTunnelIdentity>;
   hostAdmissionController?: HostAdmissionController;
+  serverMove?: ServerMoveService;
   threadStorageRootPath: string;
 }
 
@@ -194,6 +193,9 @@ export function getErrorCode(error: unknown): string {
   if (error instanceof CommandDispatchError) {
     return error.code;
   }
+  if (error instanceof CompetingTurnError) {
+    return COMPETING_TURN_ERROR_CODE;
+  }
   if (isStructuredSpawnMissingExecutableError(error)) {
     return "missing_executable";
   }
@@ -237,7 +239,6 @@ function isMessageOnlySpawnMissingExecutableError(error: unknown): boolean {
 
 export async function requireWorkspaceEnvironment(
   args: {
-    dataDir?: string;
     environmentId: string;
     injectedSkillSources?: readonly HostDaemonInjectedSkillSource[];
     targetThreadId?: string;

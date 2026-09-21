@@ -1,3 +1,4 @@
+import { copyProjectAttachmentOwnership } from "./project-attachments.js";
 import {
   and,
   asc,
@@ -15,6 +16,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import type {
+  JsonObject,
   ReasoningLevel,
   ThreadChangeKind,
   ThreadLifecycleEvent,
@@ -40,6 +42,7 @@ import {
 } from "../schema.js";
 import { createThreadId } from "../ids.js";
 import { createOrderKeyBetween } from "./order-keys.js";
+import { insertThreadPluginMetadata } from "./thread-plugin-metadata.js";
 
 type ThreadWriteConnection = DbConnection | DbTransaction;
 
@@ -77,15 +80,6 @@ function listThreadsWhere(
   where: ThreadWhere,
 ): ThreadRow[] {
   return db.select().from(threads).where(where).all();
-}
-
-function hasThreadWhere(
-  db: ThreadWriteConnection,
-  where: ThreadWhere,
-): boolean {
-  return (
-    db.select({ id: threads.id }).from(threads).where(where).get() !== undefined
-  );
 }
 
 export interface ThreadSearchHighlightRange {
@@ -269,10 +263,19 @@ export interface CreateThreadInput {
   sectionId?: string | null;
   status?: ThreadStatus;
   parentThreadId?: string | null;
+  lifecycleOwnerThreadId?: string | null;
   sourceThreadId?: string | null;
   originKind?: ThreadOriginKind | null;
   originPluginId?: string | null;
+  pluginMetadata?: { pluginId: string; metadata: JsonObject } | null;
   visibility?: ThreadVisibility;
+}
+
+export class InvalidLifecycleOwnerError extends Error {
+  constructor() {
+    super("lifecycleOwnerThreadId must reference a live thread");
+    this.name = "InvalidLifecycleOwnerError";
+  }
 }
 
 export function createThread(
@@ -286,6 +289,24 @@ export function createThread(
   const originKind = input.originKind ?? null;
   const thread = db.transaction(
     (tx) => {
+      if (input.lifecycleOwnerThreadId) {
+        const owner = tx
+          .select({ id: threads.id })
+          .from(threads)
+          .innerJoin(projects, eq(projects.id, threads.projectId))
+          .where(
+            and(
+              eq(threads.id, input.lifecycleOwnerThreadId),
+              isNull(threads.archivedAt),
+              isNull(threads.deletedAt),
+              isNull(projects.deletedAt),
+            ),
+          )
+          .get();
+        if (!owner) {
+          throw new InvalidLifecycleOwnerError();
+        }
+      }
       const createdThread = tx
         .insert(threads)
         .values({
@@ -302,6 +323,7 @@ export function createThread(
           sourceThreadId:
             input.sourceThreadId ??
             (originKind === null ? null : (input.parentThreadId ?? null)),
+          lifecycleOwnerThreadId: input.lifecycleOwnerThreadId ?? null,
           originKind,
           originPluginId: input.originPluginId ?? null,
           visibility,
@@ -312,12 +334,33 @@ export function createThread(
         })
         .returning()
         .get();
+      if (
+        createdThread.originKind === "fork" &&
+        createdThread.sourceThreadId !== null
+      ) {
+        copyProjectAttachmentOwnership(
+          tx,
+          createdThread.sourceThreadId,
+          createdThread.id,
+        );
+      }
       upsertThreadTitleSearchSegments(tx, {
         threadId: createdThread.id,
         title: createdThread.title,
         titleFallback: createdThread.titleFallback,
         updatedAt: now,
       });
+      if (
+        input.pluginMetadata !== undefined &&
+        input.pluginMetadata !== null &&
+        Object.keys(input.pluginMetadata.metadata).length > 0
+      ) {
+        insertThreadPluginMetadata(tx, {
+          threadId: createdThread.id,
+          pluginId: input.pluginMetadata.pluginId,
+          metadata: input.pluginMetadata.metadata,
+        });
+      }
       return createdThread;
     },
     { behavior: "immediate" },
@@ -576,15 +619,11 @@ export interface ListLiveThreadsInEnvironmentArgs {
   environmentId: string;
 }
 
-export interface HasRevivableArchivedThreadInEnvironmentArgs {
-  environmentId: string;
-}
-
 export interface CountNonDeletedAssignedChildThreadsArgs {
   parentThreadId: string;
 }
 
-export interface ListUnarchivedHiddenSourceThreadsArgs {
+export interface ListNonDeletedHiddenSourceThreadsArgs {
   sourceThreadId: string;
 }
 
@@ -598,10 +637,6 @@ export interface ListNonDeletedChildThreadsArgs {
 
 export interface MarkThreadDeletedArgs {
   deletedAt?: number;
-  threadId: string;
-}
-
-export interface MarkThreadAttentionRequestedArgs {
   threadId: string;
 }
 
@@ -621,10 +656,6 @@ export interface ListActiveHostThreadsArgs {
 export interface ThreadEnvironmentAssignmentRow {
   environmentId: string;
   threadId: string;
-}
-
-export interface HasPendingThreadShutdownInEnvironmentArgs {
-  environmentId: string;
 }
 
 interface StatusTransition {
@@ -842,7 +873,7 @@ function normalizeThreadSearchHighlightText(text: string): {
   const originalStarts: number[] = [];
   const originalEnds: number[] = [];
 
-  for (let index = 0; index < text.length; ) {
+  for (let index = 0; index < text.length;) {
     const codePoint = text.codePointAt(index);
     if (codePoint === undefined) {
       break;
@@ -977,7 +1008,7 @@ function listThreadSearchMatchRows(
       WHERE t.deleted_at IS NULL
         AND t.visibility = 'visible'
       GROUP BY threadId
-      HAVING COUNT(DISTINCT token_matches.tokenIndex) = ${args.tokenMatchQueries.length}
+      HAVING COUNT(*) = ${args.tokenMatchQueries.length}
     ),
     ordered_threads AS (
       SELECT
@@ -1010,7 +1041,7 @@ function listThreadSearchMatchRows(
         ${isTitleSegment} AS isTitle,
         thread_search_segments.source_kind AS sourceKind,
         thread_search_segments.source_seq AS sourceSeq,
-        thread_search_segments.text AS text,
+        thread_search_segments.rowid AS segmentRowid,
         thread_search_segments.thread_id AS threadId
       FROM thread_search_segments_fts
       JOIN thread_search_segments
@@ -1026,7 +1057,8 @@ function listThreadSearchMatchRows(
       segmentOrder,
       sourceKind,
       sourceSeq,
-      text,
+      (SELECT text FROM thread_search_segments
+       WHERE rowid = ranked_segments.segmentRowid) AS text,
       threadId
     FROM ranked_segments
     WHERE isTitle = 1
@@ -1305,22 +1337,6 @@ export function listRunningThreads(db: DbQueryConnection): RunningThreadRow[] {
     .map((row) => ({ ...row, hostId: row.hostId ?? null }));
 }
 
-export function listThreads(db: DbConnection, options: ListThreadsOptions) {
-  let query = db
-    .select()
-    .from(threads)
-    .where(and(...buildListThreadsFilters(options)))
-    .orderBy(...buildListThreadsOrderBy(options))
-    .$dynamic();
-  if (options.limit !== undefined) {
-    query = query.limit(options.limit);
-  }
-  if (options.offset !== undefined) {
-    query = query.offset(options.offset);
-  }
-  return query.all();
-}
-
 export function listThreadsWithPendingInteractionState(
   db: DbConnection,
   options: ListThreadsOptions,
@@ -1397,19 +1413,6 @@ export function countLiveThreadsInEnvironment(
   );
 }
 
-export function hasRevivableArchivedThreadInEnvironment(
-  db: ThreadWriteConnection,
-  args: HasRevivableArchivedThreadInEnvironmentArgs,
-): boolean {
-  return hasThreadWhere(
-    db,
-    nonDeletedThreads(
-      eq(threads.environmentId, args.environmentId),
-      isNotNull(threads.archivedAt),
-    ),
-  );
-}
-
 export function listLiveThreadsInEnvironment(
   db: ThreadWriteConnection,
   args: ListLiveThreadsInEnvironmentArgs,
@@ -1442,13 +1445,13 @@ export function listUnarchivedAssignedChildThreads(
   );
 }
 
-export function listUnarchivedHiddenSourceThreads(
+export function listNonDeletedHiddenSourceThreads(
   db: ThreadWriteConnection,
-  args: ListUnarchivedHiddenSourceThreadsArgs,
+  args: ListNonDeletedHiddenSourceThreadsArgs,
 ): ThreadRow[] {
   return listThreadsWhere(
     db,
-    liveThreads(
+    nonDeletedThreads(
       eq(threads.sourceThreadId, args.sourceThreadId),
       eq(threads.visibility, "hidden"),
     ),
@@ -1517,24 +1520,6 @@ export function listActiveHostThreads(
       ),
     )
     .all();
-}
-
-export function hasPendingThreadShutdownInEnvironment(
-  db: DbConnection,
-  args: HasPendingThreadShutdownInEnvironmentArgs,
-): boolean {
-  const row = db
-    .select({ id: threads.id })
-    .from(threads)
-    .where(
-      and(
-        eq(threads.environmentId, args.environmentId),
-        eq(threads.status, "stopping"),
-      ),
-    )
-    .get();
-
-  return row !== undefined;
 }
 
 export function pinThread(
@@ -1842,31 +1827,20 @@ export function setThreadExecutionOverride(
   return updated ?? null;
 }
 
-export interface SetThreadPendingStartContextInput {
+export interface SetThreadStartupContextInput {
   threadId: string;
-  /** JSON-encoded context, or null to clear it as the thread leaves `pending`. */
-  pendingStartContext: string | null;
+  startupContext: string | null;
 }
 
-/**
- * Records (or clears) how a `pending` thread will be established.
- *
- * Deliberately not folded into the lifecycle transition that leaves `pending`:
- * creation writes the context unconditionally BEFORE the first dispatch
- * attempt — an attempt that queues is not a transition at all — and clearing
- * it is a separate fact from the status change: a thread that fails to start
- * still wants its status moved without losing the context a later attempt
- * would start from.
- */
-export function setThreadPendingStartContext(
+export function setThreadStartupContext(
   db: ThreadWriteConnection,
-  input: SetThreadPendingStartContextInput,
+  input: SetThreadStartupContextInput,
 ) {
   return (
     db
       .update(threads)
       .set({
-        pendingStartContext: input.pendingStartContext,
+        startupContext: input.startupContext,
         updatedAt: Date.now(),
       })
       .where(eq(threads.id, input.threadId))
@@ -1875,54 +1849,17 @@ export function setThreadPendingStartContext(
   );
 }
 
-/** The stored JSON; null once the thread was admitted, or never was pending. */
-export function getThreadPendingStartContext(
+export function getThreadStartupContext(
   db: DbQueryConnection,
   threadId: string,
 ): string | null {
   return (
     db
-      .select({ pendingStartContext: threads.pendingStartContext })
+      .select({ startupContext: threads.startupContext })
       .from(threads)
       .where(eq(threads.id, threadId))
-      .get()?.pendingStartContext ?? null
+      .get()?.startupContext ?? null
   );
-}
-
-export function markThreadAttentionRequested(
-  db: ThreadWriteConnection,
-  notifier: DbNotifier,
-  args: MarkThreadAttentionRequestedArgs,
-) {
-  const existing = db
-    .select()
-    .from(threads)
-    .where(eq(threads.id, args.threadId))
-    .get();
-  if (!existing) {
-    return null;
-  }
-
-  const now = Date.now();
-  if (now <= existing.latestAttentionAt) {
-    return existing;
-  }
-
-  const updated = db
-    .update(threads)
-    .set({
-      latestAttentionAt: now,
-      updatedAt: now,
-    })
-    .where(eq(threads.id, args.threadId))
-    .returning()
-    .get();
-  if (updated) {
-    notifier.notifyThread(args.threadId, ["read-state-changed"], {
-      projectId: existing.projectId,
-    });
-  }
-  return updated ?? null;
 }
 
 export function deleteThread(
@@ -1932,12 +1869,56 @@ export function deleteThread(
 ) {
   const existing = db.select().from(threads).where(eq(threads.id, id)).get();
   if (!existing) return false;
+  if (
+    db
+      .select({ id: threads.id })
+      .from(threads)
+      .where(eq(threads.lifecycleOwnerThreadId, id))
+      .limit(1)
+      .get()
+  )
+    return false;
   db.delete(threads).where(eq(threads.id, id)).run();
   notifier.notifyThread(id, ["thread-deleted"], {
     projectId: existing.projectId,
   });
   notifier.notifyProject(existing.projectId, ["threads-changed"]);
   return true;
+}
+
+function lifecycleThreadTreeIds(seed: SQL): SQL {
+  return sql`(WITH RECURSIVE owned(id) AS (
+    ${seed} UNION SELECT t.id FROM threads t JOIN owned ON t.lifecycle_owner_thread_id = owned.id
+  ) SELECT id FROM owned)`;
+}
+
+function lifecycleThreadTreeIdsForThread(threadId: string): SQL {
+  return lifecycleThreadTreeIds(sql`SELECT ${threadId}`);
+}
+
+export function lifecycleThreadTreeIdsForProject(projectId: string): SQL {
+  return lifecycleThreadTreeIds(
+    sql`SELECT id FROM threads WHERE project_id = ${projectId}`,
+  );
+}
+
+export function listLifecycleThreadDependents(
+  db: DbQueryConnection,
+  id: string,
+) {
+  return db
+    .select()
+    .from(threads)
+    .where(eq(threads.lifecycleOwnerThreadId, id))
+    .all();
+}
+
+export function listLifecycleThreadTree(db: DbQueryConnection, id: string) {
+  return db
+    .select()
+    .from(threads)
+    .where(inArray(threads.id, lifecycleThreadTreeIdsForThread(id)))
+    .all();
 }
 
 export function markThreadDeleted(
@@ -1951,18 +1932,38 @@ export function markThreadDeleted(
       deletedAt: args.deletedAt ?? Date.now(),
       updatedAt: Date.now(),
     })
-    .where(eq(threads.id, args.threadId))
+    .where(
+      and(
+        inArray(threads.id, lifecycleThreadTreeIdsForThread(args.threadId)),
+        isNull(threads.deletedAt),
+      ),
+    )
     .returning()
-    .get();
-
-  if (updated) {
-    notifier.notifyThread(args.threadId, ["thread-deleted"], {
-      projectId: updated.projectId,
+    .all();
+  for (const thread of updated) {
+    notifier.notifyThread(thread.id, ["thread-deleted"], {
+      projectId: thread.projectId,
     });
-    notifier.notifyProject(updated.projectId, ["threads-changed"]);
+    notifier.notifyProject(thread.projectId, ["threads-changed"]);
   }
+  return (
+    updated.find((thread) => thread.id === args.threadId) ??
+    getThread(db, args.threadId)
+  );
+}
 
-  return updated ?? null;
+export function markThreadStorageDeleted(
+  db: ThreadWriteConnection,
+  args: { threadId: string; deletedAt?: number },
+) {
+  return (
+    db
+      .update(threads)
+      .set({ storageDeletedAt: args.deletedAt ?? Date.now() })
+      .where(eq(threads.id, args.threadId))
+      .returning()
+      .get() ?? null
+  );
 }
 
 export function archiveThread(
@@ -1974,15 +1975,22 @@ export function archiveThread(
   const updated = db
     .update(threads)
     .set({ archivedAt: now, updatedAt: now })
-    .where(eq(threads.id, id))
+    .where(
+      and(
+        inArray(threads.id, lifecycleThreadTreeIdsForThread(id)),
+        isNull(threads.archivedAt),
+        isNull(threads.deletedAt),
+      ),
+    )
     .returning()
-    .get();
-  if (updated) {
-    notifier.notifyThread(id, ["archived-changed"], {
-      projectId: updated.projectId,
+    .all();
+  for (const thread of updated) {
+    notifier.notifyThread(thread.id, ["archived-changed"], {
+      projectId: thread.projectId,
     });
   }
-  return updated ?? null;
+  const root = updated.find((thread) => thread.id === id) ?? getThread(db, id);
+  return root?.deletedAt === null ? root : null;
 }
 
 export function unarchiveThread(
@@ -1990,13 +1998,25 @@ export function unarchiveThread(
   notifier: DbNotifier,
   id: string,
 ) {
-  const now = Date.now();
-  const updated = db
-    .update(threads)
-    .set({ archivedAt: null, updatedAt: now })
-    .where(eq(threads.id, id))
-    .returning()
-    .get();
+  const updated = db.transaction(
+    (tx) => {
+      const current = getThread(tx, id);
+      if (current?.deletedAt !== null) return null;
+      if (current.lifecycleOwnerThreadId) {
+        const owner = getThread(tx, current.lifecycleOwnerThreadId);
+        if (!owner || owner.archivedAt !== null || owner.deletedAt !== null)
+          return null;
+      }
+      const now = Date.now();
+      return tx
+        .update(threads)
+        .set({ archivedAt: null, updatedAt: now })
+        .where(eq(threads.id, id))
+        .returning()
+        .get();
+    },
+    { behavior: "immediate" },
+  );
   if (updated) {
     notifier.notifyThread(id, ["archived-changed"], {
       projectId: updated.projectId,
@@ -2085,6 +2105,12 @@ export function applyThreadLifecycleEventInTransaction(
     status: evaluation.to,
     updatedAt: now,
   };
+  if (
+    evaluation.to === "active" ||
+    (evaluation.to === "idle" && thread.environmentId !== null)
+  ) {
+    set.startupContext = null;
+  }
   if (
     statusTransitionNeedsAttention({
       currentStatus: thread.status,

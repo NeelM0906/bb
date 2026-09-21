@@ -34,7 +34,7 @@ command’s `--help` before mutation. Use fresh browser snapshots for controls.
 | File openers and local editor | Configure file/directory defaults, extension-specific openers, and local editor integration; open a fixture through each. | Chosen handler and line/path are correct; reset/default fallbacks remain usable. |
 | Voice configuration | Load microphones, select one, configure the available AI service, and transcribe a harmless fixture. | Choice is applied to recording/transcription; missing browser permission or service is clearly reported. |
 | Usage and AI services | Inspect Usage limits, settings usage, and settings ai-services; compare provider-reported windows and service selections. | Unavailable data remains unavailable rather than zero; configured services are resolved by their owning plugin. |
-| Experiments | Exercise changelogPreview, editMessages, mobileApp, sidebarProgressiveDisclosure, and timelineWindowing on/off in isolated data. | Only the named feature gate changes; disabled routes/actions fail or disappear as designed; state restores. |
+| Experiments | Exercise changelogPreview, mobileApp, sidebarProgressiveDisclosure, and timelineWindowing on/off in isolated data. | Only the named feature gate changes; disabled routes/actions fail or disappear as designed; state restores. |
 | Debug events | Toggle Show unhandled provider events and render a trusted unsupported-event fixture. | The diagnostic row visibility follows the toggle without changing persisted event data. |
 | Community and update surfaces | Open Community links, version/update view, changelog, and CLI skills status. | Destinations and installed/latest status are correct; viewing does not perform an update. |
 | Configuration reload | Change an owned test configuration value and invoke settings reload. | The running app observes supported reloadable values and reports invalid configuration without losing working state. |
@@ -47,3 +47,31 @@ mutations through the available agent interface to establish parity. Preserve
 failed attempts and prerequisites; source documentation is not a passing test.
 Restore preferences and remove only the fixtures and sessions created by this
 recipe. External writes require a disposable test target and task authorization.
+
+## Project machine environment verification
+
+In isolated data, create two projects and use the primary host plus one connected
+secondary host.
+Set a global variable through `bb machine env set NAME` using stdin. Open
+Settings → Environment variables and switch its scope control from All projects
+to one project. Confirm inherited rows are masked and read-only, use a
+row's Override action, and confirm the override replaces that inherited row in
+place rather than appending a new row. Save it, open that project's settings,
+and confirm the same saved state there. Remove the override, save, and confirm the
+inherited row returns. Repeat with an empty string, CLI `--project <id>`, and
+SDK project methods. On both hosts, confirm global variables apply and each
+project's new terminals,
+agent turns, source/setup/teardown processes, and project-scoped host RPC
+receive only their own overrides; changing/removing overrides refreshes
+subsequent launches. Open the scope picker at compact width, confirm the app
+root is never inert or aria-hidden and content appears after drawer animation
+begins, and repeat in iOS Simulator Safari. Existing terminals retain old
+values. Confirm automatic GitHub credentials are forwarded to the secondary
+host but not round-tripped to the primary host. Settings reads and provider
+environment diagnostics must not expose saved values. This recipe does not
+verify a platform or launch path unless that subcheck actually runs.
+
+Import a .env value whose name matches an inherited variable and confirm it
+replaces that row in place. Verify quoted backslashes, multiline values, and
+empty values. Malformed assignments must keep Import disabled; importing only
+stages edits until Save variables is clicked.

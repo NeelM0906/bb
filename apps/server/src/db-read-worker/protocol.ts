@@ -1,4 +1,5 @@
 import {
+  completedTurnDisplaySchema,
   promptMentionCommandTriggerSchema,
   threadOriginKindSchema,
 } from "@bb/domain";
@@ -9,6 +10,17 @@ import {
   timelineTurnSummaryDetailsResponseSchema,
 } from "@bb/server-contract";
 import { z } from "zod";
+
+const planCommandSchema = z
+  .object({
+    trigger: promptMentionCommandTriggerSchema,
+    name: z
+      .string()
+      .min(1)
+      .regex(/^[^\s/$]+$/u),
+    trailingText: z.string().regex(/^\s*$/u),
+  })
+  .strict();
 
 const timelineCursorSchema = z
   .object({
@@ -35,11 +47,13 @@ const timelinePageSchema = z.discriminatedUnion("kind", [
 
 const timelineBuildOptionsSchema = z
   .object({
+    completedTurnDisplay: completedTurnDisplaySchema,
     eventBudget: z.number().int().positive(),
     includeNestedRows: z.boolean().optional(),
     includeDiagnosticOperations: z.boolean(),
     maxInlineOutputChars: z.number().int().nonnegative().nullable(),
     page: timelinePageSchema,
+    planCommand: planCommandSchema.nullable(),
     providerDisplayName: z.string().optional(),
     summaryOnly: z.boolean().optional(),
   })
@@ -56,12 +70,15 @@ export const timelineSnapshotInputSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("conversationOutline"),
+      completedTurnDisplay: completedTurnDisplaySchema,
       providerDisplayName: z.string().optional(),
       threadId: z.string().min(1),
     })
     .strict(),
   z
     .object({
+      beforeCursor: z.string().optional(),
+      completedTurnDisplay: completedTurnDisplaySchema,
       includeDiagnosticOperations: z.boolean(),
       kind: z.literal("turnSummaryDetails"),
       providerDisplayName: z.string().optional(),
@@ -74,19 +91,7 @@ export const timelineSnapshotInputSchema = z.discriminatedUnion("kind", [
 ]);
 
 const planCommandsSnapshotSchema = z
-  .record(
-    z.string().min(1),
-    z
-      .object({
-        trigger: promptMentionCommandTriggerSchema,
-        name: z
-          .string()
-          .min(1)
-          .regex(/^[^\s/$]+$/u),
-        trailingText: z.string().regex(/^\s*$/u),
-      })
-      .strict(),
-  )
+  .record(z.string().min(1), planCommandSchema)
   .default({});
 
 const threadListOptionsSchema = z
@@ -147,6 +152,9 @@ const threadTimelineBuildProfileSchema = z
           durationMs: z.number().nonnegative(),
           stage: z.enum([
             "event-query",
+            "group-context-query",
+            "ordering-context-query",
+            "selection-memo-lookup",
             "accepted-client-request-context-query",
             "event-json-decode",
             "summary-compaction",

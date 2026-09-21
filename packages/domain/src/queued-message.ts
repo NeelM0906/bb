@@ -19,35 +19,10 @@ import {
  * nothing here re-encodes it.
  */
 
-/**
- * Why a queued row is not dispatching yet.
- *
- * - `time` — the row has a future `sendAt`. The instant lives in the row's
- *   own `sendAt` field, which is what the due sweep indexes, so this arm
- *   carries no payload of its own.
- * - `thread-busy` — the thread is running a turn and the message asked to
- *   wait for idle rather than steer.
- * - `provisioning` — the thread's workspace is being (re)provisioned. Only
- *   follow-ups and steers wait on this: a thread's first message rides the
- *   cold-start command instead.
- * - `host-offline` — the thread's workspace exists, but the machine it runs on
- *   has no live daemon session, so nothing can be delivered to it. Distinct
- *   from `provisioning` because the two are cleared by different events and
- *   read differently to a user: a provisioning workspace is being built and
- *   will finish on its own, while an offline host is waiting on a machine that
- *   may be shut, asleep, or off the network. It carries the host's display
- *   name for the same reason the `plugin` arm carries its reason — the
- *   renderers that word this wait (the timeline projection in `thread-view`,
- *   `bb thread queue`) have no database to resolve an id against.
- * - `interaction` — the thread has a pending interaction the user has not
- *   settled.
- * - `plugin` — a plugin's dispatch gate returned `wait(reason)`. This is the
- *   only arm with an authored reason, because it is the only arm whose reason
- *   is not derivable from the kind (plus `sendAt`) by the renderer.
- */
 export const queuedMessageWaitingOnKindValues = [
   "time",
   "thread-busy",
+  "stopping",
   "turn-starting",
   "provisioning",
   "host-offline",
@@ -81,6 +56,7 @@ export const queuedMessageWaitReasonSchema = z
 export const queuedMessageWaitingOnSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("time") }),
   z.object({ kind: z.literal("thread-busy") }),
+  z.object({ kind: z.literal("stopping") }),
   z.object({ kind: z.literal("turn-starting") }),
   z.object({ kind: z.literal("provisioning") }),
   z.object({
@@ -96,16 +72,6 @@ export const queuedMessageWaitingOnSchema = z.discriminatedUnion("kind", [
 ]);
 export type QueuedMessageWaitingOn = z.infer<
   typeof queuedMessageWaitingOnSchema
->;
-
-export type QueuedMessagePluginWaitingOn = Extract<
-  QueuedMessageWaitingOn,
-  { kind: "plugin" }
->;
-
-export type QueuedMessageHostOfflineWaitingOn = Extract<
-  QueuedMessageWaitingOn,
-  { kind: "host-offline" }
 >;
 
 /**
@@ -191,11 +157,6 @@ export const queuedMessagePayloadSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 export type QueuedMessagePayload = z.infer<typeof queuedMessagePayloadSchema>;
-
-export type QueuedMessageRetryPayload = Extract<
-  QueuedMessagePayload,
-  { kind: "retry" }
->;
 
 /**
  * Core's own taxonomy for a queued row that is a SYSTEM notice rather than

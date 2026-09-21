@@ -1,3 +1,4 @@
+import { acquireProjectAttachmentOwnership } from "./project-attachments.js";
 import {
   and,
   asc,
@@ -18,12 +19,17 @@ import {
   sql,
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
-import { QUEUED_MESSAGE_PLUGIN_WAIT_HOLDER_PREFIX } from "@bb/domain";
+import {
+  QUEUED_MESSAGE_PLUGIN_WAIT_HOLDER_PREFIX,
+  projectAttachmentPaths,
+} from "@bb/domain";
 import type {
   PermissionMode,
   PromptInput,
   QueuedMessagePayload,
   QueuedMessageSystemNotice,
+  StartedOnBehalfOf,
+  ThreadCreateOrigin,
   QueuedMessageWaitHolder,
   QueuedMessageWaitingOn,
   QueuedMessageWaitingOnKind,
@@ -51,6 +57,9 @@ export interface CreateQueuedThreadMessageInput {
   threadId: string;
   content: PromptInput[];
   senderThreadId?: string | null;
+  origin?: ThreadCreateOrigin | null;
+  originPluginId?: string | null;
+  requestedBy?: StartedOnBehalfOf | null;
   model: string;
   reasoningLevel: string;
   permissionMode: PermissionMode;
@@ -256,14 +265,19 @@ function partitionQueuedMessageGroups(
   return groups;
 }
 
-const IDLE_DRAINABLE_WAIT_KINDS = ["thread-busy", "turn-starting"] as const;
+const ORDINARY_TURN_END_WAIT_KINDS = ["thread-busy", "turn-starting"] as const;
+
+const IDLE_DRAINABLE_WAIT_KINDS = [
+  ...ORDINARY_TURN_END_WAIT_KINDS,
+  "stopping",
+] as const;
 
 function hasOrdinaryTurnEndWait(row: QueuedThreadMessageRow): boolean {
   if (row.waitingOn === null) return true;
   try {
     const parsed = JSON.parse(row.waitingOn) as { kind?: unknown };
-    return (
-      parsed.kind === "thread-busy" || parsed.kind === "turn-starting"
+    return ORDINARY_TURN_END_WAIT_KINDS.some(
+      (waitKind) => waitKind === parsed.kind,
     );
   } catch {
     return false;
@@ -566,6 +580,11 @@ export function createQueuedThreadMessageInTransaction(
   input: CreateQueuedThreadMessageInput,
 ) {
   const now = Date.now();
+  acquireProjectAttachmentOwnership(
+    tx,
+    input.threadId,
+    projectAttachmentPaths(input.content),
+  );
   const id = createQueuedThreadMessageId();
   const lastQueuedMessage = getLastQueuedThreadMessage(tx, input.threadId);
   const sortKey = lastQueuedMessage
@@ -578,6 +597,10 @@ export function createQueuedThreadMessageInTransaction(
       threadId: input.threadId,
       content: JSON.stringify(input.content),
       senderThreadId: input.senderThreadId ?? null,
+      origin: input.origin ?? null,
+      originPluginId: input.originPluginId ?? null,
+      requestedByInitiator: input.requestedBy?.initiator ?? null,
+      requestedByThreadId: input.requestedBy?.senderThreadId ?? null,
       model: input.model,
       reasoningLevel: input.reasoningLevel,
       permissionMode: input.permissionMode,
@@ -639,6 +662,11 @@ export function updateQueuedThreadMessage(
         return { kind: "stale" };
       }
 
+      acquireProjectAttachmentOwnership(
+        tx,
+        input.threadId,
+        projectAttachmentPaths(input.content),
+      );
       const queuedMessage = tx
         .update(queuedThreadMessages)
         .set({
@@ -752,6 +780,19 @@ export function isThreadQueueAutoSendPaused(
   return manuallyStoppedQueuePauseQuery(db, threadId).get() !== undefined;
 }
 
+function notOrdinaryTurnEndQueuedThreadMessage() {
+  return or(
+    isNotNull(queuedThreadMessages.systemNotice),
+    and(
+      isNotNull(queuedThreadMessages.waitingOn),
+      notInArray(
+        sql<string>`json_extract(${queuedThreadMessages.waitingOn}, '$.kind')`,
+        [...ORDINARY_TURN_END_WAIT_KINDS],
+      ),
+    ),
+  );
+}
+
 /**
  * Threads a drain could move right now.
  *
@@ -778,7 +819,7 @@ export function listIdleThreadsWithQueuedMessages(
         isNull(threads.deletedAt),
         or(
           notExists(manuallyStoppedQueuePauseQuery(db, threads.id)),
-          isNotNull(queuedThreadMessages.systemNotice),
+          notOrdinaryTurnEndQueuedThreadMessage(),
         ),
         or(
           isNull(threads.environmentId),
@@ -1906,6 +1947,8 @@ export function listThreadIdsWithHostOfflineQueueWaits(
     .where(
       and(
         eq(environments.hostId, hostId),
+        isNull(threads.archivedAt),
+        isNull(threads.deletedAt),
         sql`json_extract(${queuedThreadMessages.waitingOn}, '$.kind') = 'host-offline'`,
         automaticallyDrainableQueuedThreadMessage(),
       ),

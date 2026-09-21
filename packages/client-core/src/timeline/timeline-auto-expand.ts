@@ -25,13 +25,19 @@ export function isWorkRowExpandable(row: TimelineViewWorkRow): boolean {
   switch (row.workKind) {
     case "web-search":
     case "web-fetch":
-    case "image-generation":
     case "approval":
       return false;
+    case "image-generation":
+      return row.status !== "pending" || Boolean(row.path || row.error);
     case "image-view":
       return true;
     case "question":
       return row.lifecycle === "answered" || row.lifecycle === "resolving";
+    case "form":
+      return (
+        row.presentation.detail !== undefined &&
+        row.presentation.detail.trim().length > 0
+      );
     case "command":
       return !hasTimelineExplorationIntent(row);
     case "tool":

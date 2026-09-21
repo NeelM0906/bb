@@ -116,8 +116,8 @@ function makeDeps(initial: PluginFrontendCandidate[] = []): TestReconcileDeps {
     fetchCandidates: vi.fn(
       async (): Promise<PluginFrontendCandidate[]> => initial,
     ),
-    importModule: vi.fn(
-      async (_url: string): Promise<unknown> => pluginModule("hello"),
+    importModule: vi.fn(async (_url: string): Promise<unknown> =>
+      pluginModule("hello"),
     ),
     applyCss: vi.fn(),
     retainCss: vi.fn(() => vi.fn()),
@@ -308,7 +308,11 @@ describe("reconcilePluginFrontends", () => {
             null,
             createElement(Route, {
               path: PLUGIN_PANEL_ROUTE_PATH,
-              element: createElement(PluginPanelView),
+              element: createElement(PluginPanelView, {
+                pluginId: "hello",
+                panelPath: "panel",
+                subPath: "notes/today.md",
+              }),
             }),
           ),
         ),

@@ -1,3 +1,5 @@
+import { ProviderIcon } from "@/components/plugin/ProviderIcon";
+import { Icon } from "@bb/shared-ui/icon";
 import { useCallback, useMemo } from "react";
 import type { MarkdownProps, PluginSdkApp } from "@get-bb/plugin-sdk";
 import { PluginDiff } from "@/components/plugin/PluginDiff";
@@ -15,6 +17,7 @@ import { PluginUrlLink } from "@/components/plugin/PluginUrlLink";
 import { ExperimentalFileLink } from "@/components/plugin/ExperimentalFileLink";
 import { MarkdownPreview } from "@/components/ui/markdown-preview";
 import type { MarkdownLinkRouting } from "@/components/ui/markdown-link-routing";
+import { buildMarkdownDocumentLinkRouting } from "@/components/ui/markdown-document-link-routing";
 import { buildMarkdownMessageLinkRouting } from "@/components/ui/markdown-message-link-routing";
 import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import { useThreadTimelineNavigation } from "@/components/thread/timeline/ThreadTimelineNavigationContext";
@@ -45,6 +48,8 @@ import { useCodeTheme } from "./plugin-code-theme";
 export const pluginSdkAppImplementation = installDeprecatedAliases(
   {
     definePluginApp,
+    experimental_Icon: Icon,
+    experimental_ProviderIcon: ProviderIcon,
     useBbContext,
     useBbNavigate,
     experimental_useAppPanel,
@@ -77,7 +82,11 @@ export const pluginSdkAppImplementation = installDeprecatedAliases(
   { experimental_UrlLink: "UrlLink" },
 );
 
-function PluginMarkdown({ content, className }: MarkdownProps) {
+function PluginMarkdown({
+  content,
+  className,
+  experimental_document,
+}: MarkdownProps) {
   const timelineNavigation = useThreadTimelineNavigation();
   const onOpenLocalFileLink = timelineNavigation?.onOpenLocalFileLink;
   const threadId = timelineNavigation?.threadId;
@@ -88,15 +97,27 @@ function PluginMarkdown({ content, className }: MarkdownProps) {
     [navigation],
   );
   const linkRouting = useMemo<MarkdownLinkRouting>(() => {
-    return (
-      buildMarkdownMessageLinkRouting({
-        onOpenLink,
-        onOpenLocalFileLink,
-        threadId,
-        workspaceRootPath,
-      }) ?? { onOpenLink }
-    );
-  }, [onOpenLink, onOpenLocalFileLink, threadId, workspaceRootPath]);
+    const messageRouting = buildMarkdownMessageLinkRouting({
+      onOpenLink,
+      onOpenLocalFileLink,
+      threadId,
+      workspaceRootPath,
+    }) ?? { onOpenLink };
+    return experimental_document === undefined
+      ? messageRouting
+      : buildMarkdownDocumentLinkRouting({
+          document: experimental_document,
+          messageRouting,
+          openFilePreview: navigation.openFilePreview,
+        });
+  }, [
+    experimental_document,
+    navigation.openFilePreview,
+    onOpenLink,
+    onOpenLocalFileLink,
+    threadId,
+    workspaceRootPath,
+  ]);
 
   return (
     <MarkdownPreview

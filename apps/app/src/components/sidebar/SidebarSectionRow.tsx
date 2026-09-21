@@ -1,24 +1,19 @@
 import {
+  SidebarHeaderControls,
+  SidebarSectionMenuItems,
+} from "./SidebarHeaderControls";
+import {
   memo,
   useCallback,
   useState,
   type CSSProperties,
   type MouseEvent,
   type MouseEventHandler,
+  type ReactNode,
 } from "react";
-import { Button } from "@bb/shared-ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@bb/shared-ui/dropdown-menu";
-import { Icon } from "@bb/shared-ui/icon";
 import { SidebarStickyTier } from "@/components/ui/sidebar.js";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
 import {
   COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS,
-  COARSE_POINTER_ICON_SIZE_CLASS,
   COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
 } from "@bb/shared-ui/coarse-pointer-sizing";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
@@ -32,9 +27,8 @@ import {
 import { cn } from "@bb/shared-ui/lib/utils";
 import type { CollapsedChildActivity } from "@bb/client-core";
 import {
-  SIDEBAR_MORE_ACTION_TRIGGER_CLASS,
   SIDEBAR_ROW_BASE_CLASS,
-  SIDEBAR_ROW_STATIC_STATE_CLASS,
+  SIDEBAR_GROUP_TEXT_CLASS,
   getSidebarThreadRowPaddingLeft,
 } from "./sidebarRowClasses";
 import { SidebarChildToggleChevron } from "./SidebarChildToggleChevron";
@@ -56,6 +50,7 @@ function stopActionsClick(event: MouseEvent<HTMLElement>) {
 
 interface SidebarSectionRowProps {
   name: string;
+  labelEditor?: ReactNode;
   label: string;
   depth: number;
   activity: CollapsedChildActivity;
@@ -68,11 +63,14 @@ interface SidebarSectionRowProps {
   isDropTargetActive?: boolean;
   onCreateThread?: () => void;
   onRename?: () => void;
+  onRenameFromMenu?: () => void;
+  onCloseAutoFocus?: (event: Event) => void;
   onRemove?: () => void;
 }
 
 function SidebarSectionRowComponent({
   name,
+  labelEditor,
   label,
   depth,
   activity,
@@ -84,6 +82,8 @@ function SidebarSectionRowComponent({
   onToggleCollapsed,
   onCreateThread,
   onRename,
+  onRenameFromMenu,
+  onCloseAutoFocus,
   onRemove,
   stickyLevel,
 }: SidebarSectionRowProps) {
@@ -122,7 +122,7 @@ function SidebarSectionRowComponent({
     stickyLevel === undefined && "relative",
     SIDEBAR_ROW_BASE_CLASS,
     LIST_HOVER_TRANSITION,
-    SIDEBAR_ROW_STATIC_STATE_CLASS,
+    SIDEBAR_GROUP_TEXT_CLASS,
     COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS,
     dragBindings && !dragBindings.disabled && "select-none",
     isDropTargetActive && "bg-sidebar-accent text-sidebar-accent-foreground",
@@ -132,27 +132,44 @@ function SidebarSectionRowComponent({
   };
   const handleClickCapture = useCallback<MouseEventHandler<HTMLElement>>(
     (event) => {
-      if (!consumeClickSuppression?.()) {
+      if (labelEditor || !consumeClickSuppression?.()) {
         return;
       }
       event.preventDefault();
       event.stopPropagation();
     },
-    [consumeClickSuppression],
+    [consumeClickSuppression, labelEditor],
   );
   const content = (
     <>
-      {}
       <button
         type="button"
         aria-hidden="true"
         tabIndex={-1}
+        disabled={Boolean(labelEditor)}
         onClick={onToggleCollapsed}
         className="absolute inset-0 rounded-md outline-none ring-sidebar-ring focus-visible:ring-2"
       />
       <span className="relative z-10 flex min-w-0 flex-1 items-center gap-1 text-left">
-        <span className="min-w-0 truncate">{name}</span>
+        {labelEditor ?? (
+          <span
+            className="min-w-0 truncate"
+            onDoubleClick={
+              onRename
+                ? (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onRename();
+                  }
+                : undefined
+            }
+          >
+            {name}
+          </span>
+        )}
         <SidebarChildToggleChevron
+          disabled={Boolean(labelEditor)}
+          className={labelEditor ? "hidden" : undefined}
           isCollapsed={isCollapsed}
           expandLabel={`Expand ${label} section`}
           collapseLabel={`Collapse ${label} section`}
@@ -177,8 +194,14 @@ function SidebarSectionRowComponent({
           hasActions
             ? "inline-flex items-center"
             : COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
+          labelEditor && "hidden",
         )}
       >
+        {hasActions && showRollupIndicator ? (
+          <span className="hidden shrink-0 items-center justify-center text-subtle-foreground max-md:pointer-coarse:inline-flex">
+            {renderRollupIndicator()}
+          </span>
+        ) : null}
         {hasActions ? (
           <span
             data-sidebar-hover-actions-open={isActionsOpen ? "true" : undefined}
@@ -189,75 +212,21 @@ function SidebarSectionRowComponent({
               SIDEBAR_HOVER_ACTIONS_CLASS,
               "relative z-10 inline-flex shrink-0 items-center",
               SIDEBAR_HOVER_ACTIONS_GAP_CLASS,
+              isCollapsed && "max-md:pointer-coarse:hidden",
             )}
             onClick={stopActionsClick}
           >
-            {showRollupIndicator ? (
-              <span className="hidden shrink-0 items-center justify-center text-subtle-foreground max-md:pointer-coarse:inline-flex">
-                {renderRollupIndicator()}
-              </span>
-            ) : null}
-            {hasMenuActions ? (
-              <DropdownMenu onOpenChange={setIsActionsOpen}>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`${label} section actions`}
-                    className={cn(
-                      "rounded-md p-0 text-subtle-foreground hover:bg-transparent hover:text-foreground",
-                      SIDEBAR_MORE_ACTION_TRIGGER_CLASS,
-                    )}
-                  >
-                    <Icon
-                      name="MoreHorizontal"
-                      className={COARSE_POINTER_ICON_SIZE_CLASS}
-                    />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  {onRename ? (
-                    <DropdownMenuItem onSelect={onRename}>
-                      <Icon name="Edit" aria-hidden="true" />
-                      Rename
-                    </DropdownMenuItem>
-                  ) : null}
-                  {onRemove ? (
-                    <DropdownMenuItem variant="destructive" onSelect={onRemove}>
-                      <Icon name="Trash2" aria-hidden="true" />
-                      Remove
-                    </DropdownMenuItem>
-                  ) : null}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : null}
-            {onCreateThread ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`New thread in ${label}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onCreateThread();
-                    }}
-                    className={cn(
-                      "rounded-md p-0 text-subtle-foreground hover:bg-transparent hover:text-foreground",
-                      COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
-                    )}
-                  >
-                    <Icon
-                      name="MessageSquarePlus"
-                      className={COARSE_POINTER_ICON_SIZE_CLASS}
-                    />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">New thread</TooltipContent>
-              </Tooltip>
-            ) : null}
+            <SidebarHeaderControls
+              label={`${label} section`}
+              onNewThread={onCreateThread}
+              onOpenChange={setIsActionsOpen}
+              onCloseAutoFocus={onCloseAutoFocus}
+            >
+              <SidebarSectionMenuItems
+                onRename={onRenameFromMenu ?? onRename}
+                onRemove={onRemove}
+              />
+            </SidebarHeaderControls>
           </span>
         ) : showRollupIndicator ? (
           <span className="hidden size-full items-center justify-center text-subtle-foreground max-md:pointer-coarse:inline-flex">
@@ -272,6 +241,7 @@ function SidebarSectionRowComponent({
     return (
       <SidebarStickyTier
         ref={dragBindings?.setActivatorNodeRef}
+        data-sidebar-rename-row=""
         tier="parent"
         level={stickyLevel}
         className={className}
@@ -290,6 +260,7 @@ function SidebarSectionRowComponent({
   return (
     <div
       ref={dragBindings?.setActivatorNodeRef}
+      data-sidebar-rename-row=""
       className={className}
       style={style}
       {...dragBindings?.attributes}

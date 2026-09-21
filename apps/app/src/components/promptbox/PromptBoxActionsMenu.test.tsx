@@ -45,33 +45,27 @@ describe("PromptBoxActionsMenu", () => {
 
     const trigger = screen.getByRole("button", { name: "Prompt actions" });
     expect(trigger.classList).toContain("text-subtle-foreground/75");
-    fireEvent.pointerDown(trigger, { button: 0 });
-    fireEvent.click(
-      await screen.findByRole("menuitem", { name: "Attach files" }),
-    );
-
-    expect(onAttach).toHaveBeenCalledOnce();
-  });
-
-  it("keeps the plus menu trigger stable during attachment uploads", () => {
-    render(
-      <PromptBoxActionsMenu
-        isAttaching
-        onAction={() => {}}
-        onAttach={() => {}}
-      />,
-    );
-
-    const trigger = screen.getByRole("button", { name: "Prompt actions" });
     expect(trigger.querySelector('[data-icon="Plus"]')).not.toBeNull();
     expect(trigger.querySelector('[data-icon="Spinner"]')).toBeNull();
+    fireEvent.pointerDown(trigger, { button: 0 });
+    const attach = await screen.findByRole("menuitem", {
+      name: "Attach files",
+    });
+    expect(attach.getAttribute("aria-disabled")).not.toBe("true");
+    expect(attach.querySelector('[data-icon="Paperclip"]')).not.toBeNull();
+    expect(attach.querySelector('[data-icon="Loading"]')).toBeNull();
+    fireEvent.click(attach);
+    expect(onAttach).toHaveBeenCalledOnce();
   });
 
   it("seeds the composer with the plugin prompt after the provider actions", async () => {
     const onAction = vi.fn();
     render(
       <PromptBoxActionsMenu
-        actions={withAppPromptActions([{ kind: "plan", text: "/plan " }])}
+        actions={withAppPromptActions([
+          { kind: "skills", text: "/skills " },
+          { kind: "plan", text: "/plan " },
+        ])}
         onAction={onAction}
       />,
     );
@@ -82,10 +76,16 @@ describe("PromptBoxActionsMenu", () => {
     );
     const menuItems = await screen.findAllByRole("menuitem");
     expect(menuItems.map((item) => item.textContent)).toEqual([
+      "Skills",
       "Plan",
       "Automation",
       "Plugin",
     ]);
+    expect(
+      menuItems.map((item) =>
+        item.querySelector("[data-icon]")?.getAttribute("data-icon"),
+      ),
+    ).toEqual(["Zap", "ListTodo", "Repeat", "Plug02"]);
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Plugin" }));
 
@@ -166,7 +166,7 @@ describe("PromptBoxActionsMenu", () => {
     });
   });
 
-  it("renders display-name groups and preserves focus deliberately moved by a plugin", async () => {
+  it("renders plugin rows without a header and preserves focus deliberately moved by a plugin", async () => {
     const focusedByPlugin = vi.fn();
     const view: ComposerView = {
       scope: { kind: "new-thread", projectId: null },
@@ -262,8 +262,9 @@ describe("PromptBoxActionsMenu", () => {
       "Improve prompt",
       "Rewrite prompt",
     ]);
-    expect(screen.getByText("Alpha Assistant")).toBeTruthy();
-    expect(screen.getByText("Zeta Writer")).toBeTruthy();
+    expect(screen.queryByText("Plugin")).toBeNull();
+    expect(screen.queryByText("Alpha Assistant")).toBeNull();
+    expect(screen.queryByText("Zeta Writer")).toBeNull();
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Improve prompt" }));
     await waitFor(() => {

@@ -1,6 +1,10 @@
 import { jsonValueSchema, type JsonValue } from "@bb/domain";
 import {
   installedPluginSchema,
+  pluginRpcDiscoveryQuerySchema,
+  pluginRpcDiscoveryResponseSchema,
+  type PluginRpcDiscoveryQuery,
+  type PublishedPluginRpcMethod,
   pluginCatalogInstallPlanResponseSchema,
   pluginCatalogInstallRequestSchema,
   pluginCatalogSearchResponseSchema,
@@ -14,7 +18,7 @@ import {
   pluginMarketplaceRemoveResponseSchema,
   pluginApplyUpdateRequestSchema,
   pluginApplyUpdateResultSchema,
-  pluginInstallSourceRequestSchema,
+  pluginInstallRequestSchema,
   pluginRemoveResponseSchema,
   pluginSettingsResponseSchema,
   pluginSettingsUpdateRequestSchema,
@@ -144,6 +148,7 @@ export interface PluginCheckUpdatesArgs {
 }
 
 export interface PluginRpcArgs<TOutput> extends PluginIdArgs {
+  signal?: AbortSignal;
   input?: JsonValue;
   method: string;
   outputSchema: z.ZodType<TOutput>;
@@ -220,6 +225,9 @@ export interface PluginMarketplacesArea {
 }
 
 export interface PluginsArea {
+  experimental_discoverRpc(
+    args?: PluginRpcDiscoveryQuery,
+  ): Promise<PublishedPluginRpcMethod[]>;
   applyUpdate(args: PluginIdArgs): Promise<PluginApplyUpdateResult>;
   callRpc<TOutput>(args: PluginRpcArgs<TOutput>): Promise<TOutput>;
   checkUpdates(
@@ -378,11 +386,21 @@ export function createPluginsArea(args: CreateSdkAreaArgs): PluginsArea {
         jsonInit("POST", body),
       );
     },
+    async experimental_discoverRpc(input = {}) {
+      const query = pluginRpcDiscoveryQuerySchema.parse(input);
+      const params = new URLSearchParams();
+      if (query.pluginId !== undefined) params.set("pluginId", query.pluginId);
+      if (query.method !== undefined) params.set("method", query.method);
+      return requestParsed(
+        `/api/v1/plugins/rpc?${params}`,
+        pluginRpcDiscoveryResponseSchema,
+      );
+    },
     async callRpc(input) {
       const envelope = await requestParsed(
         pluginPath(input.pluginId, `/rpc/${encodeURIComponent(input.method)}`),
         z.object({ ok: z.literal(true), result: jsonValueSchema }),
-        jsonInit("POST", input.input ?? null),
+        { ...jsonInit("POST", input.input ?? null), signal: input.signal },
       );
       return input.outputSchema.parse(envelope.result);
     },
@@ -436,8 +454,6 @@ export function createPluginsArea(args: CreateSdkAreaArgs): PluginsArea {
         );
       }
       const selection = pluginSourceSelection(input);
-      // Send only the keys the caller set. `.parse` validates the body but
-      // its output would fill in the root default the server owns.
       const body = {
         source: input.source,
         ...(selection === undefined ? {} : { selection }),
@@ -445,7 +461,7 @@ export function createPluginsArea(args: CreateSdkAreaArgs): PluginsArea {
           ? { allowManagedWorkspaceSource: true }
           : {}),
       };
-      pluginInstallSourceRequestSchema.parse(body);
+      pluginInstallRequestSchema.parse(body);
       const response = await requestParsed(
         "/api/v1/plugins/install",
         pluginInstallResponseSchema,

@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  appendStoredThreadEvent,
   createConnection,
   createProject,
   createThread,
@@ -30,7 +31,7 @@ afterEach(() => {
   }
 });
 
-function setupFileDatabase(eventCount: number) {
+function setupFileDatabase(eventCount: number, planCommandRequested = false) {
   const directory = mkdtempSync(join(tmpdir(), "bb-read-worker-"));
   temporaryDirectories.push(directory);
   const databasePath = join(directory, "bb.db");
@@ -47,6 +48,7 @@ function setupFileDatabase(eventCount: number) {
   const thread = createThread(db, noopNotifier, {
     projectId: project.id,
     providerId: "claude-code",
+    status: planCommandRequested ? "active" : "starting",
   });
   const events: Parameters<typeof insertEvents>[2] = Array.from(
     { length: eventCount },
@@ -63,8 +65,26 @@ function setupFileDatabase(eventCount: number) {
         initiator: "user",
         input: [
           {
-            mentions: [],
-            text: `message ${index} ${"x".repeat(1_000)}`,
+            mentions: planCommandRequested
+              ? [
+                  {
+                    start: 0,
+                    end: 5,
+                    resource: {
+                      kind: "command",
+                      trigger: "/",
+                      name: "plan",
+                      source: "command",
+                      origin: "user",
+                      label: "plan",
+                      argumentHint: null,
+                    },
+                  },
+                ]
+              : [],
+            text: planCommandRequested
+              ? "/plan inspect the failure"
+              : `message ${index} ${"x".repeat(1_000)}`,
             type: "text",
           },
         ],
@@ -88,41 +108,103 @@ function setupFileDatabase(eventCount: number) {
 }
 
 describe("database read worker timeline snapshot", () => {
-  it("matches the direct file-backed timeline projection", async () => {
-    const eventCount = 200;
-    const { databasePath, db, thread } = setupFileDatabase(eventCount);
-    const options = {
-      eventBudget: 10_000,
-      includeNestedRows: false,
-      includeDiagnosticOperations: false,
-      maxInlineOutputChars: 10_000,
-      maxSeq: eventCount,
-      page: { kind: "latest" as const, segmentLimit: 20 },
-    };
-    const direct = buildThreadTimelineWithProfile(db, thread, options).response;
-    const service = createDbReadWorkerService({
-      databasePath,
-    });
+  it.each(["collapse", "flat"] as const)(
+    "matches the direct file-backed timeline projection (%s)",
+    async (completedTurnDisplay) => {
+      const eventCount = 200;
+      const { databasePath, db, thread } = setupFileDatabase(eventCount);
+      const options = {
+        completedTurnDisplay,
+        eventBudget: 10_000,
+        includeNestedRows: false,
+        includeDiagnosticOperations: false,
+        maxInlineOutputChars: 10_000,
+        planCommand: null,
+        maxSeq: eventCount,
+        page: { kind: "latest" as const, segmentLimit: 20 },
+      };
+      const direct = buildThreadTimelineWithProfile(
+        db,
+        thread,
+        options,
+      ).response;
+      const service = createDbReadWorkerService({
+        databasePath,
+      });
 
-    const result = await service.timelineSnapshot({
-      kind: "timeline",
-      options: {
-        eventBudget: options.eventBudget,
-        includeNestedRows: options.includeNestedRows,
-        includeDiagnosticOperations:
-          options.includeDiagnosticOperations,
-        maxInlineOutputChars: options.maxInlineOutputChars,
-        page: options.page,
-      },
-      threadId: thread.id,
-    });
+      const result = await service.timelineSnapshot({
+        kind: "timeline",
+        options: {
+          completedTurnDisplay: options.completedTurnDisplay,
+          eventBudget: options.eventBudget,
+          includeNestedRows: options.includeNestedRows,
+          includeDiagnosticOperations: options.includeDiagnosticOperations,
+          maxInlineOutputChars: options.maxInlineOutputChars,
+          planCommand: null,
+          page: options.page,
+        },
+        threadId: thread.id,
+      });
 
-    expect(result.kind).toBe("timeline");
-    if (result.kind === "timeline") {
-      expect(result.response).toEqual(direct);
+      expect(result.kind).toBe("timeline");
+      if (result.kind === "timeline") {
+        expect(result.response).toEqual(direct);
+      }
+      await service.shutdown();
+      db.$client.close();
+    },
+    20_000,
+  );
+
+  it("preserves the active provider plan command in the worker projection", async () => {
+    const { databasePath, db, thread } = setupFileDatabase(1, true);
+    const service = createDbReadWorkerService({ databasePath });
+    try {
+      appendStoredThreadEvent(db, noopNotifier, {
+        threadId: thread.id,
+        scope: turnScope("turn-plan"),
+        providerThreadId: "provider-plan",
+        type: "turn/started",
+        data: { providerThreadId: "provider-plan" },
+      });
+      appendStoredThreadEvent(db, noopNotifier, {
+        threadId: thread.id,
+        scope: turnScope("turn-plan"),
+        providerThreadId: "provider-plan",
+        type: "turn/input/accepted",
+        data: {
+          providerThreadId: "provider-plan",
+          clientRequestId: encodeClientTurnRequestIdNumber({ value: 1 }),
+        },
+      });
+      const options = {
+        completedTurnDisplay: "collapse" as const,
+        eventBudget: 10_000,
+        includeDiagnosticOperations: false,
+        maxInlineOutputChars: 10_000,
+        page: { kind: "latest" as const, segmentLimit: 20 },
+        planCommand: { trigger: "/" as const, name: "plan", trailingText: " " },
+      };
+      const direct = buildThreadTimelineWithProfile(db, thread, {
+        ...options,
+        maxSeq: 3,
+      }).response;
+      expect(direct.activePromptMode).toEqual({
+        mode: "plan",
+        providerId: "claude-code",
+        prompt: "inspect the failure",
+      });
+      const result = await service.timelineSnapshot({
+        kind: "timeline",
+        threadId: thread.id,
+        options,
+      });
+      expect(result.kind).toBe("timeline");
+      if (result.kind === "timeline") expect(result.response).toEqual(direct);
+    } finally {
+      await service.shutdown();
+      db.$client.close();
     }
-    await service.shutdown();
-    db.$client.close();
   }, 20_000);
 
   it("matches the direct file-backed thread-list projection", async () => {
@@ -153,10 +235,12 @@ describe("database read worker timeline snapshot", () => {
     const eventCount = 500;
     const { databasePath, db, thread } = setupFileDatabase(eventCount);
     const options = {
+      completedTurnDisplay: "collapse" as const,
       eventBudget: 10_000,
       includeNestedRows: false,
       includeDiagnosticOperations: false,
       maxInlineOutputChars: 10_000,
+      planCommand: null,
       maxSeq: eventCount,
       page: { kind: "latest" as const, segmentLimit: eventCount },
     };
@@ -171,11 +255,12 @@ describe("database read worker timeline snapshot", () => {
     const snapshotPromise = service.timelineSnapshot({
       kind: "timeline",
       options: {
+        completedTurnDisplay: options.completedTurnDisplay,
         eventBudget: options.eventBudget,
         includeNestedRows: options.includeNestedRows,
-        includeDiagnosticOperations:
-          options.includeDiagnosticOperations,
+        includeDiagnosticOperations: options.includeDiagnosticOperations,
         maxInlineOutputChars: options.maxInlineOutputChars,
+        planCommand: null,
         page: options.page,
       },
       threadId: thread.id,
@@ -223,10 +308,12 @@ describe("database read worker timeline snapshot", () => {
       .timelineSnapshot({
         kind: "timeline",
         options: {
+          completedTurnDisplay: "collapse" as const,
           eventBudget: 10_000,
           includeNestedRows: false,
           includeDiagnosticOperations: false,
           maxInlineOutputChars: 10_000,
+          planCommand: null,
           page: { kind: "latest", segmentLimit: eventCount },
         },
         threadId: thread.id,
@@ -301,10 +388,12 @@ describe("database read worker timeline snapshot", () => {
       .timelineSnapshot({
         kind: "timeline",
         options: {
+          completedTurnDisplay: "collapse" as const,
           eventBudget: 10_000,
           includeNestedRows: true,
           includeDiagnosticOperations: false,
           maxInlineOutputChars: DEFAULT_MAX_INLINE_OUTPUT_CHARS,
+          planCommand: null,
           page: { kind: "latest", segmentLimit: 20 },
         },
         threadId: thread.id,

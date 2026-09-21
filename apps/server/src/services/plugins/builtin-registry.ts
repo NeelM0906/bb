@@ -24,6 +24,11 @@ const REPO_PLUGINS_DIRECTORY_NAME = "plugins";
 
 export const BUILTIN_PLUGINS = [
   {
+    name: "bb-guide",
+    pluginId: "bb-guide",
+    defaultEnabled: true,
+  },
+  {
     name: "account-pool",
     pluginId: "account-pool",
     defaultEnabled: true,
@@ -134,9 +139,19 @@ export const BUILTIN_PLUGINS = [
     defaultEnabled: true,
   },
   {
+    name: "drafts",
+    pluginId: "drafts",
+    defaultEnabled: true,
+  },
+  {
     name: "scheduled-send",
     pluginId: "scheduled-send",
     defaultEnabled: true,
+  },
+  {
+    name: "agent-annotations",
+    pluginId: "agent-annotations",
+    defaultEnabled: false,
   },
   {
     name: "concurrency-limit",
@@ -159,6 +174,11 @@ export const BUILTIN_PLUGINS = [
 }));
 
 export const OFFICIAL_PLUGINS = [
+  {
+    name: "environment-modal-sandbox",
+    pluginId: "environment-modal-sandbox",
+    defaultEnabled: true,
+  },
   {
     name: "browser-automation",
     pluginId: "browser-automation",
@@ -199,10 +219,6 @@ export const BUNDLED_PLUGINS: readonly BundledPluginDefinition[] = [
   ...OFFICIAL_PLUGINS,
 ];
 
-export const BUILTIN_PLUGIN_NAMES = BUILTIN_PLUGINS.map(
-  (plugin) => plugin.name,
-);
-
 const builtinPluginsModuleDir = path.dirname(fileURLToPath(import.meta.url));
 
 export function builtinPluginSource(name: string): string {
@@ -212,6 +228,13 @@ export function builtinPluginSource(name: string): string {
 export function resolveBuiltinPluginRootPathForModuleDir(
   args: ResolveBuiltinPluginRootPathArgs,
 ): string {
+  const preparedCandidate = path.resolve(
+    args.moduleDir,
+    "../../../packages/bundled-plugins/dist",
+    args.name,
+  );
+  if (existsSync(preparedCandidate)) return preparedCandidate;
+
   const packagedCandidate = path.resolve(
     args.moduleDir,
     BUILTIN_PLUGINS_DIRECTORY_NAME,

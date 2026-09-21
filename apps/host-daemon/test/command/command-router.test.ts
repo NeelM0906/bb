@@ -196,9 +196,11 @@ function textPromptInput(text: string): TextPromptInput {
 function createEnvironmentProvisionCommand(): EnvironmentProvisionCommand {
   return {
     type: "environment.attach",
+    contributedEnv: [],
     environmentId: "env-router",
     initiator: null,
     path: "/tmp/env-router",
+    setupScriptTimeoutMs: null,
   };
 }
 
@@ -317,6 +319,66 @@ describe("CommandRouter", () => {
       errorMessage: "Workspace provisioning was cancelled",
     });
     expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("rejects a queued turn whose reservation was released during provisioning", async () => {
+    const harness = createHarness({ workspacePath: "/tmp/env-router" });
+    const provisionStarted = createDeferredPromise<void>();
+    const releaseProvision = createDeferredPromise<void>();
+    const runtimeManager = new RuntimeManager({
+      createRuntime: () => harness.runtime,
+      provisionWorkspace: async () => {
+        provisionStarted.resolve();
+        await releaseProvision.promise;
+        return harness.workspace;
+      },
+    });
+
+    const hostAdmissionController = new HostAdmissionController({
+      hostId: "host-router",
+      limit: 1,
+      listProviderProcessDiagnostics: () => [],
+      reapIdleProviderSessions: vi.fn(async () => ({ reapedSessions: [] })),
+    });
+    const command = createTurnSubmitCommand();
+    const reserved = await hostAdmissionController.reserve({
+      hostId: "host-router",
+      requestId: command.requestId,
+      threadId: command.threadId,
+      reason: "interactive",
+    });
+    if (reserved.outcome !== "reserved")
+      throw new Error("Expected reservation");
+    const router = createRouter(harness, {
+      runtimeManager,
+      hostAdmissionController,
+    });
+    const provisionTask = runRouterCommand({
+      command: createEnvironmentProvisionCommand(),
+      requestId: "provision-env-router",
+      router,
+    });
+    await provisionStarted.promise;
+
+    const turnTask = runRouterCommand({
+      command,
+      requestId: "turn-env-router",
+      router,
+    });
+    await flushAsyncWork();
+
+    expect(harness.runtimeState.ranTurnText).toBeUndefined();
+
+    hostAdmissionController.release(reserved.reservation);
+    releaseProvision.resolve();
+    const provisionResponse = await provisionTask;
+    expect(provisionResponse.ok).toBe(true);
+    const turnResponse = await turnTask;
+    expect(turnResponse).toMatchObject({
+      ok: false,
+      errorMessage: "Provider work requires a valid host admission reservation",
+    });
+    expect(harness.runtimeState.ranTurnText).toBeUndefined();
   });
 
   it("orders turn.submit after an in-flight environment provision", async () => {

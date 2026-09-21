@@ -1,8 +1,15 @@
 import type {
+  MachineEnvironmentReplace,
+  MachineEnvironmentSet,
+  MachineEnvironmentList,
+} from "@bb/server-contract";
+import type {
   AppKeybindingOverrides,
   AppSettings,
   AppSettingsUpdate,
   Experiments,
+  UiPreferenceKey,
+  UiPreferenceValue,
 } from "@bb/domain";
 import type { ProviderUsageResponse } from "@bb/host-daemon-contract";
 import type {
@@ -20,9 +27,15 @@ import type {
   SystemVersionQuery,
   SystemVersionResponse,
   SystemVoiceTranscriptionResponse,
+  UiPreferenceResponse,
+  UiPreferencesResponse,
 } from "@bb/server-contract";
 import { systemVoiceTranscriptionResponseSchema } from "@bb/server-contract";
-import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
+import {
+  readExecutionOptions,
+  signalRequestArgs,
+  type CreateSdkAreaArgs,
+} from "./common.js";
 
 export interface SystemAttentionArgs {
   signal?: AbortSignal;
@@ -75,7 +88,42 @@ export interface SystemProviderStatesArgs extends SystemProvidersQuery {
 export type SystemProviderStatesResult = SystemProviderStatesResponse;
 export type SystemVersionResult = SystemVersionResponse;
 
+export interface SystemUiPreferencesArgs {
+  signal?: AbortSignal;
+}
+export type SystemUiPreferencesResult = UiPreferencesResponse;
+export interface SystemUpdateUiPreferenceArgs<Key extends UiPreferenceKey> {
+  expectedRevision: number;
+  key: Key;
+  value: UiPreferenceValue<Key>;
+}
+export interface SystemResetUiPreferenceArgs<Key extends UiPreferenceKey> {
+  key: Key;
+}
+export type SystemUiPreferenceResult<Key extends UiPreferenceKey> =
+  UiPreferenceResponse<Key>;
+
+export interface SystemUiPreferencesArea {
+  list(args?: SystemUiPreferencesArgs): Promise<SystemUiPreferencesResult>;
+  set<Key extends UiPreferenceKey>(
+    args: SystemUpdateUiPreferenceArgs<Key>,
+  ): Promise<SystemUiPreferenceResult<Key>>;
+  reset<Key extends UiPreferenceKey>(
+    args: SystemResetUiPreferenceArgs<Key>,
+  ): Promise<SystemUiPreferenceResult<Key>>;
+}
+
 export interface SystemArea {
+  setMachineEnvironmentVariable(
+    input: MachineEnvironmentSet,
+  ): Promise<MachineEnvironmentList>;
+  deleteMachineEnvironmentVariable(input: {
+    name: string;
+  }): Promise<MachineEnvironmentList>;
+  machineEnvironment(): Promise<MachineEnvironmentList>;
+  replaceMachineEnvironment(
+    input: MachineEnvironmentReplace,
+  ): Promise<MachineEnvironmentList>;
   attention(args?: SystemAttentionArgs): Promise<SystemAttentionResult>;
   config(args?: SystemConfigArgs): Promise<SystemConfigResult>;
   executionOptions(
@@ -91,6 +139,7 @@ export interface SystemArea {
   transcribeVoice(
     args: SystemVoiceTranscriptionArgs,
   ): Promise<SystemVoiceTranscriptionResult>;
+  uiPreferences: SystemUiPreferencesArea;
   updateExperiments(args: Experiments): Promise<SystemUpdateExperimentsResult>;
   updateGeneralSettings(
     args: AppSettingsUpdate,
@@ -113,7 +162,60 @@ function versionQuery(args: SystemVersionArgs | undefined): SystemVersionQuery {
 
 export function createSystemArea(args: CreateSdkAreaArgs): SystemArea {
   const { transport } = args;
+  const uiPreferences: SystemUiPreferencesArea = {
+    async list(input) {
+      return transport.readJson(
+        transport.api.v1.preferences.ui.$get(
+          {},
+          ...signalRequestArgs(input?.signal),
+        ),
+      );
+    },
+    async set(input) {
+      const body = await transport.readJson(
+        transport.api.v1.preferences.ui[":key"].$put({
+          json: {
+            expectedRevision: input.expectedRevision,
+            value: input.value,
+          },
+          param: { key: input.key },
+        }),
+      );
+      return body as UiPreferenceResponse<typeof input.key>;
+    },
+    async reset(input) {
+      const body = await transport.readJson(
+        transport.api.v1.preferences.ui[":key"].$delete({
+          param: { key: input.key },
+        }),
+      );
+      return body as UiPreferenceResponse<typeof input.key>;
+    },
+  };
   return {
+    uiPreferences,
+    async setMachineEnvironmentVariable(input) {
+      return transport.readJson(
+        transport.api.v1.settings["machine-environment"].$post({ json: input }),
+      );
+    },
+    async deleteMachineEnvironmentVariable(input) {
+      return transport.readJson(
+        transport.api.v1.settings["machine-environment"].$delete({
+          json: input,
+        }),
+      );
+    },
+    async machineEnvironment() {
+      return transport.readJson(
+        transport.api.v1.settings["machine-environment"].$get(),
+      );
+    },
+    async replaceMachineEnvironment(input) {
+      return transport.readJson(
+        transport.api.v1.settings["machine-environment"].$put({ json: input }),
+      );
+    },
     async attention(input) {
       return transport.readJson(
         transport.api.v1.system.attention.$get(
@@ -131,18 +233,7 @@ export function createSystemArea(args: CreateSdkAreaArgs): SystemArea {
       );
     },
     async executionOptions(input = {}) {
-      return transport.readJson(
-        transport.api.v1.system["execution-options"].$get(
-          {
-            query: {
-              environmentId: input.environmentId,
-              hostId: input.hostId,
-              providerId: input.providerId,
-            },
-          },
-          ...signalRequestArgs(input.signal),
-        ),
-      );
+      return readExecutionOptions(transport, input);
     },
     async cliSkillsStatus(input = {}) {
       return transport.readJson(

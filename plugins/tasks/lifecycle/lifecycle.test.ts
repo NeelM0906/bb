@@ -63,6 +63,18 @@ function trackedThreadFixture(
 }
 
 describe("task thread lifecycle", () => {
+  it("reconciles each non-terminal task thread once during startup", async () => {
+    const fixture = trackedThreadFixture("working", "active");
+
+    await registerLifecycle(fixture.bb, fixture.store);
+
+    expect(fixture.harness.sdk.callsTo("threads.get")).toEqual([
+      [{ threadId: "thr_worker" }],
+    ]);
+
+    await fixture.harness.dispose();
+  });
+
   it("moves a working thread to completed, comments, and publishes", async () => {
     const fixture = trackedThreadFixture("working", "active");
     await registerLifecycle(fixture.bb, fixture.store);
@@ -149,7 +161,6 @@ describe("task thread lifecycle", () => {
 
     expect(fixture.harness.sdk.callsTo("threads.get")).toEqual([
       [{ threadId: "thr_worker" }],
-      [{ threadId: "thr_worker" }],
     ]);
     expect(
       fixture.store.tasks.getTaskThread(fixture.taskThreadId)?.liveStatus,
@@ -216,7 +227,7 @@ describe("task thread lifecycle", () => {
       "message.cancelled": 0,
       "thread.unarchived": 0,
     });
-    expect(host.harness.sdk.callsTo("threads.get")).toHaveLength(2);
+    expect(host.harness.sdk.callsTo("threads.get")).toHaveLength(1);
     expect(store.tasks.getTaskThread(tracked.id)?.liveStatus).toBe("starting");
 
     await host.harness.dispose();
@@ -237,7 +248,7 @@ describe("task thread lifecycle", () => {
     expect(
       fixture.store.tasks.getTaskThread(fixture.taskThreadId)?.liveStatus,
     ).toBe("working");
-    expect(fixture.harness.sdk.callsTo("threads.get")).toHaveLength(2);
+    expect(fixture.harness.sdk.callsTo("threads.get")).toHaveLength(1);
     expect(fixture.harness.sdk.callsTo("subscribe")).toEqual([]);
 
     await fixture.harness.dispose();
@@ -254,7 +265,7 @@ describe("task thread lifecycle", () => {
             reads += 1;
             return makeThreadResponse({
               id: "thr_safety_net",
-              status: reads <= 2 ? "starting" : "active",
+              status: reads === 1 ? "starting" : "active",
             });
           },
         },
@@ -367,6 +378,37 @@ describe("task thread lifecycle", () => {
 
     expect(harness.realtimeSignals).toEqual([]);
     expect(store.tasks.listTasks()).toEqual([]);
+
+    await harness.dispose();
+  });
+
+  it("looks up an unrelated lifecycle event without scanning tasks", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "tasks" });
+    const store = createStore(bb);
+    const project = store.tasks.createProject({
+      name: "Lookup scope",
+      prefix: "SCOPE",
+      color: "blue",
+    });
+    for (let index = 0; index < 3; index += 1) {
+      store.tasks.createTask({
+        projectId: project.id,
+        title: `Unrelated task ${index}`,
+      });
+    }
+    await registerLifecycle(bb, store);
+    const listTasks = vi.spyOn(store.tasks, "listTasks");
+    const listTaskThreads = vi.spyOn(store.tasks, "listTaskThreads");
+
+    await harness.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ id: "thr_untracked", status: "idle" }),
+      lastAssistantText: null,
+    });
+
+    expect({
+      listTasks: listTasks.mock.calls.length,
+      listTaskThreads: listTaskThreads.mock.calls.length,
+    }).toEqual({ listTasks: 0, listTaskThreads: 0 });
 
     await harness.dispose();
   });

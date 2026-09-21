@@ -23,6 +23,7 @@ export function makeThreadResponse(
     activeBackgroundAgentCount: 0,
     canSpawnChild: true,
     queuedMessageCount: 0,
+    admission: null,
     ...overrides,
     runtime: thread.runtime,
   };
@@ -34,6 +35,7 @@ export function makeThreadTimelineResponse(
   const response: ThreadTimelineResponse = {
     rows: [],
     contextBoundarySeq: null,
+    completedTurnDisplay: "collapse",
     activePromptMode: null,
     activeThinking: null,
     activeWorkflows: [],

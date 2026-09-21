@@ -6,6 +6,10 @@ describe("thread queued message schema", () => {
     expect(
       threadQueuedMessageSchema.parse({
         id: "qmsg_123",
+        origin: null,
+        originPluginId: null,
+        initiator: "user",
+        senderThreadId: null,
         threadId: "thread_1",
         content: [{ type: "text", text: "Queued message", mentions: [] }],
         model: "gpt-5",
@@ -29,6 +33,10 @@ describe("thread queued message schema", () => {
     expect(() =>
       threadQueuedMessageSchema.parse({
         id: "qmsg_123",
+        origin: null,
+        originPluginId: null,
+        initiator: "user",
+        senderThreadId: null,
         threadId: "thread_1",
         content: [{ type: "text", text: "Queued message", mentions: [] }],
         model: "gpt-5",

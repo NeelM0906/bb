@@ -382,9 +382,6 @@ export const editableSkillScopeSchema = z.enum([
 ]);
 export type EditableSkillScope = z.infer<typeof editableSkillScopeSchema>;
 
-export const deletableSkillScopeSchema = editableSkillScopeSchema;
-export type DeletableSkillScope = z.infer<typeof deletableSkillScopeSchema>;
-
 export const deleteSkillRequestSchema = z
   .object({
     skillId: installedSkillIdSchema,

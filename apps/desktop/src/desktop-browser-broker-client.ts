@@ -32,10 +32,36 @@ async function readBrokerDescriptor(dataDir: string) {
   }
 }
 
+async function readServerBrokerDescriptor(args: {
+  dataDir: string;
+  homeDir: string;
+  serverOrigin: string;
+}) {
+  const serverHost = new URL(args.serverOrigin).host.replace(
+    /[^a-zA-Z0-9.-]/gu,
+    "-",
+  );
+  const dataDirs = new Set([
+    args.dataDir,
+    join(args.homeDir, ".bb-machines", serverHost),
+  ]);
+  for (const dataDir of dataDirs) {
+    try {
+      const descriptor = await readBrokerDescriptor(dataDir);
+      if (new URL(descriptor.serverUrl).origin === args.serverOrigin)
+        return descriptor;
+    } catch {
+      continue;
+    }
+  }
+  throw new Error("No desktop broker found for the selected server");
+}
+
 export function createDesktopBrowserBrokerClient(args: {
   broker: DesktopBrowserBroker;
   dataDir: string;
-  getServerUrl(): string;
+  homeDir: string;
+  getServerUrl(): string | null;
 }) {
   let socket: WebSocket | null = null;
   let retry: ReturnType<typeof setTimeout> | null = null;
@@ -65,6 +91,10 @@ export function createDesktopBrowserBrokerClient(args: {
     const currentGeneration = generation;
     try {
       const serverUrl = args.getServerUrl();
+      if (serverUrl === null) {
+        schedule();
+        return;
+      }
       const serverOrigin = new URL(serverUrl).origin;
       if (
         registryServerOrigin !== null &&
@@ -72,14 +102,16 @@ export function createDesktopBrowserBrokerClient(args: {
       )
         args.broker.resetServer();
       registryServerOrigin = serverOrigin;
-      const descriptor = await readBrokerDescriptor(args.dataDir);
+      const descriptor = await readServerBrokerDescriptor({
+        dataDir: args.dataDir,
+        homeDir: args.homeDir,
+        serverOrigin,
+      });
       if (stopped || generation !== currentGeneration) return;
-      if (new URL(args.getServerUrl()).origin !== serverOrigin) {
+      if (args.getServerUrl() !== serverUrl) {
         schedule();
         return;
       }
-      if (new URL(descriptor.serverUrl).origin !== serverOrigin)
-        throw new Error("Desktop broker belongs to a different server");
       const connection = new WebSocket(descriptor.url, {
         headers: { authorization: `Bearer ${descriptor.token}` },
         maxPayload: 1024 * 1024,
@@ -108,7 +140,7 @@ export function createDesktopBrowserBrokerClient(args: {
         if (
           stopped ||
           generation !== currentGeneration ||
-          new URL(args.getServerUrl()).origin !== serverOrigin
+          args.getServerUrl() !== serverUrl
         ) {
           connection.terminate();
           return;
@@ -133,12 +165,21 @@ export function createDesktopBrowserBrokerClient(args: {
         }
         const parsed = request;
         requests = requests.then(async () => {
-          if (connection.readyState !== WebSocket.OPEN) return;
+          if (
+            connection.readyState !== WebSocket.OPEN ||
+            generation !== currentGeneration ||
+            args.getServerUrl() !== serverUrl
+          )
+            return;
           try {
             const result = desktopBrowserResultSchemas[
               parsed.command.type
             ].parse(await args.broker.execute(parsed.command));
-            if (connection.readyState === WebSocket.OPEN)
+            if (
+              connection.readyState === WebSocket.OPEN &&
+              generation === currentGeneration &&
+              args.getServerUrl() === serverUrl
+            )
               connection.send(
                 JSON.stringify({
                   type: "result",
@@ -147,7 +188,11 @@ export function createDesktopBrowserBrokerClient(args: {
                 }),
               );
           } catch (error) {
-            if (connection.readyState === WebSocket.OPEN)
+            if (
+              connection.readyState === WebSocket.OPEN &&
+              generation === currentGeneration &&
+              args.getServerUrl() === serverUrl
+            )
               connection.send(
                 JSON.stringify({
                   type: "error",
